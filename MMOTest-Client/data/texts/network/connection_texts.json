@@ -1,0 +1,8 @@
+{
+  "connecting": "Connecting to {host}:{port} ...",
+  "connected": "Connected. Asking server for a database check...",
+  "disconnected": "Disconnected.",
+  "failed": "Connection failed. Is the server running?",
+  "server_disconnected": "Server disconnected.",
+  "client_create_failed": "Could not create client: {error}"
+}

@@ -1,0 +1,24 @@
+[gd_scene load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://ui/register_form.gd" id="1_register"]
+
+[node name="RegisterForm" type="VBoxContainer"]
+script = ExtResource("1_register")
+
+[node name="UsernameEdit" type="LineEdit" parent="."]
+unique_name_in_owner = true
+layout_mode = 2
+
+[node name="PasswordEdit" type="LineEdit" parent="."]
+unique_name_in_owner = true
+layout_mode = 2
+secret = true
+
+[node name="ConfirmEdit" type="LineEdit" parent="."]
+unique_name_in_owner = true
+layout_mode = 2
+secret = true
+
+[node name="RegisterButton" type="Button" parent="."]
+unique_name_in_owner = true
+layout_mode = 2

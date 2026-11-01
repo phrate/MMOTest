@@ -1,0 +1,3 @@
+{
+  "check_ok": "Database OK - SQLite {sqlite_version}, {total_players} account(s) registered."
+}

@@ -1,0 +1,16 @@
+{
+  "tab_title": "Login",
+  "username_placeholder": "Username",
+  "password_placeholder": "Password",
+  "button": "Login",
+  "welcome": "Welcome, {username}! (player id {player_id}, login #{login_count}, {total_players} total accounts)",
+  "welcome_admin": "Returning admin {username}. (player id {player_id}, login #{login_count}, {total_players} total accounts)",
+  "failed": "Login failed: {error}",
+  "validation": {
+	"missing_fields": "Enter a username and password."
+  },
+  "error": {
+	"invalid_credentials": "Invalid username or password.",
+	"already_logged_in": "Already logged in."
+  }
+}

@@ -1,0 +1,13 @@
+res://main.tscn
+res://scenes/login/login.tscn
+res://scenes/game/game.tscn
+res://scenes/game/game.gd
+res://scenes/login/login.gd
+res://data/texts/network/connection_texts.json
+res://data/texts/game/common_texts.json
+res://data/texts/README.md
+res://autoload/texts.gd
+res://autoload/network.gd
+res://scenes/game/player/player.tscn
+res://scenes/game/player/camera_3d.gd
+res://scenes/game/player/player.gd

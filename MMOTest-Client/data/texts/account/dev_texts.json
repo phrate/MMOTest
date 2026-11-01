@@ -1,0 +1,8 @@
+{
+  "auto_login_requested": "Dev auto-login requested...",
+  "error": {
+	"disabled": "Dev auto-login is disabled.",
+	"account_wrong_password": "Account '{username}' already exists with a different password.",
+	"failed": "Dev auto-login failed."
+  }
+}

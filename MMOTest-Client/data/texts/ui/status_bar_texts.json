@@ -1,0 +1,9 @@
+{
+  "disconnected": "Status: Disconnected",
+  "connecting": "Status: Connecting...",
+  "connected": "Status: Connected (not logged in)",
+  "connected_logged_in": "Status: Connected - logged in as {username}",
+  "button_connect": "Connect to {host}:{port}",
+  "button_connecting": "Connecting...",
+  "button_disconnect": "Disconnect"
+}

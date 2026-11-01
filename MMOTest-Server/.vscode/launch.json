@@ -1,0 +1,14 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Run Server (headless)",
+      "type": "coreclr",
+      "request": "launch",
+      "preLaunchTask": "build",
+      "program": "C:/GAME_DEV/godot/versions/Godot_v4.4-stable_mono_win64/Godot_v4.4-stable_mono_win64_console.exe",
+      "args": ["--headless", "--path", "${workspaceFolder}"],
+      "cwd": "${workspaceFolder}"
+    }
+  ]
+}

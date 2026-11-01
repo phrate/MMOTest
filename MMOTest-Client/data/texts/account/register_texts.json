@@ -1,0 +1,19 @@
+{
+  "tab_title": "Register",
+  "username_placeholder": "Username (3-20 letters, numbers, _)",
+  "password_placeholder": "Password (min {min} characters)",
+  "confirm_placeholder": "Confirm password",
+  "button": "Create Account",
+  "success": "Account '{username}' created. You can log in now.",
+  "failed": "Registration failed: {error}",
+  "validation": {
+    "missing_username": "Enter a username.",
+    "password_too_short": "Password must be at least {min} characters.",
+    "password_mismatch": "Passwords do not match."
+  },
+  "error": {
+    "username_invalid": "Username must be {min}-{max} letters, numbers or underscores.",
+    "password_length": "Password must be {min}-{max} characters.",
+    "username_taken": "That username is already taken."
+  }
+}
