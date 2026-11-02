@@ -20,13 +20,30 @@ signal world_data_received(data: Dictionary)
 signal world_error(reason: String)
 signal world_updated(server_version: int, server_format: int)
 
+signal tooltips_info_received(version: int, format_version: int, entries: Dictionary, scripts: Dictionary)
+
+signal pong_received(rtt_ms: int) 
+signal server_shutdown(reason: String, reconnect_after_ms: int) 
+
+signal chat_received(username: String, message: String, from_chunk: Vector2i)
+signal overhead_received(username: String, text: String, from_chunk: Vector2i)
+signal private_message_received(text: String)
+
+signal gfs_info_received(version: int, entries: Dictionary, scripts: Dictionary)
+signal gfs_updated(version: int, scripts: Dictionary)
+signal run_action_result(ok: bool, effects: Array)
+
 const HOST := "127.0.0.1"
 const PORT := 9999
 const SERVER_ID := 1
 
 var state: State = State.DISCONNECTED
+var rtt_ms: int = 0          # NEW: last measured round-trip
+var server_tick: int = 0     # NEW: last tick_positions.tick
 
 var _mp: SceneMultiplayer
+
+var _intentional_disconnect := false
 
 
 func _ready() -> void:
@@ -53,17 +70,21 @@ func connect_to_server() -> void:
 	_set_state(State.CONNECTING)
 
 
+func was_intentional_disconnect() -> bool:
+	return _intentional_disconnect
+
+
 func disconnect_from_server() -> void:
 	if state == State.DISCONNECTED:
 		return
+	_intentional_disconnect = true
 	_mp.multiplayer_peer.close()
 	_set_state(State.DISCONNECTED)
 	disconnected.emit(Texts.get_text("network.connection.disconnected"))
 	get_tree().change_scene_to_file("res://scenes/login/login.tscn")
+	_intentional_disconnect = false
 
 
-## Same as disconnect_from_server() but does NOT change scene. Used by the
-## world-update hotfix, which intends to immediately reconnect.
 func disconnect_from_server_quiet() -> void:
 	if state == State.DISCONNECTED:
 		return
@@ -94,13 +115,30 @@ func request_world_data() -> void:
 	send({"type": "world_fetch"})
 
 
-## Sends the full A* path to the server. Server walks the player along it.
-## path: Array[Vector2i] (excludes the player's current tile).
+func request_gfs_info() -> void:
+	
+	send({"type": "gfs_info"})
+
+
+func run_action(script_path: String, args: Dictionary, target_id: int) -> void:
+	send({"type": "run_action", "script": script_path, "args": args, "target_id": target_id})
+
+
 func send_walk_path(path: Array) -> void:
 	var arr: Array = []
 	for t in path:
 		arr.append([t.x, t.y])
 	send({"type": "player_walk", "path": arr})
+
+
+func send_chat(message: String) -> void:
+	send({"type": "chat_send", "message": message})
+
+
+## NEW: ask the server for a pong. Cheap enough to call every second or so.
+func send_ping() -> void:
+	if state != State.CONNECTED: return
+	send({"type": "ping", "t": Time.get_ticks_msec()})
 
 
 func send(data: Dictionary, channel: int = 0,
@@ -141,9 +179,12 @@ func _on_packet(_id: int, packet: PackedByteArray) -> void:
 
 	match msg.get("type", ""):
 		"hello_ok":
+			
 			hello_received.emit(msg["sqlite_version"], int(msg["total_players"]))
 		"register_result":
+			
 			register_result.emit(msg["ok"], msg.get("username", ""), _error_text(msg))
+			
 		"login_result":
 			if not msg["ok"]:
 				msg["error"] = _error_text(msg)
@@ -155,6 +196,7 @@ func _on_packet(_id: int, packet: PackedByteArray) -> void:
 				world_state_received.emit(players)
 			else:
 				push_warning("world_state missing 'players' array.")
+				
 		"player_joined":
 			player_joined.emit(
 				int(msg["player_id"]),
@@ -164,10 +206,12 @@ func _on_packet(_id: int, packet: PackedByteArray) -> void:
 				float(msg.get("y", 0.0)),
 				float(msg.get("z", 0.0)),
 				float(msg.get("yaw", 0.0)))
+				
 		"player_left":
 			player_left.emit(int(msg["player_id"]))
 
 		"tick_positions":
+			server_tick = int(msg.get("tick", 0))
 			var updates: Variant = msg.get("updates", [])
 			if typeof(updates) != TYPE_ARRAY:
 				push_warning("tick_positions missing 'updates' array.")
@@ -185,6 +229,17 @@ func _on_packet(_id: int, packet: PackedByteArray) -> void:
 				else:
 					player_moved.emit(pid, ux, uy, uz, uyaw)
 
+		"pong":
+			var sent_t := int(msg.get("t", 0))
+			if sent_t > 0:
+				rtt_ms = Time.get_ticks_msec() - sent_t
+				pong_received.emit(rtt_ms)
+
+		"shutdown":
+			server_shutdown.emit(
+				String(msg.get("reason", "")),
+				int(msg.get("reconnect_after_ms", 1000)))
+
 		"world_info_result":
 			if msg.get("ok", false):
 				world_info_received.emit(
@@ -192,6 +247,7 @@ func _on_packet(_id: int, packet: PackedByteArray) -> void:
 					int(msg.get("format_version", 0)))
 			else:
 				world_error.emit(_error_text(msg))
+		
 		"world_data":
 			if msg.get("ok", false):
 				var data: Variant = msg.get("data", {})
@@ -208,6 +264,62 @@ func _on_packet(_id: int, packet: PackedByteArray) -> void:
 			world_updated.emit(
 				int(msg.get("world_version", 0)),
 				int(msg.get("format_version", 0)))
+		
+		"tooltips_info_result":
+			if msg.get("ok", false):
+				tooltips_info_received.emit(
+					int(msg.get("version", 0)),
+					int(msg.get("format_version", 0)),
+					msg.get("entries", {}),
+					msg.get("scripts", {}))
+			else:
+				push_warning("tooltips_info failed: ", msg.get("error_key", ""))
+			
+		"gfs_info_result":
+			if msg.get("ok", false):
+				gfs_info_received.emit(
+					int(msg.get("version", 0)),
+					msg.get("entries", {}),
+					msg.get("scripts", {}))
+			else:
+				push_warning("gfs_info failed: ", msg.get("error_key", ""))
+				
+		"gfs_updated":
+			gfs_updated.emit(
+				int(msg.get("version", 0)),
+				msg.get("scripts", {}))
+				
+		"run_action_result":
+			run_action_result.emit(
+				msg.get("ok", false),
+				msg.get("effects", []))
+		
+		"chat_message":
+			var fc: Variant = msg.get("from_chunk", [])
+			var cx := 0
+			var cy := 0
+			if typeof(fc) == TYPE_ARRAY and fc.size() >= 2:
+				cx = int(fc[0])
+				cy = int(fc[1])
+			chat_received.emit(
+				String(msg.get("username", "")),
+				String(msg.get("message", "")),
+				Vector2i(cx, cy))
+				
+		"overhead_message":
+			var fc: Variant = msg.get("from_chunk", [])
+			var cx := 0
+			var cy := 0
+			if typeof(fc) == TYPE_ARRAY and fc.size() >= 2:
+				cx = int(fc[0])
+				cy = int(fc[1])
+			overhead_received.emit(
+				String(msg.get("username", "")),
+				String(msg.get("text", "")),
+				Vector2i(cx, cy))
+
+		"private_message":
+			private_message_received.emit(String(msg.get("text", "")))
 
 		_:
 			push_warning("Unknown message from server: %s" % str(msg))
@@ -229,6 +341,7 @@ var _debug_password := ""
 
 func is_debug_flow_active() -> bool: return _debug_flow_active
 
+
 func debug_register_and_login() -> void:
 	if not OS.is_debug_build() or state != State.CONNECTED or _debug_flow_active: return
 	_debug_username = _debug_random_username()
@@ -236,6 +349,7 @@ func debug_register_and_login() -> void:
 	_debug_flow_active = true
 	print("[DEV] auto-registering as '%s'" % _debug_username)
 	register_account(_debug_username, _debug_password)
+
 
 func _on_register_result_debug(ok: bool, _username: String, error: String) -> void:
 	if not _debug_flow_active: return
@@ -245,6 +359,7 @@ func _on_register_result_debug(ok: bool, _username: String, error: String) -> vo
 		return
 	login(_debug_username, _debug_password)
 
+
 func _on_login_result_debug(ok: bool, data: Dictionary) -> void:
 	if not _debug_flow_active: return
 	_debug_flow_active = false
@@ -253,6 +368,7 @@ func _on_login_result_debug(ok: bool, data: Dictionary) -> void:
 		return
 	Session.cache_password(_debug_password)
 	print("[DEV] logged in as '%s' (id %d)" % [Session.username, Session.player_id])
+
 
 func _debug_random_username() -> String:
 	const CHARS := "abcdefghijklmnopqrstuvwxyz0123456789"

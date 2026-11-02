@@ -40,7 +40,18 @@ skeleton = NodePath("../..")
 surface_material_override/0 = SubResource("StandardMaterial3D_sul5r")
 
 [node name="NameLabel" type="Label3D" parent="."]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 2.5, 0)
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 2.75, 0)
 billboard = 1
 no_depth_test = true
 text = "{username}"
+font_size = 24
+
+[node name="ChatLabel" type="Label3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 2.5, 0)
+billboard = 1
+no_depth_test = true
+modulate = Color(1, 0.88, 0.1, 1)
+text = "{text}"
+font_size = 40
+outline_size = 15
+autowrap_mode = 3

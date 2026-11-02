@@ -1,18 +1,17 @@
 extends Node3D
 ## Gameplay scene. Spawns the local player and mirrors remote avatars from Players.
-##
-## Signals from the Players autoload are guarded with is_inside_tree() because
-## during a hotfix scene reload, the old scene keeps receiving events for a few
-## frames after it's been detached from the tree — its spawn target is no longer
-## in the tree, so add_child() on it silently produces an orphan node.
+## Routes chat messages to the correct player's bubble (local or remote), applying
+## the same chunk-distance filter the chat log uses.
 
 const PLAYER_SCENE := preload("res://scenes/game/player/player.tscn")
 const REMOTE_SCENE := preload("res://scenes/game/remote_player/remote_player.tscn")
+const CHAT_CHUNK_RADIUS := 2
 
 @export var players_root: Node3D
 
 var _local_player: CharacterBody3D
 var _remote_players: Dictionary = {}
+var _remote_by_username: Dictionary = {}
 
 
 func _ready() -> void:
@@ -35,18 +34,21 @@ func _ready() -> void:
 	Players.player_added.connect(_on_player_added)
 	Players.player_removed.connect(_on_player_removed)
 	Players.player_moved.connect(_on_player_moved)
+	Network.chat_received.connect(_on_chat_received)
+	Network.overhead_received.connect(_on_overhead_received)
 
 
 func _exit_tree() -> void:
-	# Stop receiving Players events the moment we leave the tree. Without this,
-	# the disconnect only happens at actual free time (end of frame), leaving a
-	# window where _spawn_remote can run against a detached scene.
 	if Players.player_added.is_connected(_on_player_added):
 		Players.player_added.disconnect(_on_player_added)
 	if Players.player_removed.is_connected(_on_player_removed):
 		Players.player_removed.disconnect(_on_player_removed)
 	if Players.player_moved.is_connected(_on_player_moved):
 		Players.player_moved.disconnect(_on_player_moved)
+	if Network.chat_received.is_connected(_on_chat_received):
+		Network.chat_received.disconnect(_on_chat_received)
+	if Network.overhead_received.is_connected(_on_overhead_received):
+		Network.overhead_received.disconnect(_on_overhead_received)
 
 
 func _on_player_added(player_id: int) -> void:
@@ -57,7 +59,10 @@ func _on_player_added(player_id: int) -> void:
 func _on_player_removed(player_id: int) -> void:
 	if not is_inside_tree(): return
 	if _remote_players.has(player_id):
-		_remote_players[player_id].queue_free()
+		var node: Node3D = _remote_players[player_id]
+		if node.username != "" and _remote_by_username.has(node.username):
+			_remote_by_username.erase(node.username)
+		node.queue_free()
 		_remote_players.erase(player_id)
 
 
@@ -75,7 +80,47 @@ func _spawn_remote(data: Dictionary) -> void:
 	var player_id: int = data["player_id"]
 	if _remote_players.has(player_id): return
 	var node := REMOTE_SCENE.instantiate()
+	node.set_player_id(player_id)                              # NEW — before add_child
 	players_root.add_child(node)
 	node.set_username(data["username"])
 	node.teleport(data["position"], data["yaw"])
 	_remote_players[player_id] = node
+	_remote_by_username[data["username"]] = node
+
+
+func _on_chat_received(from_username: String, message: String, from_chunk: Vector2i) -> void:
+	if not is_inside_tree(): return
+	if _local_player == null: return
+
+	var here := World.world_to_chunk(
+		roundi(_local_player.global_position.x),
+		roundi(_local_player.global_position.z))
+	if absi(here.x - from_chunk.x) > CHAT_CHUNK_RADIUS \
+			or absi(here.y - from_chunk.y) > CHAT_CHUNK_RADIUS:
+		return
+
+	if from_username == Session.username:
+		_local_player.show_chat_message(message)
+		return
+
+	if _remote_by_username.has(from_username):
+		_remote_by_username[from_username].show_chat_message(message)
+
+
+func _on_overhead_received(from_username: String, text: String, from_chunk: Vector2i) -> void:
+	if not is_inside_tree(): return
+	if _local_player == null: return
+
+	var here := World.world_to_chunk(
+		roundi(_local_player.global_position.x),
+		roundi(_local_player.global_position.z))
+	if absi(here.x - from_chunk.x) > CHAT_CHUNK_RADIUS \
+			or absi(here.y - from_chunk.y) > CHAT_CHUNK_RADIUS:
+		return
+
+	if from_username == Session.username:
+		_local_player.show_chat_message(text)
+		return
+
+	if _remote_by_username.has(from_username):
+		_remote_by_username[from_username].show_chat_message(text)

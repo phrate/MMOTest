@@ -1,7 +1,10 @@
-[gd_scene load_steps=5 format=3 uid="uid://d04ltou1ju0du"]
+[gd_scene load_steps=8 format=3 uid="uid://d04ltou1ju0du"]
 
 [ext_resource type="Script" uid="uid://sle5oo30t0bn" path="res://scenes/game/game.gd" id="1_sul5r"]
 [ext_resource type="Script" uid="uid://bf12drb84htoq" path="res://scenes/game/terrain/terrain_renderer.gd" id="3_0sr1o"]
+[ext_resource type="PackedScene" uid="uid://bvp4o38qluidj" path="res://ui/debug/debug_overlay.tscn" id="3_kelw5"]
+[ext_resource type="PackedScene" uid="uid://blcnrh5k6lhdv" path="res://scenes/game/chat_box/chat_box.tscn" id="4_kelw5"]
+[ext_resource type="PackedScene" uid="uid://b78js5vvgwyef" path="res://scenes/game/tile_highlighter.tscn" id="5_lfrn8"]
 
 [sub_resource type="Environment" id="Environment_sul5r"]
 
@@ -36,3 +39,9 @@ unique_name_in_owner = true
 script = ExtResource("3_0sr1o")
 floor_color_a = Color(0.52, 0.52, 0.52, 1)
 floor_color_b = Color(0.58, 0.58, 0.58, 1)
+
+[node name="DebugOverlay" parent="." instance=ExtResource("3_kelw5")]
+
+[node name="ChatBox" parent="." instance=ExtResource("4_kelw5")]
+
+[node name="TileHighlighter" parent="." instance=ExtResource("5_lfrn8")]

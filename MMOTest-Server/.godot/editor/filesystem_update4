@@ -2,3 +2,4 @@ res://Main.tscn
 res://editor/world_editor.tscn
 res://editor/world_editor.gd
 res://Main.cs
+res://editor/WorldEditor.cs

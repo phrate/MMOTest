@@ -34,8 +34,8 @@ public partial class Main : Node
     private static readonly Regex UsernameRegex = new($"^[A-Za-z0-9_]{{{MinUsernameLength},{MaxUsernameLength}}}$");
 
     private record PlayerSession(long PlayerId, string Username, bool IsAdmin);
-    private record PlayerPosition(float X, float Y, float Z, float Yaw);
-    private record TileInfo(int Z, bool Walkable);
+    internal record PlayerPosition(float X, float Y, float Z, float Yaw);
+    internal record TileInfo(int Z, bool Walkable);
 
     private Database _db;
     private SceneMultiplayer _mp;
@@ -65,8 +65,13 @@ public partial class Main : Node
     private string _worldPath;
     private int _worldVersion;
     private int _worldFormatVersion;
+    private int _chunkSize = 8;
     private DateTime _worldMtime;
     private long _worldSize;
+
+    private Gfs.GfsManager _gfs;
+    private Gfs.FunctionRegistry _gfsFns;
+    private Gfs.PerTickManager _perTick;
 
     public override void _Ready()
     {
@@ -85,6 +90,22 @@ public partial class Main : Node
         {
             GD.PrintErr("[Server] No world file loaded; world_info/world_fetch will report unavailable");
         }
+        
+
+        if (File.Exists(TooltipsFileCandidates[0]) || File.Exists(TooltipsFileCandidates[1]))
+            GD.Print("[Server] Tooltips: available");
+        else
+            GD.PrintErr("[Server] Tooltips: not found (right-click menus will be empty)");
+
+
+        _gfs = new Gfs.GfsManager(GfsScriptDirs, GfsTooltipsFileCandidates);
+        _gfs.InitialLoad();
+        _gfsFns = new Gfs.FunctionRegistry();
+        Gfs.Utils.TilesUtils.Register(_gfsFns, this);
+        Gfs.Utils.PlayerUtils.Register(_gfsFns, this);
+        _perTick = new Gfs.PerTickManager(_gfsFns);
+        _gfs.ScriptsChanged += OnGfsScriptsChanged;
+
 
         var peer = new ENetMultiplayerPeer();
         Error err = peer.CreateServer(Port, MaxClients);
@@ -128,6 +149,8 @@ public partial class Main : Node
             _worldCheckAccumulator = 0;
             CheckWorldForUpdates();
         }
+
+        _gfs.Poll();
     }
 
     // ---------- Tick ----------
@@ -135,39 +158,54 @@ public partial class Main : Node
     private void RunTick()
     {
         _currentTick++;
-        if (_intents.Count == 0) return;
 
-        var updates = new List<object>();
-        var donePeers = new List<long>();
-
-        foreach (long peerId in _intents.Keys.ToList())
+        // 1. Movement processing (only if there are intents to process)
+        if (_intents.Count > 0)
         {
-            if (!_sessions.TryGetValue(peerId, out PlayerSession session)) { donePeers.Add(peerId); continue; }
-            if (!_positions.TryGetValue(session.PlayerId, out PlayerPosition current)) { donePeers.Add(peerId); continue; }
+            var updates = new List<object>();
+            var donePeers = new List<long>();
 
-            var path = _intents[peerId];
-            if (path.Count == 0) { donePeers.Add(peerId); continue; }
-
-            var (next, finished) = StepTowardPath(current, path);
-            _positions[session.PlayerId] = next;
-            updates.Add(new
+            foreach (long peerId in _intents.Keys.ToList())
             {
-                player_id = session.PlayerId,
-                x = next.X, y = next.Y, z = next.Z, yaw = next.Yaw
-            });
+                if (!_sessions.TryGetValue(peerId, out PlayerSession session)) { donePeers.Add(peerId); continue; }
+                if (!_positions.TryGetValue(session.PlayerId, out PlayerPosition current)) { donePeers.Add(peerId); continue; }
 
-            if (finished) donePeers.Add(peerId);
+                var path = _intents[peerId];
+                if (path.Count == 0) { donePeers.Add(peerId); continue; }
+
+                var (next, finished) = StepTowardPath(current, path);
+                _positions[session.PlayerId] = next;
+                updates.Add(new { player_id = session.PlayerId, x = next.X, y = next.Y, z = next.Z, yaw = next.Yaw });
+
+                if (finished) donePeers.Add(peerId);
+            }
+
+            foreach (long p in donePeers) _intents.Remove(p);
+            if (updates.Count > 0)
+            {
+                Broadcast(new { type = "tick_positions", tick = _currentTick, updates },
+                    channel: 1, mode: MultiplayerPeer.TransferModeEnum.UnreliableOrdered);
+            }
         }
 
-        foreach (long p in donePeers) _intents.Remove(p);
-        if (updates.Count == 0) return;
-
-        Broadcast(new
+        // 2. Per-tick scripts (ALWAYS run, even when no movement is in flight).
+       var tickEffects = _perTick.TickAll();
+        if (tickEffects.Count > 0)
         {
-            type = "tick_positions",
-            tick = _currentTick,
-            updates
-        }, channel: 1, mode: MultiplayerPeer.TransferModeEnum.UnreliableOrdered);
+            foreach (var (pid, effects) in tickEffects)
+            {
+                if (!_positions.TryGetValue(pid, out var ppos)) continue;
+                int pcx = (int)MathF.Floor((float)MathF.Round(ppos.X) / _chunkSize);
+                int pcy = (int)MathF.Floor((float)MathF.Round(ppos.Z) / _chunkSize);
+
+                string username = "";
+                long selfPeer = -1;
+                foreach (var kv in _sessions)
+                    if (kv.Value.PlayerId == pid) { username = kv.Value.Username; selfPeer = kv.Key; break; }
+
+                RouteChatEffects(pid, username, pcx, pcy, effects, selfPeer);
+            }
+        }
     }
 
     /// <summary>
@@ -245,6 +283,30 @@ public partial class Main : Node
         });
     }
 
+    private static readonly string[] TooltipsFileCandidates =
+    {
+        ProjectSettings.GlobalizePath("user://tooltips.json"),
+        ProjectSettings.GlobalizePath("res://data/tooltips.json"),
+    };
+
+    private static readonly string[] TooltipsScriptDirs =
+    {
+        ProjectSettings.GlobalizePath("user://data/scripts/gfs/tooltips"),
+        ProjectSettings.GlobalizePath("res://data/scripts/gfs/tooltips"),
+    };
+
+    private static readonly string[] GfsScriptDirs =
+    {
+        ProjectSettings.GlobalizePath("user://data/scripts/gfs"),
+        ProjectSettings.GlobalizePath("res://data/scripts/gfs"),
+    };
+
+    private static readonly string[] GfsTooltipsFileCandidates =
+    {
+        ProjectSettings.GlobalizePath("user://tooltips.json"),
+        ProjectSettings.GlobalizePath("res://data/tooltips.json"),
+    };
+
     // ---------- Connection events ----------
 
     private void OnPeerConnected(long peerId)
@@ -278,6 +340,8 @@ public partial class Main : Node
         }
 
         GD.Print($"[Server] Peer disconnected: {peerId}");
+
+        _perTick?.EndAllFor(session.PlayerId);
     }
 
     private void OnPacket(long peerId, byte[] packet) => _ = HandlePacketAsync(peerId, packet);
@@ -299,6 +363,12 @@ public partial class Main : Node
                 case "world_fetch": HandleWorldFetch(peerId); break;
                 case "dev_auto_login": await HandleDevAutoLoginAsync(peerId); break;
                 case "player_walk": HandlePlayerWalkBuffered(peerId, root); break;
+                case "ping":         HandlePing(peerId, root); break;
+                case "dev_shutdown": HandleDevShutdown(peerId); break;
+                case "chat_send": HandleChatSend(peerId, root); break;
+                case "tooltips_info": HandleTooltipsInfo(peerId); break;
+                case "gfs_info":    HandleGfsInfo(peerId); break;
+                case "run_action":  HandleRunAction(peerId, root); break;
                 default:
                     GD.PrintErr($"[Server] Unknown message type '{type}' from {peerId}");
                     break;
@@ -308,6 +378,244 @@ public partial class Main : Node
         {
             GD.PrintErr($"[Server] Error handling packet from {peerId}: {e.Message}");
         }
+    }
+
+    private bool _shuttingDown = false;
+
+    private void HandleTooltipsInfo(long peerId)
+    {
+        if (!_sessions.ContainsKey(peerId))
+        {
+            SendError(peerId, "tooltips_info_result", ErrorKeys.WorldNotLoggedIn);
+            return;
+        }
+
+        string tooltipsText = null;
+        foreach (string path in TooltipsFileCandidates)
+        {
+            if (File.Exists(path)) { tooltipsText = File.ReadAllText(path); break; }
+        }
+        if (tooltipsText == null)
+        {
+            SendError(peerId, "tooltips_info_result", ErrorKeys.WorldUnavailable);
+            return;
+        }
+
+        try
+        {
+            using var doc = JsonDocument.Parse(tooltipsText);
+            var root = doc.RootElement;
+            if (!root.TryGetProperty("format_version", out JsonElement fmt) ||
+                !root.TryGetProperty("version", out JsonElement ver) ||
+                !root.TryGetProperty("entries", out JsonElement entries) ||
+                entries.ValueKind != JsonValueKind.Object)
+            {
+                SendError(peerId, "tooltips_info_result", ErrorKeys.WorldUnavailable);
+                return;
+            }
+
+            // Entries from tooltips.json: entity_type -> script filename.
+            var entriesDict = new Dictionary<string, string>();
+            foreach (JsonProperty entry in entries.EnumerateObject())
+            {
+                if (entry.Value.ValueKind != JsonValueKind.String) continue;
+                string scriptName = entry.Value.GetString();
+                if (string.IsNullOrEmpty(scriptName)) continue;
+                entriesDict[entry.Name] = scriptName;
+            }
+
+            // Enumerate every .gfs file in both script directories. user:// takes
+            // precedence over res:// on a name collision, matching Godot's loading order.
+            var scriptsDict = new Dictionary<string, string>();
+            foreach (string dir in TooltipsScriptDirs)
+            {
+                if (!Directory.Exists(dir)) continue;
+                foreach (string file in Directory.GetFiles(dir, "*.gfs"))
+                {
+                    string name = Path.GetFileName(file);
+                    if (scriptsDict.ContainsKey(name)) continue;
+                    try { scriptsDict[name] = File.ReadAllText(file); }
+                    catch (Exception e) { GD.PrintErr($"[Server] Cannot read {file}: {e.Message}"); }
+                }
+            }
+
+            if (OS.IsDebugBuild())
+            {
+                GD.Print($"[Server] Tooltips: entries={entriesDict.Count}, scripts={scriptsDict.Count}");
+                foreach (var kv in scriptsDict)
+                    GD.Print($"[Server]   script: {kv.Key} ({kv.Value.Length} bytes)");
+            }
+
+            Send(peerId, new
+            {
+                type = "tooltips_info_result",
+                ok = true,
+                version = ver.GetInt32(),
+                format_version = fmt.GetInt32(),
+                entries = entriesDict,
+                scripts = scriptsDict
+            });
+        }
+        catch (Exception e)
+        {
+            GD.PrintErr($"[Server] tooltips_info error: {e.Message}");
+            SendError(peerId, "tooltips_info_result", ErrorKeys.WorldUnavailable);
+        }
+    }
+
+    private void HandleGfsInfo(long peerId)
+    {
+        if (!_sessions.ContainsKey(peerId))
+        {
+            SendError(peerId, "gfs_info_result", ErrorKeys.WorldNotLoggedIn);
+            return;
+        }
+        var bundle = _gfs.BuildBundle();
+        bundle["type"] = "gfs_info_result";
+        bundle["ok"] = true;
+        Send(peerId, bundle);
+    }
+
+    private void OnGfsScriptsChanged(Dictionary<string, Dictionary<string, object>> changed, int version)
+    {
+        if (_sessions.Count == 0) return;
+        Broadcast(new
+        {
+            type = "gfs_updated",
+            version,
+            scripts = changed
+        });
+        GD.Print($"[Server] GFS: broadcast {changed.Count} changed script(s), version {version}");
+    }
+
+    private void HandleRunAction(long peerId, JsonElement root)
+    {
+        if (!_sessions.TryGetValue(peerId, out PlayerSession session)) return;
+        if (!root.TryGetProperty("script", out var scriptEl)) return;
+        string scriptPath = scriptEl.GetString() ?? "";
+        var ast = _gfs.GetAst(scriptPath);
+        if (ast == null)
+        {
+            SendError(peerId, "run_action_result", "gfs.script_not_found");
+            return;
+        }
+
+        var args = new Dictionary<string, object>();
+        if (root.TryGetProperty("args", out var argsEl) && argsEl.ValueKind == JsonValueKind.Object)
+        {
+            foreach (var prop in argsEl.EnumerateObject())
+            {
+                args[prop.Name] = prop.Value.ValueKind switch
+                {
+                    JsonValueKind.String => prop.Value.GetString(),
+                    JsonValueKind.Number => prop.Value.TryGetInt64(out long l) ? l : prop.Value.GetDouble(),
+                    JsonValueKind.True => true,
+                    JsonValueKind.False => false,
+                    _ => null
+                };
+            }
+        }
+        int targetId = 0;
+        if (root.TryGetProperty("target_id", out var tidEl) && tidEl.TryGetInt32(out int tid)) targetId = tid;
+
+        var system = new Dictionary<string, object>
+        {
+            ["SELF_ID"] = session.PlayerId,
+            ["PLAYER_ID"] = targetId,
+            ["SELF_USERNAME"] = session.Username,
+        };
+
+        var ctx = new Gfs.CallContext
+        {
+            System = system,
+            Args = args,
+            Locals = new Dictionary<string, object>(),
+            SelfPlayerId = session.PlayerId,
+            ScriptPath = scriptPath,
+        };
+        ctx.RunScript = (s, a) => RunScriptFromGfs(session.PlayerId, s, a, ctx);
+
+        List<Dictionary<string, object>> effects;
+        try { effects = Gfs.Interpreter.Run(ast, ctx, _gfsFns); }
+        catch (Exception e)
+        {
+            GD.PrintErr($"[Server] run_action error: {e.Message}");
+            SendError(peerId, "run_action_result", "gfs.runtime_error");
+            return;
+        }
+
+        if (_positions.TryGetValue(session.PlayerId, out var pos))
+        {
+            int cx = (int)MathF.Floor((float)MathF.Round(pos.X) / _chunkSize);
+            int cy = (int)MathF.Floor((float)MathF.Round(pos.Z) / _chunkSize);
+            RouteChatEffects(session.PlayerId, session.Username, cx, cy, effects, peerId);
+        }
+
+        if (ast.Tags.Contains(Gfs.GfsTags.OncePerTick) && !ctx.EndScriptRequested)
+            _perTick.Start(session.PlayerId, scriptPath, ast, ctx);
+
+        Send(peerId, new { type = "run_action_result", ok = true, effects });
+    }
+
+    private void HandlePing(long peerId, JsonElement root)
+    {
+        if (!_sessions.ContainsKey(peerId)) return;
+        if (!root.TryGetProperty("t", out JsonElement tEl) || !tEl.TryGetInt64(out long clientT)) return;
+        Send(peerId, new { type = "pong", t = clientT });
+    }
+
+    /// <summary>
+    /// Debug-only: an admin client can trigger a graceful shutdown over the network.
+    /// Handy when the server runs headless and the editor stop button isn't available.
+    /// </summary>
+    private void HandleDevShutdown(long peerId)
+    {
+        if (!OS.IsDebugBuild()) return;
+        if (!_sessions.TryGetValue(peerId, out PlayerSession s) || !s.IsAdmin) return;
+        GD.Print($"[Server] dev_shutdown requested by {s.Username}");
+        GracefulShutdown();
+    }
+
+    public override void _Notification(int what)
+    {
+        if (what == (int)NotificationWMCloseRequest)
+        {
+            GracefulShutdown();
+        }
+    }
+
+    /// <summary>
+    /// Broadcasts a shutdown message so clients can auto-reconnect, lets the main
+    /// loop run long enough for ENet to flush, then closes the peer and quits.
+    ///
+    /// Async on purpose. OS.DelayMsec blocks the main thread — and ENet's poll
+    /// runs on the main thread — so the shutdown packet would sit in the outgoing
+    /// queue and be discarded by Close(). Awaiting a SceneTreeTimer yields to the
+    /// main loop, letting the poll flush the packet before the peer closes.
+    /// </summary>
+    private async void GracefulShutdown()
+    {
+        if (_shuttingDown) return;
+        _shuttingDown = true;
+        GD.Print($"[Server] Graceful shutdown: notifying {_sessions.Count} client(s)");
+
+        Broadcast(new
+        {
+            type = "shutdown",
+            reason = "restart",
+            reconnect_after_ms = 500
+        });
+
+        // ~18 frames at 60 fps. ENet flushes on the first poll after the broadcast,
+        // so this is generous headroom for a slow frame.
+        await ToSignal(GetTree().CreateTimer(0.3), "timeout");
+
+        if (_mp != null && _mp.MultiplayerPeer != null)
+            _mp.MultiplayerPeer.Close();
+
+        await ToSignal(GetTree().CreateTimer(0.1), "timeout");
+
+        GetTree().Quit();
     }
 
     private static string GetString(JsonElement root, string property)
@@ -331,6 +639,9 @@ public partial class Main : Node
     private void HandlePlayerWalkBuffered(long peerId, JsonElement root)
     {
         if (!_sessions.TryGetValue(peerId, out PlayerSession session)) return;
+        // Manual click-to-walk cancels script-driven movement AND intent.
+        _perTick?.EndByStem(session.PlayerId, "follow_player");
+        _perTick?.EndByStem(session.PlayerId, "trade_player");
         if (!_positions.TryGetValue(session.PlayerId, out PlayerPosition current)) return;
 
         if (!root.TryGetProperty("path", out JsonElement pathEl) || pathEl.ValueKind != JsonValueKind.Array)
@@ -541,6 +852,8 @@ public partial class Main : Node
                     continue;
                 }
 
+                if (root.TryGetProperty("chunk_size", out JsonElement cs)) _chunkSize = cs.GetInt32();
+
                 var newTiles = new Dictionary<(int, int), TileInfo>();
                 if (root.TryGetProperty("chunks", out JsonElement chunks) && chunks.ValueKind == JsonValueKind.Object)
                 {
@@ -607,6 +920,37 @@ public partial class Main : Node
         SendBytes(peerId, JsonSerializer.SerializeToUtf8Bytes(message), channel, mode);
     }
 
+    private void RouteChatEffects(long pid, string username, int cx, int cy,
+        List<Dictionary<string, object>> effects, long selfPeer)
+    {
+        foreach (var effect in effects)
+        {
+            string kind = effect.TryGetValue("kind", out var k) ? k as string ?? "" : "";
+            string text = effect.TryGetValue("text", out var t) ? t as string ?? "" : "";
+            switch (kind)
+            {
+                case "chat_local":
+                    if (selfPeer >= 0) Send(selfPeer, new { type = "private_message", text });
+                    break;
+                case "chat_public":
+                    Broadcast(new { type = "chat_message", username, message = text, from_chunk = new[] { cx, cy } });
+                    break;
+                case "chat_overhead":
+                    Broadcast(new { type = "overhead_message", username, text, from_chunk = new[] { cx, cy } });
+                    break;
+                case "chat_private":
+                    long targetPid = effect.TryGetValue("target_player_id", out var tpid) ? Convert.ToInt64(tpid) : 0;
+                    if (targetPid > 0)
+                    {
+                        long targetPeer = -1;
+                        foreach (var kv in _sessions) if (kv.Value.PlayerId == targetPid) { targetPeer = kv.Key; break; }
+                        if (targetPeer >= 0) Send(targetPeer, new { type = "private_message", text });
+                    }
+                    break;
+            }
+        }
+    }
+
     private void Broadcast(object message, long exceptPeerId = 0, int channel = 0,
         MultiplayerPeer.TransferModeEnum mode = MultiplayerPeer.TransferModeEnum.Reliable)
     {
@@ -623,4 +967,122 @@ public partial class Main : Node
         if (!_connectedPeers.Contains(peerId)) return;
         _mp.SendBytes(bytes, (int)peerId, mode, channel);
     }
-}
+    private void HandleChatSend(long peerId, JsonElement root)
+        {
+            if (!_sessions.TryGetValue(peerId, out PlayerSession session)) return;
+            if (!_positions.TryGetValue(session.PlayerId, out PlayerPosition pos)) return;
+            if (!root.TryGetProperty("message", out JsonElement msgEl)) return;
+
+            string text = (msgEl.GetString() ?? "").Trim();
+            if (text.Length == 0 || text.Length > 200) return;
+
+            int tileX = (int)MathF.Round(pos.X);
+            int tileY = (int)MathF.Round(pos.Z);
+            int cx = (int)MathF.Floor((float)tileX / _chunkSize);
+            int cy = (int)MathF.Floor((float)tileY / _chunkSize);
+
+            Broadcast(new
+            {
+                type = "chat_message",
+                username = session.Username,
+                message = text,
+                from_chunk = new[] { cx, cy }
+            });
+
+            GD.Print($"[Chat] {session.Username}: {text}");
+        }
+    
+
+    internal bool TryGetPosition(long playerId, out PlayerPosition pos) =>
+        _positions.TryGetValue(playerId, out pos);
+
+    internal bool TryGetTileInfo(int x, int y, out TileInfo info) =>
+        _tiles.TryGetValue((x, y), out info);
+
+    internal int ChunkSize => _chunkSize;
+
+    internal void SetIntent(long playerId, List<Vector2I> route)
+    {
+        long peerId = -1;
+        foreach (var kv in _sessions) if (kv.Value.PlayerId == playerId) { peerId = kv.Key; break; }
+        if (peerId >= 0) _intents[peerId] = new List<Vector2I>(route);
+    }
+
+    internal Dictionary<string, object>? GetActiveScriptArgs(long playerId, string stem) =>
+        _perTick?.GetArgsForActive(playerId, stem);
+
+    internal bool EndPerTickScript(long playerId, string stem) =>
+        _perTick != null && _perTick.EndByStem(playerId, stem);
+
+    private void RunScriptFromGfs(long playerId, string stem, Dictionary<string, object> args, Gfs.CallContext parentCtx)
+    {
+        var (path, ast) = _gfs.ResolveByStem(stem);
+        if (ast == null) { GD.PrintErr($"[Server] RUN: script not found: {stem}"); return; }
+        var newCtx = new Gfs.CallContext
+        {
+            System = new Dictionary<string, object>(parentCtx.System),
+            Args = args,
+            Locals = new Dictionary<string, object>(),
+            SelfPlayerId = playerId,
+            ScriptPath = path,
+        };
+        newCtx.RunScript = (s, a) => RunScriptFromGfs(playerId, s, a, newCtx);
+        _perTick.Start(playerId, path, ast, newCtx);
+    }
+
+
+    internal List<Vector2I> PathfindToNearest(long selfPlayerId, int goalX, int goalY)
+    {
+        if (!_positions.TryGetValue(selfPlayerId, out var pos)) return new();
+        int sx = (int)MathF.Round(pos.X);
+        int sy = (int)MathF.Round(pos.Z);
+
+        // Simple BFS over walkable tiles. For now this matches the client's A*
+        // without the corner-cut rule (which is enforced by the client — the server
+        // accepts the resulting route as-is).
+        var queue = new Queue<Vector2I>();
+        var cameFrom = new Dictionary<Vector2I, Vector2I?>();
+        var start = new Vector2I(sx, sy);
+        var goal = new Vector2I(goalX, goalY);
+        if (!TryGetTileInfo(start.X, start.Y, out _)) return new();
+
+        queue.Enqueue(start);
+        cameFrom[start] = null;
+        Vector2I[] dirs = { new(1,0), new(-1,0), new(0,1), new(0,-1),
+                            new(1,1), new(1,-1), new(-1,1), new(-1,-1) };
+
+        Vector2I? best = null;
+        int bestDist = int.MaxValue;
+
+        while (queue.Count > 0)
+        {
+            var cur = queue.Dequeue();
+            int d = Math.Max(Math.Abs(cur.X - goal.X), Math.Abs(cur.Y - goal.Y));
+            if (d < bestDist) { bestDist = d; best = cur; }
+            if (cur == goal) break;
+
+            foreach (var dir in dirs)
+            {
+                var next = cur + dir;
+                if (cameFrom.ContainsKey(next)) continue;
+                if (!TryGetTileInfo(next.X, next.Y, out var info) || !info.Walkable) continue;
+                if (dir.X != 0 && dir.Y != 0)
+                {
+                    if (!TryGetTileInfo(cur.X + dir.X, cur.Y, out var a) || !a.Walkable) continue;
+                    if (!TryGetTileInfo(cur.X, cur.Y + dir.Y, out var b) || !b.Walkable) continue;
+                }
+                cameFrom[next] = cur;
+                queue.Enqueue(next);
+            }
+        }
+
+        if (best == null) return new();
+        var path = new List<Vector2I>();
+        Vector2I? node = best;
+        while (node.HasValue && node.Value != start)
+        {
+            path.Insert(0, node.Value);
+            node = cameFrom[node.Value];
+        }
+        return path;
+    }}

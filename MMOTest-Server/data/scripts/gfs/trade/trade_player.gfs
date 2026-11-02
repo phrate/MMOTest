@@ -1,0 +1,23 @@
+[server]
+[generic]
+<once_per_tick>
+
+self_id = ${SELF_ID}
+target_id = $"id"
+target_tile = GetPlayerTile(target_id)
+following_player = GetPlayerFollowingActive(self_id)
+
+TASK:
+    IF following_player NOT target_id
+    RUN follow_player(target_id)
+
+    IF NOT GetPlayerAdjacentToTile(target_tile)
+    SKIP
+    ELSE
+    CONTINUE
+
+chat private_local(target_id, "User `self_id` wants to trade with you.")
+chat local "Trade request sent."
+
+_end_script(follow_player)
+_end_script()

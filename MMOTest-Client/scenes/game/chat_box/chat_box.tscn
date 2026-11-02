@@ -1,0 +1,43 @@
+[gd_scene load_steps=3 format=3 uid="uid://blcnrh5k6lhdv"]
+
+[ext_resource type="Script" uid="uid://b6omtg13cbsws" path="res://scenes/game/chat_box/chat_box.gd" id="1"]
+
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_bg"]
+content_margin_left = 6.0
+content_margin_top = 4.0
+content_margin_right = 6.0
+content_margin_bottom = 4.0
+bg_color = Color(0, 0, 0, 0.55)
+corner_radius_top_left = 3
+corner_radius_top_right = 3
+corner_radius_bottom_right = 3
+corner_radius_bottom_left = 3
+
+[node name="ChatBox" type="PanelContainer"]
+anchors_preset = 2
+anchor_top = 1.0
+anchor_bottom = 1.0
+offset_left = 8.0
+offset_top = -220.0
+offset_right = 408.0
+offset_bottom = -8.0
+grow_vertical = 0
+theme_override_styles/panel = SubResource("StyleBoxFlat_bg")
+script = ExtResource("1")
+
+[node name="VBox" type="VBoxContainer" parent="."]
+layout_mode = 2
+
+[node name="Log" type="RichTextLabel" parent="VBox"]
+custom_minimum_size = Vector2(0, 160)
+layout_mode = 2
+mouse_filter = 2
+theme_override_font_sizes/normal_font_size = 12
+bbcode_enabled = true
+scroll_following = true
+
+[node name="Input" type="LineEdit" parent="VBox"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 12
+placeholder_text = "Press Enter to chat"
+max_length = 200

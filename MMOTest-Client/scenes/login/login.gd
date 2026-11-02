@@ -1,7 +1,5 @@
 extends Control
-## Main screen: just wires the UI pieces to Network and shows messages in the log.
 
-# TEMP-DEV: connect and log in automatically on startup. Set to false or delete the marked lines to remove.
 const DEV_AUTO_LOGIN := true
 
 @onready var tabs: TabContainer = $Margin/VBox/Tabs
@@ -26,23 +24,23 @@ func _ready() -> void:
 	Network.register_result.connect(_on_register_result)
 	Network.login_result.connect(_on_login_result)
 
-	if DEV_AUTO_LOGIN and OS.is_debug_build():  # TEMP-DEV
+	if DEV_AUTO_LOGIN and OS.is_debug_build():
 		Network.connect_to_server()
 
 
 func load_game() -> void:
 	log_panel.info(Texts.get_text("game.common.loading_game"))
 	get_tree().change_scene_to_file("res://scenes/game/game.tscn")
-"res://scenes/game/game.tscn"
+
 
 func _on_state_changed(state: int) -> void:
 	match state:
 		Network.State.CONNECTED:
-			if DEV_AUTO_LOGIN and OS.is_debug_build():  # TEMP-DEV
+			if DEV_AUTO_LOGIN and OS.is_debug_build() and not Session.is_logged_in():
 				Network.debug_register_and_login()
 
 
-func _on_hello(sqlite_version: String, total_players: int) -> void:
+func _on_hello(_v: String, _t: int) -> void:
 	pass
 
 
@@ -54,8 +52,7 @@ func _on_register_result(ok: bool, username: String, error: String) -> void:
 
 
 func _on_registered(username: String) -> void:
-	if Network.is_debug_flow_active():  # TEMP-DEV: no tab switch mid-auto-login
-		return
+	if Network.is_debug_flow_active(): return
 	tabs.current_tab = login_form.get_index()
 	login_form.set_username(username)
 	login_form.focus_password()
@@ -65,19 +62,38 @@ func _on_login_result(ok: bool, data: Dictionary) -> void:
 	if not ok:
 		log_panel.error(Texts.get_text("account.login.failed", {"error": data["error"]}))
 		return
-	if _awaiting_world_sync:
-		return
+	if _awaiting_world_sync: return
 	_awaiting_world_sync = true
+	if World.sync_completed.is_connected(_on_world_sync_completed):
+		World.sync_completed.disconnect(_on_world_sync_completed)
+	if World.sync_failed.is_connected(_on_world_sync_failed):
+		World.sync_failed.disconnect(_on_world_sync_failed)
 	World.sync_completed.connect(_on_world_sync_completed, CONNECT_ONE_SHOT)
 	World.sync_failed.connect(_on_world_sync_failed, CONNECT_ONE_SHOT)
 	World.request_sync()
 
 
 func _on_world_sync_completed() -> void:
-	_awaiting_world_sync = false
-	load_game()
+	if Gfs.sync_completed.is_connected(_on_tooltips_sync_completed):
+		Gfs.sync_completed.disconnect(_on_tooltips_sync_completed)
+	if Gfs.sync_failed.is_connected(_on_tooltips_sync_failed):
+		Gfs.sync_failed.disconnect(_on_tooltips_sync_failed)
+	Gfs.sync_completed.connect(_on_tooltips_sync_completed, CONNECT_ONE_SHOT)
+	Gfs.sync_failed.connect(_on_tooltips_sync_failed, CONNECT_ONE_SHOT)
+	Gfs.request_sync()
 
 
 func _on_world_sync_failed(reason: String) -> void:
 	_awaiting_world_sync = false
 	log_panel.error(reason)
+
+
+func _on_tooltips_sync_completed() -> void:
+	_awaiting_world_sync = false
+	load_game()
+
+
+func _on_tooltips_sync_failed(reason: String) -> void:
+	log_panel.warn("Tooltip sync failed: " + reason + " (continuing)")
+	_awaiting_world_sync = false
+	load_game()

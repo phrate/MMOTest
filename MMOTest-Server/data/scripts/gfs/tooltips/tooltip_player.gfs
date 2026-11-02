@@ -1,0 +1,12 @@
+[client]
+[tooltip]
+
+id = ${PLAYER_ID}
+
+// Rendered in order. Each entry: key: "script", "Display", {args}
+actions = [
+	follow: "player/follow_player.gfs", "Follow", {"follow_id"=id}
+	trade: "trade/trade_player.gfs", "Trade", {"id"=id, special=true, color=green}
+	examine: "examine/examine_player.gfs", "Examine",
+	cancel: "tooltips/tooltip_cancel.gfs", "Cancel"
+]

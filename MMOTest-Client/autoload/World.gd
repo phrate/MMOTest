@@ -322,3 +322,11 @@ func _ints_only(v: Variant) -> Variant:
 			a.append(_ints_only(item))
 		return a
 	return v
+
+
+func tile_count() -> int:
+	return _tiles.size()
+
+
+func chunk_count() -> int:
+	return _chunks.size()

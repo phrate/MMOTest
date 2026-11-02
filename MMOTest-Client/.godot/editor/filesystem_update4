@@ -20,3 +20,13 @@ res://autoload/session.gd
 res://ui/log_panel.gd
 res://autoload/Pathfinder.gd
 res://autoload/Network.gd
+res://autoload/Session.gd
+res://autoload/World.gd
+res://ui/debug/debug_overlay.gd
+res://ui/debug/debug_overlay.tscn
+res://scenes/game/chat_box/chat_box.tscn
+res://scenes/game/chat_box/chat_box.gd
+res://autoload/Tooltips.gd
+res://autoload/gfs.gd
+res://scenes/game/tile_highlighter.tscn
+res://scenes/game/tile_highlighter.gd

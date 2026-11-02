@@ -22,6 +22,7 @@ func _ready() -> void:
 	Network.login_result.connect(_on_login_result)
 	Network.state_changed.connect(_on_state_changed)
 	Network.world_updated.connect(_on_world_updated)
+	Network.server_shutdown.connect(_on_server_shutdown)
 
 
 func cache_password(password: String) -> void:
@@ -48,9 +49,6 @@ func _on_login_result(ok: bool, data: Dictionary) -> void:
 
 	if _hotfix_in_progress:
 		print("[Hotfix] Re-login complete, requesting world sync")
-		# CONNECT_ONE_SHOT only auto-disconnects the signal that actually fires.
-		# After a successful hotfix, sync_failed stays connected forever, so we
-		# must detach both explicitly before reconnecting on the next hotfix.
 		if World.sync_completed.is_connected(_on_hotfix_sync_completed):
 			World.sync_completed.disconnect(_on_hotfix_sync_completed)
 		if World.sync_failed.is_connected(_on_hotfix_sync_failed):
@@ -61,15 +59,33 @@ func _on_login_result(ok: bool, data: Dictionary) -> void:
 
 
 func _on_state_changed(state: int) -> void:
-	if state == Network.State.DISCONNECTED and is_logged_in() and not _hotfix_in_progress:
-		player_id = 0
-		username = ""
-		login_count = 0
-		is_admin = false
-		spawn_position = Vector3.ZERO
-		spawn_yaw = 0.0
+	if state != Network.State.DISCONNECTED:
+		return
+	if _hotfix_in_progress:
+		return
+	if not is_logged_in():
+		return
+
+	# User clicked Disconnect (status_bar button). Respect it — no auto-reconnect.
+	if Network.was_intentional_disconnect():
+		_reset_state_for_hotfix()
 		_cached_password = ""
-		changed.emit()
+		return
+
+	# Unexpected drop: shutdown message never arrived (server killed, crashed, or
+	# stopped from the editor — the editor's Stop button doesn't fire WM_CLOSE_REQUEST).
+	if _cached_password.is_empty():
+		print("[Reconnect] Unexpected disconnect, no cached password; returning to login")
+		Network.disconnect_from_server()
+		return
+
+	print("[Reconnect] Unexpected disconnect; attempting auto-reconnect")
+	_hotfix_in_progress = true
+	var saved_username := username
+	var saved_password := _cached_password
+	_reset_state_for_hotfix()
+	Network.disconnect_from_server_quiet()
+	_reconnect_and_login(saved_username, saved_password, "unexpected_disconnect")
 
 
 func _on_world_updated(_server_version: int, _server_format: int) -> void:
@@ -84,36 +100,59 @@ func _on_world_updated(_server_version: int, _server_format: int) -> void:
 
 	print("[Hotfix] Starting hotfix reconnect")
 	_hotfix_in_progress = true
-
 	var saved_username := username
 	var saved_password := _cached_password
 	_reset_state_for_hotfix()
-
 	Network.disconnect_from_server_quiet()
 	await get_tree().create_timer(0.1).timeout
+	_reconnect_and_login(saved_username, saved_password, "world_update")
 
-	Network.connect_to_server()
-	if Network.state != Network.State.CONNECTING:
-		_hotfix_in_progress = false
-		push_warning("[Hotfix] Failed to start reconnect")
-		return
 
-	# Poll for CONNECTED, with a 5s timeout. Do NOT await state_changed: on
-	# localhost the connect can complete before we start waiting, which would
-	# deadlock waiting for the *next* state change.
-	var start_ms := Time.get_ticks_msec()
-	while Network.state == Network.State.CONNECTING and Time.get_ticks_msec() - start_ms < 5000:
-		await get_tree().process_frame
-
-	if Network.state != Network.State.CONNECTED:
-		_hotfix_in_progress = false
-		push_warning("[Hotfix] Reconnect failed; falling back to login screen")
+func _on_server_shutdown(reason: String, reconnect_after_ms: int) -> void:
+	print("[Shutdown] Server: ", reason, " (reconnect in ", reconnect_after_ms, "ms)")
+	if _hotfix_in_progress: return
+	if not is_logged_in(): return
+	if _cached_password.is_empty():
 		Network.disconnect_from_server()
 		return
 
-	print("[Hotfix] Connected; sending re-login")
-	Network.login(saved_username, saved_password, "world_update")
-	# _hotfix_in_progress stays true until _on_login_result + sync finish.
+	_hotfix_in_progress = true
+	var saved_username := username
+	var saved_password := _cached_password
+	_reset_state_for_hotfix()
+	Network.disconnect_from_server_quiet()
+	await get_tree().create_timer(reconnect_after_ms / 1000.0).timeout
+	_reconnect_and_login(saved_username, saved_password, "server_restart")
+
+
+## Shared reconnect+login path. Retries connect if the server isn't listening yet
+## (e.g. it's still restarting). If CONNECTED, sends login and returns — the rest
+## of the flow continues in _on_login_result.
+func _reconnect_and_login(username_: String, password: String, reason: String) -> void:
+	const MAX_ATTEMPTS := 20
+	const ATTEMPT_TIMEOUT_MS := 3000
+	const RETRY_DELAY_S := 0.5
+
+	for attempt in MAX_ATTEMPTS:
+		Network.connect_to_server()
+		if Network.state != Network.State.CONNECTING:
+			await get_tree().create_timer(RETRY_DELAY_S).timeout
+			continue
+
+		var start_ms := Time.get_ticks_msec()
+		while Network.state == Network.State.CONNECTING and Time.get_ticks_msec() - start_ms < ATTEMPT_TIMEOUT_MS:
+			await get_tree().process_frame
+
+		if Network.state == Network.State.CONNECTED:
+			print("[Reconnect] Connected (attempt ", attempt + 1, "); sending login")
+			Network.login(username_, password, reason)
+			return
+
+		await get_tree().create_timer(RETRY_DELAY_S).timeout
+
+	_hotfix_in_progress = false
+	push_warning("[Reconnect] Gave up after ", MAX_ATTEMPTS, " attempts")
+	Network.disconnect_from_server()
 
 
 func _reset_state_for_hotfix() -> void:
@@ -123,12 +162,28 @@ func _reset_state_for_hotfix() -> void:
 	is_admin = false
 	spawn_position = Vector3.ZERO
 	spawn_yaw = 0.0
-	# _cached_password survives.
 	changed.emit()
 
 
 func _on_hotfix_sync_completed() -> void:
-	print("[Hotfix] Sync complete; reloading scene")
+	print("[Hotfix] World sync complete; requesting tooltips")
+	if Gfs.sync_completed.is_connected(_on_hotfix_tooltips_completed):
+		Gfs.sync_completed.disconnect(_on_hotfix_tooltips_completed)
+	if Gfs.sync_failed.is_connected(_on_hotfix_tooltips_failed):
+		Gfs.sync_failed.disconnect(_on_hotfix_tooltips_failed)
+	Gfs.sync_completed.connect(_on_hotfix_tooltips_completed, CONNECT_ONE_SHOT)
+	Gfs.sync_failed.connect(_on_hotfix_tooltips_failed, CONNECT_ONE_SHOT)
+	Gfs.request_sync()
+
+
+func _on_hotfix_tooltips_completed() -> void:
+	print("[Hotfix] Tooltips sync complete; reloading scene")
+	_hotfix_in_progress = false
+	get_tree().reload_current_scene()
+
+
+func _on_hotfix_tooltips_failed(reason: String) -> void:
+	push_warning("[Hotfix] Tooltips sync failed: " + reason + " (continuing)")
 	_hotfix_in_progress = false
 	get_tree().reload_current_scene()
 

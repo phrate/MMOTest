@@ -1,15 +1,18 @@
 extends Node3D
 ## Renders the tile world from World data. Only tiles that exist explicitly in
-## the world are drawn — void tiles (never painted, or erased) don't render at all.
-## Rebuilds as the player crosses chunk boundaries.
+## the world are drawn. A vertical wall is drawn on any edge where the neighbour's
+## effective Z is strictly lower — so raised platforms, steps, and pit edges all
+## get walls automatically. Void neighbours count as being at World.default_z.
 ##
-## No walls (flat world). Slopes are a separate follow-up system.
+## Rebuilds as the player crosses chunk boundaries.
 
 @export var player: Node3D
 @export var chunk_render_radius := 4
 @export var floor_color_a := Color(0.45, 0.65, 0.35)   # checkerboard light
 @export var floor_color_b := Color(0.35, 0.55, 0.25)   # checkerboard dark
-@export var blocked_color := Color(0.65, 0.20, 0.20)   # non-walkable tiles
+@export var blocked_color := Color(0.65, 0.20, 0.20)   # non-walkable tile top
+@export var wall_color := Color(0.45, 0.30, 0.18)      # brown, vertical faces
+@export var wall_shade_ns := 0.85                       # north/south walls are darker
 
 var _rendered: Dictionary = {}
 var _last_center: Vector2i = Vector2i(0x7FFFFFFF, 0x7FFFFFFF)
@@ -77,10 +80,15 @@ func _build_chunk(cx: int, cy: int) -> MeshInstance3D:
 			var wx := origin.x + lx
 			var wy := origin.y + ly
 			if not World.has_tile(wx, wy):
-				continue   # void tile: don't render
+				continue
+
 			var z := World.get_z(wx, wy)
 			var walk := World.is_walkable(wx, wy)
 			_add_top(st, wx, wy, z, walk)
+			_add_wall(st, wx, wy, z,  1,  0)
+			_add_wall(st, wx, wy, z, -1,  0)
+			_add_wall(st, wx, wy, z,  0,  1)
+			_add_wall(st, wx, wy, z,  0, -1)
 
 	st.generate_normals()
 	var mesh := st.commit()
@@ -112,6 +120,32 @@ func _add_top(st: SurfaceTool, x: int, y: int, z: int, walkable: bool) -> void:
 	var v3 := Vector3(x + 0.5, zf, y - 0.5)
 	_tri(st, v0, v1, v2, c)
 	_tri(st, v0, v2, v3, c)
+
+
+func _add_wall(st: SurfaceTool, x: int, y: int, z: int, dx: int, dy: int) -> void:
+	# World.get_z() returns World.default_z for void tiles, so isolated raised
+	# platforms get walls down to the default height. Flat tiles in void get no
+	# wall (their neighbours are "at" the same height).
+	var nz := World.get_z(x + dx, y + dy)
+	if nz >= z:
+		return
+
+	var zb := float(nz)
+	var zt := float(z)
+	var c := wall_color if dx == 0 else wall_color.darkened(1.0 - wall_shade_ns)
+
+	if dx == 1:
+		_tri(st, Vector3(x + 0.5, zb, y - 0.5), Vector3(x + 0.5, zt, y - 0.5), Vector3(x + 0.5, zt, y + 0.5), c)
+		_tri(st, Vector3(x + 0.5, zb, y - 0.5), Vector3(x + 0.5, zt, y + 0.5), Vector3(x + 0.5, zb, y + 0.5), c)
+	elif dx == -1:
+		_tri(st, Vector3(x - 0.5, zb, y + 0.5), Vector3(x - 0.5, zt, y + 0.5), Vector3(x - 0.5, zt, y - 0.5), c)
+		_tri(st, Vector3(x - 0.5, zb, y + 0.5), Vector3(x - 0.5, zt, y - 0.5), Vector3(x - 0.5, zb, y - 0.5), c)
+	elif dy == 1:
+		_tri(st, Vector3(x + 0.5, zb, y + 0.5), Vector3(x + 0.5, zt, y + 0.5), Vector3(x - 0.5, zt, y + 0.5), c)
+		_tri(st, Vector3(x + 0.5, zb, y + 0.5), Vector3(x - 0.5, zt, y + 0.5), Vector3(x - 0.5, zb, y + 0.5), c)
+	elif dy == -1:
+		_tri(st, Vector3(x - 0.5, zb, y - 0.5), Vector3(x - 0.5, zt, y - 0.5), Vector3(x + 0.5, zt, y - 0.5), c)
+		_tri(st, Vector3(x - 0.5, zb, y - 0.5), Vector3(x + 0.5, zt, y - 0.5), Vector3(x + 0.5, zb, y - 0.5), c)
 
 
 func _tri(st: SurfaceTool, a: Vector3, b: Vector3, c: Vector3, color: Color) -> void:
