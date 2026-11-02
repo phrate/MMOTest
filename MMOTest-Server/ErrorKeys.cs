@@ -16,4 +16,7 @@ public static class ErrorKeys
 
     public const string LoginInvalidCredentials = "account.login.error.invalid_credentials";
     public const string LoginAlreadyLoggedIn = "account.login.error.already_logged_in";
+
+    public const string WorldNotLoggedIn = "world.error.not_logged_in";
+    public const string WorldUnavailable = "world.error.unavailable";
 }

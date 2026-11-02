@@ -1,13 +1,12 @@
-[gd_scene load_steps=6 format=3 uid="uid://d04ltou1ju0du"]
+[gd_scene load_steps=5 format=3 uid="uid://d04ltou1ju0du"]
 
 [ext_resource type="Script" uid="uid://sle5oo30t0bn" path="res://scenes/game/game.gd" id="1_sul5r"]
-[ext_resource type="PackedScene" uid="uid://cbaep7c5ub1qr" path="res://scenes/game/player/player.tscn" id="2_0sr1o"]
-[ext_resource type="Script" uid="uid://beskxuif7somw" path="res://scenes/game/player/player.gd" id="3_kelw5"]
+[ext_resource type="Script" uid="uid://bf12drb84htoq" path="res://scenes/game/terrain/terrain_renderer.gd" id="3_0sr1o"]
 
 [sub_resource type="Environment" id="Environment_sul5r"]
 
 [sub_resource type="PlaneMesh" id="PlaneMesh_sul5r"]
-size = Vector2(15, 15)
+size = Vector2(1, 1)
 
 [node name="Game" type="Node3D"]
 script = ExtResource("1_sul5r")
@@ -22,7 +21,7 @@ metadata/_edit_lock_ = true
 environment = SubResource("Environment_sul5r")
 
 [node name="DirectionalLight3D" type="DirectionalLight3D" parent="World/WorldEnvironment/WorldEnvironment"]
-transform = Transform3D(1, 0, 0, 0, 0.258819, 0.965926, 0, -0.965926, 0.258819, 0, 5.25, 0)
+transform = Transform3D(0.866025, -0.353553, 0.353553, 0, 0.707107, 0.707107, -0.5, -0.612372, 0.612372, 0, 5.25, 0)
 
 [node name="Floor" type="Node3D" parent="World"]
 
@@ -31,6 +30,9 @@ mesh = SubResource("PlaneMesh_sul5r")
 skeleton = NodePath("../..")
 
 [node name="Players" type="Node3D" parent="World"]
+unique_name_in_owner = true
 
-[node name="player" parent="World/Players" instance=ExtResource("2_0sr1o")]
-script = ExtResource("3_kelw5")
+[node name="Terrain" type="Node3D" parent="World"]
+script = ExtResource("3_0sr1o")
+floor_color_a = Color(0.52, 0.52, 0.52, 1)
+floor_color_b = Color(0.58, 0.58, 0.58, 1)

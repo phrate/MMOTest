@@ -126,3 +126,10 @@ func _update_camera() -> void:
 
 	global_position = focus + offset
 	look_at(focus, Vector3.UP)
+
+
+## Snap the camera to the target's current transform, bypassing any smoothing.
+## Use after teleporting or respawning the target so the first rendered frame
+## is already correct (avoids a one-frame flash on scene load).
+func snap_now() -> void:
+	_update_camera()

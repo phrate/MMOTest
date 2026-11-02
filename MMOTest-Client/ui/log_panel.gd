@@ -3,24 +3,24 @@ extends RichTextLabel
 ## Scrolling message log with colored levels.
 
 
-func info(text: String) -> void:
-	_add(text, "")
+func info(_text: String) -> void:
+	_add(_text, "")
 
 
-func success(text: String) -> void:
-	_add(text, "green")
+func success(_text: String) -> void:
+	_add(_text, "green")
 
 
-func warn(text: String) -> void:
-	_add(text, "orange")
+func warn(_text: String) -> void:
+	_add(_text, "orange")
 
 
-func error(text: String) -> void:
-	_add(text, "red")
+func error(_text: String) -> void:
+	_add(_text, "red")
 
 
-func _add(text: String, color: String) -> void:
-	var safe := text.replace("[", "[lb]")  # don't let message text be parsed as BBCode
+func _add(_text: String, color: String) -> void:
+	var safe := _text.replace("[", "[lb]")  # don't let message _text be parsed as BBCode
 	if color.is_empty():
 		append_text(safe + "\n")
 	else:

@@ -11,3 +11,12 @@ res://autoload/network.gd
 res://scenes/game/player/player.tscn
 res://scenes/game/player/camera_3d.gd
 res://scenes/game/player/player.gd
+res://autoload/players.gd
+res://autoload/world.gd
+res://scenes/game/remote_player/remote_player.tscn
+res://scenes/game/remote_player/remote_player.gd
+res://scenes/game/terrain/terrain_renderer.gd
+res://autoload/session.gd
+res://ui/log_panel.gd
+res://autoload/Pathfinder.gd
+res://autoload/Network.gd

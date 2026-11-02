@@ -1,0 +1,18 @@
+[gd_scene load_steps=3 format=3 uid="uid://clk87bkvdf2xm"]
+
+[ext_resource type="Script" uid="uid://b08mpc5jfi6m3" path="res://scenes/game/remote_player/remote_player.gd" id="1_ph20q"]
+
+[sub_resource type="CapsuleMesh" id="CapsuleMesh_5baof"]
+
+[node name="RemotePlayer" type="Node3D"]
+script = ExtResource("1_ph20q")
+
+[node name="MeshInstance3D" type="MeshInstance3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1, 0)
+mesh = SubResource("CapsuleMesh_5baof")
+
+[node name="NameLabel" type="Label3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 2.5, 0)
+billboard = 1
+no_depth_test = true
+text = "{username}"

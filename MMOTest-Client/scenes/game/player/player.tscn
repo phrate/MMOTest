@@ -8,11 +8,12 @@
 [sub_resource type="StandardMaterial3D" id="StandardMaterial3D_sul5r"]
 albedo_color = Color(0, 0.533333, 1, 1)
 
-[node name="player" type="Node3D"]
+[node name="player" type="CharacterBody3D"]
 script = ExtResource("1_t5cse")
 
 [node name="Camera3D" type="Camera3D" parent="." node_paths=PackedStringArray("target")]
 transform = Transform3D(1, 0, 0, 0, 0.771935, 0.635701, 0, -0.635701, 0.771935, 0.380983, 4.35042, 3.1242)
+current = true
 fov = 40.0
 script = ExtResource("1_4m2od")
 target = NodePath("../Avatar/MeshInstance3D")
@@ -38,8 +39,8 @@ mesh = SubResource("CapsuleMesh_sul5r")
 skeleton = NodePath("../..")
 surface_material_override/0 = SubResource("StandardMaterial3D_sul5r")
 
-[node name="UsernameLabel" type="Label3D" parent="."]
-unique_name_in_owner = true
+[node name="NameLabel" type="Label3D" parent="."]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 2.5, 0)
 billboard = 1
+no_depth_test = true
 text = "{username}"

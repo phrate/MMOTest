@@ -9,6 +9,8 @@ const DEV_AUTO_LOGIN := true
 @onready var register_form: RegisterForm = $Margin/VBox/Tabs/Register
 @onready var log_panel: LogPanel = $Margin/VBox/LogPanel
 
+var _awaiting_world_sync := false
+
 
 func _ready() -> void:
 	tabs.set_tab_title(login_form.get_index(), Texts.get_text("account.login.tab_title"))
@@ -31,23 +33,16 @@ func _ready() -> void:
 func load_game() -> void:
 	log_panel.info(Texts.get_text("game.common.loading_game"))
 	get_tree().change_scene_to_file("res://scenes/game/game.tscn")
-
+"res://scenes/game/game.tscn"
 
 func _on_state_changed(state: int) -> void:
 	match state:
-		Network.State.CONNECTING:
-			#log_panel.info(Texts.get_text("network.connection.connecting", {"host": Network.HOST, "port": Network.PORT}))
-			pass
 		Network.State.CONNECTED:
-			#log_panel.info(Texts.get_text("network.connection.connected"))
 			if DEV_AUTO_LOGIN and OS.is_debug_build():  # TEMP-DEV
-				#log_panel.info(Texts.get_text("account.dev.auto_login_requested"))
-				Network.dev_auto_login()
+				Network.debug_register_and_login()
 
 
 func _on_hello(sqlite_version: String, total_players: int) -> void:
-	#log_panel.success(Texts.get_text("network.database.check_ok", {
-		#"sqlite_version": sqlite_version, "total_players": total_players}))
 	pass
 
 
@@ -59,15 +54,30 @@ func _on_register_result(ok: bool, username: String, error: String) -> void:
 
 
 func _on_registered(username: String) -> void:
+	if Network.is_debug_flow_active():  # TEMP-DEV: no tab switch mid-auto-login
+		return
 	tabs.current_tab = login_form.get_index()
 	login_form.set_username(username)
 	login_form.focus_password()
 
 
 func _on_login_result(ok: bool, data: Dictionary) -> void:
-	if ok:
-		#var key := "account.login.welcome_admin" if data.get("is_admin", false) else "account.login.welcome"
-		#log_panel.success(Texts.get_text(key, data))
-		load_game()
-	else:
+	if not ok:
 		log_panel.error(Texts.get_text("account.login.failed", {"error": data["error"]}))
+		return
+	if _awaiting_world_sync:
+		return
+	_awaiting_world_sync = true
+	World.sync_completed.connect(_on_world_sync_completed, CONNECT_ONE_SHOT)
+	World.sync_failed.connect(_on_world_sync_failed, CONNECT_ONE_SHOT)
+	World.request_sync()
+
+
+func _on_world_sync_completed() -> void:
+	_awaiting_world_sync = false
+	load_game()
+
+
+func _on_world_sync_failed(reason: String) -> void:
+	_awaiting_world_sync = false
+	log_panel.error(reason)

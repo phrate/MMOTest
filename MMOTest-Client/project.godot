@@ -16,9 +16,18 @@ config/features=PackedStringArray("4.4")
 
 [autoload]
 
-Texts="*res://autoload/texts.gd"
-Network="*res://autoload/network.gd"
-Session="*res://autoload/session.gd"
+Texts="*res://autoload/Texts.gd"
+Network="*res://autoload/Network.gd"
+Session="*res://autoload/Session.gd"
+Players="*res://autoload/Players.gd"
+World="*res://autoload/World.gd"
+Pathfinder="*res://autoload/Pathfinder.gd"
+
+[debug]
+
+gdscript/warnings/unused_parameter=0
+gdscript/warnings/shadowed_variable=0
+gdscript/warnings/inference_on_variant=0
 
 [display]
 

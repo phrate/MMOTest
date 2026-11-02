@@ -39,3 +39,4 @@ C:\GAME_DEV\godot\projects\4.x\MMOTest\MMOTest-Server\.godot\mono\temp\obj\Debug
 C:\GAME_DEV\godot\projects\4.x\MMOTest\MMOTest-Server\.godot\mono\temp\obj\Debug\MMOTest-Server.pdb
 C:\GAME_DEV\godot\projects\4.x\MMOTest\MMOTest-Server\.godot\mono\temp\obj\Debug\MMOTest-Server.genruntimeconfig.cache
 C:\GAME_DEV\godot\projects\4.x\MMOTest\MMOTest-Server\.godot\mono\temp\obj\Debug\ref\MMOTest-Server.dll
+C:\GAME_DEV\godot\projects\4.x\MMOTest\MMOTest-Server\.godot\mono\temp\obj\Debug\MMOTest-Server.sourcelink.json
