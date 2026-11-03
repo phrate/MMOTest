@@ -33,6 +33,14 @@ signal gfs_info_received(version: int, entries: Dictionary, scripts: Dictionary)
 signal gfs_updated(version: int, scripts: Dictionary)
 signal run_action_result(ok: bool, effects: Array)
 
+signal anim_changed_received(player_id: int, anim: String, duration_ms: int)
+
+signal npc_joined(npcs: Array)
+signal npc_left(ids: Array)
+signal npc_render_info_received(slugs: Dictionary)
+signal npc_render_data_received(slug: String, hash: String, files: Dictionary)
+signal npc_render_updated_received(slugs: Dictionary)
+
 const HOST := "127.0.0.1"
 const PORT := 9999
 const SERVER_ID := 1
@@ -118,6 +126,14 @@ func request_world_data() -> void:
 func request_gfs_info() -> void:
 	
 	send({"type": "gfs_info"})
+
+
+func request_npc_render_info() -> void:
+	send({"type": "npc_render_info_request"})
+
+
+func request_npc_render_fetch(slugs: Array) -> void:
+	send({"type": "npc_render_fetch", "slugs": slugs})
 
 
 func run_action(script_path: String, args: Dictionary, target_id: int) -> void:
@@ -207,8 +223,43 @@ func _on_packet(_id: int, packet: PackedByteArray) -> void:
 				float(msg.get("z", 0.0)),
 				float(msg.get("yaw", 0.0)))
 				
-		"player_left":
-			player_left.emit(int(msg["player_id"]))
+		"npc_joined":
+			var list: Variant = msg.get("npcs", [])
+			if typeof(list) == TYPE_ARRAY:
+				npc_joined.emit(list)
+			else:
+				push_warning("npc_joined missing 'npcs' array")
+		
+		"npc_left":
+			var id_list: Variant = msg.get("ids", [])
+			if typeof(id_list) == TYPE_ARRAY:
+				npc_left.emit(id_list)
+			else:
+				push_warning("npc_left missing 'ids' array")
+		
+		"npc_render_info_response":
+			var slugs_d: Variant = msg.get("slugs", {})
+			if typeof(slugs_d) == TYPE_DICTIONARY:
+				npc_render_info_received.emit(slugs_d)
+			else:
+				push_warning("npc_render_info_response missing 'slugs'")
+		
+		
+		"npc_render_data":
+			var slug := str(msg.get("slug", ""))
+			var hash := str(msg.get("hash", ""))
+			var files_d: Variant = msg.get("files", {})
+			if slug.is_empty() or typeof(files_d) != TYPE_DICTIONARY:
+				push_warning("npc_render_data malformed")
+			else:
+				npc_render_data_received.emit(slug, hash, files_d)
+		
+		"npc_render_updated":
+			var upd_slugs: Variant = msg.get("slugs", {})
+			if typeof(upd_slugs) == TYPE_DICTIONARY:
+				npc_render_updated_received.emit(upd_slugs)
+			else:
+				push_warning("npc_render_updated missing 'slugs'")
 
 		"tick_positions":
 			server_tick = int(msg.get("tick", 0))
@@ -320,6 +371,12 @@ func _on_packet(_id: int, packet: PackedByteArray) -> void:
 
 		"private_message":
 			private_message_received.emit(String(msg.get("text", "")))
+		
+		"anim_changed":
+			anim_changed_received.emit(
+				int(msg.get("player_id", 0)),
+				String(msg.get("anim", "")),
+				int(msg.get("duration_ms", 0)))
 
 		_:
 			push_warning("Unknown message from server: %s" % str(msg))
@@ -352,7 +409,9 @@ func debug_register_and_login() -> void:
 
 
 func _on_register_result_debug(ok: bool, _username: String, error: String) -> void:
-	if not _debug_flow_active: return
+	print("[DEV] got register_result ok=", ok, " err=", error, " flow_active=", _debug_flow_active)
+	if not _debug_flow_active:
+		return
 	if not ok:
 		_debug_flow_active = false
 		push_warning("[DEV] auto-register failed: " + error)

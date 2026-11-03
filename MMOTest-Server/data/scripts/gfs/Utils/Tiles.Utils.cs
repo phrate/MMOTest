@@ -1,3 +1,5 @@
+using System;
+
 namespace MMOTest.Server.Gfs.Utils;
 
 public static class TilesUtils
@@ -17,17 +19,19 @@ public static class TilesUtils
             };
         });
 
-        // TileDistanceMoreThanOne(a, b) -> true if Chebyshev distance > 1.
-        // Returns false when either argument is null (safer than crashing).
         reg.Register("TileDistanceMoreThanOne", (ctx, args) =>
         {
             if (args.Count < 2) return false;
             var a = AsTile(args[0]);
             var b = AsTile(args[1]);
             if (a == null || b == null) return false;
-            int dx = System.Math.Abs(a.Value.X - b.Value.X);
-            int dy = System.Math.Abs(a.Value.Y - b.Value.Y);
-            return dx > 1 || dy > 1;
+            int dx = Math.Abs(a.Value.X - b.Value.X);
+            int dy = Math.Abs(a.Value.Y - b.Value.Y);
+            if (dx > 1 || dy > 1) return true;
+            // Diagonal: treat as "more than one" if the corner is blocked.
+            if (dx == 1 && dy == 1 && IsCornerCut(a.Value.X, a.Value.Y, b.Value.X, b.Value.Y, main))
+                return true;
+            return false;
         });
     }
 
@@ -36,5 +40,15 @@ public static class TilesUtils
         if (v is System.Collections.Generic.List<object?> list && list.Count >= 2)
             return ((int)System.Convert.ToInt64(list[0]), (int)System.Convert.ToInt64(list[1]));
         return null;
+    }
+
+    private static bool IsCornerCut(int fromX, int fromY, int toX, int toY, Main main)
+    {
+        int dx = toX - fromX;
+        int dy = toY - fromY;
+        if (Math.Abs(dx) != 1 || Math.Abs(dy) != 1) return false;
+        if (!main.TileWalkable(fromX + dx, fromY)) return true;
+        if (!main.TileWalkable(fromX, fromY + dy)) return true;
+        return false;
     }
 }

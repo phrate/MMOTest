@@ -58,6 +58,55 @@ func _on_login_result(ok: bool, data: Dictionary) -> void:
 		World.force_sync()
 
 
+# ---------- Hotfix sync chain ----------
+
+func _on_hotfix_sync_completed() -> void:
+	print("[Hotfix] World sync complete; requesting Gfs sync")
+	if Gfs.sync_completed.is_connected(_on_hotfix_tooltips_completed):
+		Gfs.sync_completed.disconnect(_on_hotfix_tooltips_completed)
+	if Gfs.sync_failed.is_connected(_on_hotfix_tooltips_failed):
+		Gfs.sync_failed.disconnect(_on_hotfix_tooltips_failed)
+	Gfs.sync_completed.connect(_on_hotfix_tooltips_completed, CONNECT_ONE_SHOT)
+	Gfs.sync_failed.connect(_on_hotfix_tooltips_failed, CONNECT_ONE_SHOT)
+	Gfs.request_sync()
+
+
+func _on_hotfix_sync_failed(reason: String) -> void:
+	_hotfix_in_progress = false
+	push_warning("[Hotfix] World sync failed: " + reason)
+	Network.disconnect_from_server()
+
+
+func _on_hotfix_tooltips_completed() -> void:
+	if NpcRender.sync_completed.is_connected(_on_hotfix_npc_render_completed):
+		NpcRender.sync_completed.disconnect(_on_hotfix_npc_render_completed)
+	if NpcRender.sync_failed.is_connected(_on_hotfix_npc_render_failed):
+		NpcRender.sync_failed.disconnect(_on_hotfix_npc_render_failed)
+	NpcRender.sync_completed.connect(_on_hotfix_npc_render_completed, CONNECT_ONE_SHOT)
+	NpcRender.sync_failed.connect(_on_hotfix_npc_render_failed, CONNECT_ONE_SHOT)
+	NpcRender.request_sync()
+
+
+func _on_hotfix_tooltips_failed(reason: String) -> void:
+	push_warning("[Hotfix] Tooltips sync failed: " + reason + " (continuing)")
+	_hotfix_in_progress = false
+	get_tree().reload_current_scene()
+
+
+func _on_hotfix_npc_render_completed() -> void:
+	print("[Hotfix] NPC render sync complete; reloading scene")
+	_hotfix_in_progress = false
+	get_tree().reload_current_scene()
+
+
+func _on_hotfix_npc_render_failed(reason: String) -> void:
+	push_warning("[Hotfix] NPC render sync failed: " + reason + " (continuing)")
+	_hotfix_in_progress = false
+	get_tree().reload_current_scene()
+
+
+# ---------- Disconnect / reconnect ----------
+
 func _on_state_changed(state: int) -> void:
 	if state != Network.State.DISCONNECTED:
 		return
@@ -72,8 +121,7 @@ func _on_state_changed(state: int) -> void:
 		_cached_password = ""
 		return
 
-	# Unexpected drop: shutdown message never arrived (server killed, crashed, or
-	# stopped from the editor — the editor's Stop button doesn't fire WM_CLOSE_REQUEST).
+	# Unexpected drop.
 	if _cached_password.is_empty():
 		print("[Reconnect] Unexpected disconnect, no cached password; returning to login")
 		Network.disconnect_from_server()
@@ -125,9 +173,6 @@ func _on_server_shutdown(reason: String, reconnect_after_ms: int) -> void:
 	_reconnect_and_login(saved_username, saved_password, "server_restart")
 
 
-## Shared reconnect+login path. Retries connect if the server isn't listening yet
-## (e.g. it's still restarting). If CONNECTED, sends login and returns — the rest
-## of the flow continues in _on_login_result.
 func _reconnect_and_login(username_: String, password: String, reason: String) -> void:
 	const MAX_ATTEMPTS := 20
 	const ATTEMPT_TIMEOUT_MS := 3000
@@ -163,32 +208,3 @@ func _reset_state_for_hotfix() -> void:
 	spawn_position = Vector3.ZERO
 	spawn_yaw = 0.0
 	changed.emit()
-
-
-func _on_hotfix_sync_completed() -> void:
-	print("[Hotfix] World sync complete; requesting tooltips")
-	if Gfs.sync_completed.is_connected(_on_hotfix_tooltips_completed):
-		Gfs.sync_completed.disconnect(_on_hotfix_tooltips_completed)
-	if Gfs.sync_failed.is_connected(_on_hotfix_tooltips_failed):
-		Gfs.sync_failed.disconnect(_on_hotfix_tooltips_failed)
-	Gfs.sync_completed.connect(_on_hotfix_tooltips_completed, CONNECT_ONE_SHOT)
-	Gfs.sync_failed.connect(_on_hotfix_tooltips_failed, CONNECT_ONE_SHOT)
-	Gfs.request_sync()
-
-
-func _on_hotfix_tooltips_completed() -> void:
-	print("[Hotfix] Tooltips sync complete; reloading scene")
-	_hotfix_in_progress = false
-	get_tree().reload_current_scene()
-
-
-func _on_hotfix_tooltips_failed(reason: String) -> void:
-	push_warning("[Hotfix] Tooltips sync failed: " + reason + " (continuing)")
-	_hotfix_in_progress = false
-	get_tree().reload_current_scene()
-
-
-func _on_hotfix_sync_failed(reason: String) -> void:
-	_hotfix_in_progress = false
-	push_warning("[Hotfix] World sync failed: " + reason)
-	Network.disconnect_from_server()

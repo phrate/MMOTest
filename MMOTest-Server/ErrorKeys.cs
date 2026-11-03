@@ -13,10 +13,12 @@ public static class ErrorKeys
     public const string RegisterUsernameInvalid = "account.register.error.username_invalid";   // params: min, max
     public const string RegisterPasswordLength = "account.register.error.password_length";     // params: min, max
     public const string RegisterUsernameTaken = "account.register.error.username_taken";
+    public const string LoginStatsInitFailed = "account.login.error.stats_init_failed";
 
     public const string LoginInvalidCredentials = "account.login.error.invalid_credentials";
     public const string LoginAlreadyLoggedIn = "account.login.error.already_logged_in";
 
     public const string WorldNotLoggedIn = "world.error.not_logged_in";
     public const string WorldUnavailable = "world.error.unavailable";
+    
 }

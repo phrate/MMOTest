@@ -7,14 +7,19 @@ target_id = $"id"
 target_tile = GetPlayerTile(target_id)
 following_player = GetPlayerFollowingActive(self_id)
 
-TASK:
-    IF following_player NOT target_id
-    RUN follow_player(target_id)
-
-    IF NOT GetPlayerAdjacentToTile(target_tile)
-    SKIP
-    ELSE
-    CONTINUE
+TASK MOVE_NEAR_PLAYER (
+    target_id,
+    target_tile,
+    following_player
+):
+    ON CODE NULL
+        chat local "[Diag] TASK MOVE_NEAR_PLAYER ended with code NULL"
+    ON CODE CONTINUE
+        CONTINUE
+    ON CODE SKIP
+        SKIP
+    ON CODE END
+        _end_script()
 
 chat private_local(target_id, "User `self_id` wants to trade with you.")
 chat local "Trade request sent."

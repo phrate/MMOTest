@@ -19,6 +19,7 @@ public sealed class Parser
             throw Error($"Header 1 must be [client] or [server], got [{nsTok.Text}]");
         SkipNewlines();
         var secTok = Expect(TokenKind.SECTION);
+
         SkipNewlines();
         var tags = new List<string>();
         while (Peek().Kind == TokenKind.TAG_OPEN)
@@ -32,15 +33,50 @@ public sealed class Parser
             tags.Add(nameTok.Text);
             SkipNewlines();
         }
+
+        bool isTaskFile = secTok.Text == "task";
+        string? taskName = null;
+        List<string>? taskArgs = null;
+
         var statements = new List<AstNode>();
         while (Peek().Kind != TokenKind.EOF)
         {
             if (Peek().Kind == TokenKind.NEWLINE) { Advance(); continue; }
             if (Peek().Kind == TokenKind.INDENT || Peek().Kind == TokenKind.DEDENT)
                 throw Error($"Unexpected indentation at {Peek().Line}:{Peek().Col}");
+
+            if (isTaskFile && taskName == null
+                    && Peek().Kind == TokenKind.IDENT && Peek().Text == "name"
+                    && Peek(1).Kind == TokenKind.IDENT)
+            {
+                Advance();
+                taskName = Expect(TokenKind.IDENT).Text;
+                ConsumeNewline();
+                continue;
+            }
+            if (isTaskFile && taskArgs == null
+                    && Peek().Kind == TokenKind.IDENT && Peek().Text == "args"
+                    && Peek(1).Kind == TokenKind.STRING)
+            {
+                Advance();
+                taskArgs = new List<string>();
+                while (true)
+                {
+                    taskArgs.Add(Expect(TokenKind.STRING).Text);
+                    if (Peek().Kind == TokenKind.COMMA) { Advance(); SkipNewlines(); continue; }
+                    break;
+                }
+                ConsumeNewline();
+                continue;
+            }
+
             statements.Add(ParseStatement());
         }
-        return new SuiteNode(nsTok.Text, secTok.Text, tags, statements);
+
+        if (isTaskFile && string.IsNullOrEmpty(taskName))
+            throw Error($"This [task] file is missing a 'name' declaration at {secTok.Line}");
+
+        return new SuiteNode(nsTok.Text, secTok.Text, tags, statements, taskName, taskArgs);
     }
 
     private AstNode ParseStatement()
@@ -50,11 +86,13 @@ public sealed class Parser
         {
             TokenKind.CHAT     => ParseChat(),
             TokenKind.IF       => ParseIf(),
-            TokenKind.TASK     => ParseTask(),
+            TokenKind.TASK     => ParseTaskStatement(),
             TokenKind.RUN      => ParseRun(),
             TokenKind.SKIP     => ParseSkip(),
             TokenKind.CONTINUE => ParseContinue(),
+            TokenKind.CODE     => ParseCode(),
             TokenKind.IDENT    => ParseIdentStatement(),
+            TokenKind.ANIM     => ParseAnim(),
             _ => throw Error($"Unexpected token {t.Kind} at {t.Line}:{t.Col}"),
         };
     }
@@ -89,7 +127,7 @@ public sealed class Parser
             case TokenKind.PRIVATE:       kind = ChatKind.Private; break;
             case TokenKind.PRIVATE_LOCAL: kind = ChatKind.PrivateLocal; break;
             default:
-                throw Error($"Expected chat mode (local/public/overhead/private/private_local), got {modeTok.Kind} at {modeTok.Line}:{modeTok.Col}");
+                throw Error($"Expected chat mode, got {modeTok.Kind} at {modeTok.Line}:{modeTok.Col}");
         }
 
         bool takesTarget = kind == ChatKind.Private || kind == ChatKind.PrivateLocal;
@@ -103,29 +141,10 @@ public sealed class Parser
             ConsumeNewline();
             return new ChatNode(kind, SplitInterpolation(textTok.Text), target, chatTok.Line);
         }
-        else
-        {
-            var textTok = Expect(TokenKind.STRING);
-            ConsumeNewline();
-            return new ChatNode(kind, SplitInterpolation(textTok.Text), null, chatTok.Line);
-        }
-    }
-
-    private SkipNode ParseSkip()
-    {
-        var tok = Advance();
+        var strTok = Expect(TokenKind.STRING);
         ConsumeNewline();
-        return new SkipNode(tok.Line);
+        return new ChatNode(kind, SplitInterpolation(strTok.Text), null, chatTok.Line);
     }
-
-    private ContinueNode ParseContinue()
-    {
-        var tok = Advance();
-        ConsumeNewline();
-        return new ContinueNode(tok.Line);
-    }
-
-
 
     private IfNode ParseIf()
     {
@@ -141,40 +160,114 @@ public sealed class Parser
         return new IfNode(cond, thenBlock, elseBlock, ifTok.Line);
     }
 
-    /// Parses either `: indentedBlock` (Python style) or bare newline + next statement (batch style).
+    /// <summary>
+    /// Handles `IF cond: indented`, `IF cond\nindented` (no colon), and
+    /// `IF cond\nsame-indent statement` (batch style). Indentation from the lexer
+    /// disambiguates the last two.
+    /// </summary>
     private List<AstNode> ParseIfBody()
     {
+        bool hadColon = false;
+        if (Peek().Kind == TokenKind.COLON) { Advance(); hadColon = true; }
+        ConsumeNewline();
+
+        if (Peek().Kind == TokenKind.INDENT)
+        {
+            Advance();
+            var stmts = new List<AstNode>();
+            while (Peek().Kind != TokenKind.DEDENT && Peek().Kind != TokenKind.EOF)
+            {
+                if (Peek().Kind == TokenKind.NEWLINE) { Advance(); continue; }
+                stmts.Add(ParseStatement());
+            }
+            if (Peek().Kind == TokenKind.DEDENT) Advance();
+            return stmts;
+        }
+
+        if (hadColon || Peek().Kind != TokenKind.EOF)
+            return new List<AstNode> { ParseStatement() };
+        return new List<AstNode>();
+    }
+
+    private AstNode ParseTaskStatement()
+    {
+        var taskTok = Expect(TokenKind.TASK);
         if (Peek().Kind == TokenKind.COLON)
         {
             Advance();
             ConsumeNewline();
-            if (Peek().Kind == TokenKind.INDENT)
+            if (Peek().Kind != TokenKind.INDENT)
+                throw Error($"TASK must be followed by an indented block at {taskTok.Line}:{taskTok.Col}");
+            Advance();
+            var body = new List<AstNode>();
+            while (Peek().Kind != TokenKind.DEDENT && Peek().Kind != TokenKind.EOF)
+            {
+                if (Peek().Kind == TokenKind.NEWLINE) { Advance(); continue; }
+                body.Add(ParseStatement());
+            }
+            if (Peek().Kind == TokenKind.DEDENT) Advance();
+            return new TaskNode(body, taskTok.Line);
+        }
+
+        if (Peek().Kind == TokenKind.IDENT)
+        {
+            var nameTok = Advance();
+            var args = new List<AstNode>();
+            if (Peek().Kind == TokenKind.LPAREN)
             {
                 Advance();
-                var stmts = new List<AstNode>();
-                while (Peek().Kind != TokenKind.DEDENT && Peek().Kind != TokenKind.EOF)
+                SkipNewlines();
+                if (Peek().Kind != TokenKind.RPAREN)
                 {
-                    if (Peek().Kind == TokenKind.NEWLINE) { Advance(); continue; }
-                    stmts.Add(ParseStatement());
+                    while (true)
+                    {
+                        args.Add(ParseExpr());
+                        if (Peek().Kind == TokenKind.COMMA) { Advance(); SkipNewlines(); continue; }
+                        break;
+                    }
                 }
-                if (Peek().Kind == TokenKind.DEDENT) Advance();
-                return stmts;
+                SkipNewlines();
+                Expect(TokenKind.RPAREN);
             }
-            if (Peek().Kind == TokenKind.EOF) return new List<AstNode>();
-            return new List<AstNode> { ParseStatement() };
+
+            var handlers = new List<OnCodeHandlerNode>();
+            if (Peek().Kind == TokenKind.COLON)
+            {
+                Advance();
+                ConsumeNewline();
+                if (Peek().Kind == TokenKind.INDENT)
+                {
+                    Advance();
+                    while (Peek().Kind != TokenKind.DEDENT && Peek().Kind != TokenKind.EOF)
+                    {
+                        if (Peek().Kind == TokenKind.NEWLINE) { Advance(); continue; }
+                        handlers.Add(ParseOnCodeHandler());
+                    }
+                    if (Peek().Kind == TokenKind.DEDENT) Advance();
+                }
+            }
+            else
+            {
+                ConsumeNewline();
+            }
+            return new TaskCallNode(nameTok.Text, args, handlers, taskTok.Line);
         }
-        // Batch style: `IF cond\nnext_statement`
-        ConsumeNewline();
-        return new List<AstNode> { ParseStatement() };
+        throw Error($"Expected ':' or task name after TASK at {taskTok.Line}:{taskTok.Col}");
     }
 
-    private TaskNode ParseTask()
+    private OnCodeHandlerNode ParseOnCodeHandler()
     {
-        var taskTok = Expect(TokenKind.TASK);
-        Expect(TokenKind.COLON);
+        var onTok = Expect(TokenKind.ON);
+        Expect(TokenKind.CODE);
+        var codeTok = Peek();
+        if (!IsCodeWord(codeTok.Kind))
+            throw Error($"Expected code name after ON CODE at {codeTok.Line}:{codeTok.Col}");
+        Advance();
+        string code = codeTok.Text;
+        if (Peek().Kind == TokenKind.COLON) Advance();
         ConsumeNewline();
         if (Peek().Kind != TokenKind.INDENT)
-            throw Error($"TASK must be followed by an indented block at {taskTok.Line}:{taskTok.Col}");
+            throw Error($"ON CODE {code} must be followed by an indented block at {onTok.Line}:{onTok.Col}");
         Advance();
         var body = new List<AstNode>();
         while (Peek().Kind != TokenKind.DEDENT && Peek().Kind != TokenKind.EOF)
@@ -183,7 +276,41 @@ public sealed class Parser
             body.Add(ParseStatement());
         }
         if (Peek().Kind == TokenKind.DEDENT) Advance();
-        return new TaskNode(body, taskTok.Line);
+        return new OnCodeHandlerNode(code, body, onTok.Line);
+    }
+
+    private CodeNode ParseCode()
+    {
+        var codeTok = Expect(TokenKind.CODE);
+        var nameTok = Peek();
+        if (!IsCodeWord(nameTok.Kind))
+            throw Error($"Expected code name after CODE at {nameTok.Line}:{nameTok.Col}");
+        Advance();
+        ConsumeNewline();
+        return new CodeNode(nameTok.Text, codeTok.Line);
+    }
+
+    private AnimNode ParseAnim()
+    {
+        var animTok = Expect(TokenKind.ANIM);
+        var nameTok = Expect(TokenKind.STRING);
+        AstNode? duration = null;
+
+        // Accept both forms:
+        //   anim "wave" 500     (preferred)
+        //   anim "wave", 500    (legacy — still works)
+        if (Peek().Kind == TokenKind.COMMA)
+        {
+            Advance();
+            duration = ParseExpr();
+        }
+        else if (Peek().Kind != TokenKind.NEWLINE && Peek().Kind != TokenKind.EOF)
+        {
+            duration = ParseExpr();
+        }
+
+        ConsumeNewline();
+        return new AnimNode(nameTok.Text, duration, animTok.Line);
     }
 
     private RunNode ParseRun()
@@ -194,21 +321,36 @@ public sealed class Parser
         if (Peek().Kind == TokenKind.LPAREN)
         {
             Advance();
+            SkipNewlines();
             if (Peek().Kind != TokenKind.RPAREN)
             {
                 while (true)
                 {
                     args.Add(ParseExpr());
-                    if (Peek().Kind == TokenKind.COMMA) { Advance(); continue; }
+                    if (Peek().Kind == TokenKind.COMMA) { Advance(); SkipNewlines(); continue; }
                     break;
                 }
             }
+            SkipNewlines();
             Expect(TokenKind.RPAREN);
         }
         ConsumeNewline();
         return new RunNode(nameTok.Text, args, runTok.Line);
     }
 
+    private SkipNode ParseSkip()
+    {
+        var tok = Advance();
+        ConsumeNewline();
+        return new SkipNode(tok.Line);
+    }
+
+    private ContinueNode ParseContinue()
+    {
+        var tok = Advance();
+        ConsumeNewline();
+        return new ContinueNode(tok.Line);
+    }
 
     private static List<PrintPart> SplitInterpolation(string text)
     {
@@ -302,6 +444,7 @@ public sealed class Parser
         if (Peek().Kind == TokenKind.LPAREN)
         {
             Advance();
+            SkipNewlines();
             var args = new List<AstNode>();
             if (Peek().Kind != TokenKind.RPAREN)
             {
@@ -312,6 +455,7 @@ public sealed class Parser
                     break;
                 }
             }
+            SkipNewlines();
             Expect(TokenKind.RPAREN);
             return new CallNode(qualified, args, nameTok.Line);
         }
@@ -327,7 +471,9 @@ public sealed class Parser
         var items = new List<AstNode>();
         while (Peek().Kind != TokenKind.RBRACKET)
         {
-            if (Peek().Kind == TokenKind.IDENT && Peek(1).Kind == TokenKind.COLON)
+            if (Peek().Kind == TokenKind.IF)
+                items.Add(ParseArrayIf());
+            else if (Peek().Kind == TokenKind.IDENT && Peek(1).Kind == TokenKind.COLON)
                 items.Add(ParseActionEntry());
             else
                 items.Add(ParseExpr());
@@ -337,6 +483,33 @@ public sealed class Parser
         }
         Expect(TokenKind.RBRACKET);
         return new ArrayNode(items, openTok.Line);
+    }
+
+    /// <summary>
+    /// Conditional array entry:
+    ///     if cond:
+    ///         item
+    ///     NEXT
+    /// The indented item after IF is the conditional payload. Only one item per
+    /// `if` — multiple would need indentation tracking inside arrays, which is
+    /// deferred. `:` is optional. Newlines after `if cond:` are consumed; the
+    /// item is whatever comes next (action entry or expression).
+    /// </summary>
+    private ArrayIfNode ParseArrayIf()
+    {
+        var ifTok = Expect(TokenKind.IF);
+        var cond = ParseExpr();
+        if (Peek().Kind == TokenKind.COLON) Advance();
+        ConsumeNewline();
+        SkipNewlines();
+        AstNode item;
+        if (Peek().Kind == TokenKind.IDENT && Peek(1).Kind == TokenKind.COLON)
+            item = ParseActionEntry();
+        else if (Peek().Kind == TokenKind.IF)
+            throw Error($"Nested `if` inside array item not supported at {ifTok.Line}:{ifTok.Col}");
+        else
+            item = ParseExpr();
+        return new ArrayIfNode(cond, item, ifTok.Line);
     }
 
     private ActionEntryNode ParseActionEntry()
@@ -389,4 +562,8 @@ public sealed class Parser
         return t;
     }
     private Exception Error(string msg) => new Exception("[GFS] " + msg);
+
+    private static bool IsCodeWord(TokenKind k) =>
+        k == TokenKind.IDENT || k == TokenKind.NULL ||
+        k == TokenKind.SKIP || k == TokenKind.CONTINUE;
 }

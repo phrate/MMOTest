@@ -11,6 +11,7 @@
   },
   "error": {
 	"invalid_credentials": "Invalid username or password.",
-	"already_logged_in": "Already logged in."
+	"already_logged_in": "Already logged in.",
+	"stats_init_failed": "Your account data could not be loaded. Please try again or contact support."
   }
 }

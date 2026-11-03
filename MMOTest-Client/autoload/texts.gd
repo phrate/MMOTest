@@ -1,11 +1,11 @@
 extends Node
-## Autoload "Texts": loads every JSON file under res://Data/Texts at startup and looks strings up by key.
+## Autoload "Texts": loads every JSON file under res://data/texts at startup and looks strings up by key.
 ## Must be the FIRST autoload so other scripts can use it in their _ready().
 ##
 ## Key = folder names + file name (minus "_texts") + nested JSON keys, joined with dots.
-## See Data/Texts/README.md for the conventions.
+## See data/texts/README.md for the conventions.
 
-const TEXTS_ROOT := "res://Data/Texts"
+const TEXTS_ROOT := "res://data/texts"
 const FILE_SUFFIX := "_texts"
 
 var _texts: Dictionary = {}  # flat: "account.login.error.invalid_credentials" -> "Invalid username or password."

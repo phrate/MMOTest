@@ -5,6 +5,7 @@ using System.IO;
 using System.Linq;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using MMOTest.Server;
 
 namespace MMOTest.Server.Gfs;
 
@@ -14,6 +15,7 @@ public sealed class GfsManager
     private readonly string[] _tooltipsFileCandidates;
 
     private readonly Dictionary<string, SuiteNode> _asts = new();
+    private readonly Dictionary<string, SuiteNode> _tasks = new();
     private readonly Dictionary<string, DateTime> _mtimes = new();
     private Dictionary<string, string> _entries = new();
     private int _version;
@@ -65,9 +67,10 @@ public sealed class GfsManager
                     var text = File.ReadAllText(file);
                     var ast = new Parser(new Lexer(text).Tokenize()).Parse();
                     _asts[rel] = ast;
+                    RegisterTask(rel, ast);
                     _mtimes[rel] = mtime;
                     changed[rel] = Serializer.Serialize(ast);
-                    GD.Print($"[Server] GFS reload: {rel}");
+                    Diag.Log("diag_gfs", $"reload: {rel}");
                 }
                 catch (Exception e)
                 {
@@ -101,11 +104,14 @@ public sealed class GfsManager
     public SuiteNode? GetAst(string scriptPath) =>
         _asts.TryGetValue(scriptPath, out var ast) ? ast : null;
 
+    public SuiteNode? GetTask(string name) => _tasks.TryGetValue(name, out var ast) ? ast : null;
+
     public Dictionary<string, string> GetEntries() => _entries;
 
     private void LoadAllScripts(bool log)
     {
         _asts.Clear();
+        _tasks.Clear();
         _mtimes.Clear();
         foreach (string dir in _scriptDirs)
         {
@@ -118,8 +124,9 @@ public sealed class GfsManager
                     var text = File.ReadAllText(file);
                     var ast = new Parser(new Lexer(text).Tokenize()).Parse();
                     _asts[rel] = ast;
+                    RegisterTask(rel, ast);
                     _mtimes[rel] = File.GetLastWriteTimeUtc(file);
-                    if (log) GD.Print($"[Server] GFS parsed: {rel} [{ast.Section}]");
+                    if (log) Diag.Log("diag_gfs", $"parsed: {rel} [{ast.Section}]");
                 }
                 catch (Exception e)
                 {
@@ -164,5 +171,13 @@ public sealed class GfsManager
             if (name == stem) return (kv.Key, kv.Value);
         }
         return ("", null);
+    }
+
+    private void RegisterTask(string rel, SuiteNode ast)
+    {
+        if (ast.Section != "task" || string.IsNullOrEmpty(ast.TaskName)) return;
+        if (_tasks.TryGetValue(ast.TaskName!, out var existing) && existing != ast)
+            Diag.Error("diag_gfs", $"duplicate TASK name '{ast.TaskName}' (overriding with '{rel}')");
+        _tasks[ast.TaskName!] = ast;
     }
 }

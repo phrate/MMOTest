@@ -62,7 +62,7 @@ func _input(event: InputEvent) -> void:
 			# Ctrl+X (or Cmd on Mac) is consumed here, before LineEdit's
 			# _gui_input runs. Shift+Insert is also blocked for completeness.
 			if (event.ctrl_pressed or event.meta_pressed) \
-					and event.keycode in [KEY_C, KEY_V, KEY_X]:
+					and event.keycode in [KEY_V, KEY_X]:
 				get_viewport().set_input_as_handled()
 				return
 			if event.keycode == KEY_INSERT and event.shift_pressed:

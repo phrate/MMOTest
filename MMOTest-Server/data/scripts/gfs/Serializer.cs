@@ -62,6 +62,30 @@ public static class Serializer
             ["display_node"] = SerializeNode(ae.DisplayNode),
             ["args"] = ae.Args.ToDictionary(kv => kv.Key, kv => SerializeNode(kv.Value))
         },
+        TaskCallNode tc => new()
+        {
+            ["kind"] = "task_call",
+            ["name"] = tc.TaskName,
+            ["arguments"] = tc.Arguments.Select(SerializeNode).ToList(),
+            ["handlers"] = tc.Handlers.Select(h => new Dictionary<string, object>
+            {
+                ["code"] = h.Code,
+                ["body"] = h.Body.Select(SerializeNode).ToList()
+            }).ToList()
+        },
+        CodeNode cn => new() { ["kind"] = "code", ["code"] = cn.Code },
+        AnimNode an => new()
+        {
+            ["kind"] = "anim",
+            ["name"] = an.AnimName,
+            ["duration"] = an.DurationExpr == null ? null : SerializeNode(an.DurationExpr)
+        },
+        ArrayIfNode aif => new()
+        {
+            ["kind"] = "array_if",
+            ["condition"] = SerializeNode(aif.Condition),
+            ["item"] = SerializeNode(aif.Item)
+        },
         _ => throw new Exception($"Unknown AST node type {node.GetType()}")
     };
 

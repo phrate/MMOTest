@@ -10,9 +10,13 @@ config_version=5
 
 [application]
 
-config/name="MMOTest Server"
+config/name="MMOTest-Server"
 run/main_scene="uid://8x3narb7wycy"
 config/features=PackedStringArray("4.4", "C#")
+
+[autoload]
+
+NpcEditorBridge="*res://editor/NpcEditorBridge.cs"
 
 [dotnet]
 

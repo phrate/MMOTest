@@ -12,7 +12,8 @@ public enum TokenKind
     COLON, COMMA, DOT,
     CHAT, LOCAL, PUBLIC, OVERHEAD, PRIVATE, PRIVATE_LOCAL,
     IF, ELSE, IS, NOT, EMPTY, NULL,
-    TASK, RUN, SKIP, CONTINUE,
+    TASK, RUN, SKIP, CONTINUE, CODE, ON,
+    ANIM,
 }
 
 public sealed record Token(TokenKind Kind, string Text, int Line, int Col)

@@ -5,7 +5,8 @@ namespace MMOTest.Server.Gfs;
 public abstract record AstNode(int Line);
 
 public sealed record SuiteNode(
-    string Namespace, string Section, List<string> Tags, List<AstNode> Statements) : AstNode(0);
+    string Namespace, string Section, List<string> Tags, List<AstNode> Statements,
+    string? TaskName = null, List<string>? TaskArgs = null) : AstNode(0);
 
 public sealed record AssignNode(string Name, AstNode Value, int LineNum) : AstNode(LineNum);
 
@@ -16,9 +17,12 @@ public sealed record ChatNode(ChatKind Kind, List<PrintPart> Parts, AstNode? Tar
 
 public sealed record IfNode(AstNode Condition, List<AstNode> ThenBlock, List<AstNode> ElseBlock, int LineNum) : AstNode(LineNum);
 public sealed record TaskNode(List<AstNode> Body, int LineNum) : AstNode(LineNum);
+public sealed record OnCodeHandlerNode(string Code, List<AstNode> Body, int LineNum);
+public sealed record TaskCallNode(string TaskName, List<AstNode> Arguments, List<OnCodeHandlerNode> Handlers, int LineNum) : AstNode(LineNum);
 public sealed record RunNode(string ScriptName, List<AstNode> Args, int LineNum) : AstNode(LineNum);
 public sealed record SkipNode(int LineNum) : AstNode(LineNum);
 public sealed record ContinueNode(int LineNum) : AstNode(LineNum);
+public sealed record CodeNode(string Code, int LineNum) : AstNode(LineNum);
 
 public sealed record ExprStmtNode(AstNode Expr, int LineNum) : AstNode(LineNum);
 public sealed record CallNode(string QualifiedName, List<AstNode> Arguments, int LineNum) : AstNode(LineNum);
@@ -32,6 +36,8 @@ public sealed record RefNode(string RefKind, string Name, int LineNum) : AstNode
 public sealed record ArrayNode(List<AstNode> Items, int LineNum) : AstNode(LineNum);
 public sealed record DictNode(Dictionary<string, AstNode> Entries, int LineNum) : AstNode(LineNum);
 public sealed record ActionEntryNode(string Key, AstNode ScriptNode, AstNode DisplayNode, Dictionary<string, AstNode> Args, int LineNum) : AstNode(LineNum);
+public sealed record AnimNode(string AnimName, AstNode? DurationExpr, int LineNum) : AstNode(LineNum);
+public sealed record ArrayIfNode(AstNode Condition, AstNode Item, int LineNum) : AstNode(LineNum);
 
 public static class GfsTags
 {

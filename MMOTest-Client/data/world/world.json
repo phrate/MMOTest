@@ -1,0 +1,17 @@
+{
+	"world.not_found": "No world file found.",
+	"world.parse_failed": "The world file is not valid JSON.",
+	"world.missing_field": "The world file is missing required fields.",
+	"world.bad_format_version": "Unsupported world format version.",
+	"world.bad_chunk_size": "The world file has an invalid chunk size.",
+	"world.bad_z_range": "The world file has an invalid height range.",
+	"world.chunks_invalid": "The world file has malformed chunk data.",
+	"world.error.bad_data": "The server sent malformed world data.",
+	"world.error.not_logged_in": "You must be logged in to download the world.",
+	"world.error.unavailable": "The server has no world available.",
+	"world.save_failed": "Could not save the downloaded world.",
+	"world.reload_failed": "Could not load the downloaded world.",
+	"world.format_mismatch": "The server's world format is incompatible with this client.",
+	"world.sync.not_connected": "Not connected to the server.",
+	"world.sync.disconnected": "Disconnected during world sync."
+}

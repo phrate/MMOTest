@@ -89,6 +89,22 @@ func _on_world_sync_failed(reason: String) -> void:
 
 
 func _on_tooltips_sync_completed() -> void:
+	if NpcRender.sync_completed.is_connected(_on_npc_render_sync_completed):
+		NpcRender.sync_completed.disconnect(_on_npc_render_sync_completed)
+	if NpcRender.sync_failed.is_connected(_on_npc_render_sync_failed):
+		NpcRender.sync_failed.disconnect(_on_npc_render_sync_failed)
+	NpcRender.sync_completed.connect(_on_npc_render_sync_completed, CONNECT_ONE_SHOT)
+	NpcRender.sync_failed.connect(_on_npc_render_sync_failed, CONNECT_ONE_SHOT)
+	NpcRender.request_sync()
+
+
+func _on_npc_render_sync_completed() -> void:
+	_awaiting_world_sync = false
+	load_game()
+
+
+func _on_npc_render_sync_failed(reason: String) -> void:
+	log_panel.warn("NPC render sync failed: " + reason + " (continuing)")
 	_awaiting_world_sync = false
 	load_game()
 

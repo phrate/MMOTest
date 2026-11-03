@@ -1,0 +1,12 @@
+[client]
+[tooltip]
+
+npc_id = ${NPC_ID}
+npc_display_name = ${NPC_DISPLAY_NAME}
+npc_combat_final_level = ${NPC_COMBAT_FINAL_LEVEL}
+
+actions = [
+    if NpcIsAttackable():
+        attack: "combat/combat_start_npc.gfs", "Attack `npc_display_name` (`npc_combat_final_level`)", {"npc_id"=npc_id}
+    examine: "examine/examine_npc.gfs", "Examine", {"npc_id"=npc_id}
+]

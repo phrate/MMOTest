@@ -1,6 +1,8 @@
 using Godot;
 using System;
 using System.Collections.Generic;
+using MMOTest.Server;
+
 
 namespace MMOTest.Server.Gfs;
 
@@ -84,6 +86,9 @@ public sealed class PerTickManager
         // the correct "start next tick" semantics anyway.
         var keys = new List<(long, string)>(_active.Keys);
 
+        //if (keys.Count > 0)
+        //    GD.Print($"[DIAG] TickAll: active={keys.Count}");
+
         foreach (var key in keys)
         {
             // An earlier script in this tick may have ended or replaced this one.
@@ -98,7 +103,7 @@ public sealed class PerTickManager
             }
             catch (Exception e)
             {
-                GD.PrintErr($"[Server] per-tick error in {a.ScriptPath} (player {a.PlayerId}): {e.Message}");
+                Diag.Error("diag_gfs", $"per-tick error in {a.ScriptPath} (player {a.PlayerId}): {e.Message}");
                 _active.Remove(key);
             }
         }

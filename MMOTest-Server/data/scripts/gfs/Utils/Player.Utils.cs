@@ -55,7 +55,6 @@ public static class PlayerUtils
             return null;
         });
 
-        // GetPlayerAdjacentToTile(tile) -> bool. Self is implicit.
         reg.Register("GetPlayerAdjacentToTile", (ctx, args) =>
         {
             if (args.Count < 1) return false;
@@ -66,7 +65,12 @@ public static class PlayerUtils
             int sy = (int)Math.Round(pos.Z);
             int dx = Math.Abs(sx - tile.Value.X);
             int dy = Math.Abs(sy - tile.Value.Y);
-            return dx <= 1 && dy <= 1 && !(dx == 0 && dy == 0);
+            if (dx > 1 || dy > 1) return false;
+            if (dx == 0 && dy == 0) return false;
+            // Diagonal: not adjacent if the corner is blocked.
+            if (dx == 1 && dy == 1 && IsCornerCut(sx, sy, tile.Value.X, tile.Value.Y, main))
+                return false;
+            return true;
         });
     }
 
@@ -94,5 +98,15 @@ public static class PlayerUtils
         if (v is List<object?> list && list.Count >= 2)
             return ((int)Convert.ToInt64(list[0]), (int)Convert.ToInt64(list[1]));
         return null;
+    }
+
+    private static bool IsCornerCut(int fromX, int fromY, int toX, int toY, Main main)
+    {
+        int dx = toX - fromX;
+        int dy = toY - fromY;
+        if (Math.Abs(dx) != 1 || Math.Abs(dy) != 1) return false;
+        if (!main.TileWalkable(fromX + dx, fromY)) return true;
+        if (!main.TileWalkable(fromX, fromY + dy)) return true;
+        return false;
     }
 }

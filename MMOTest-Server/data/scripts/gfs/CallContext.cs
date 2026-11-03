@@ -12,8 +12,9 @@ public sealed class CallContext
     public string ScriptPath { get; set; } = "";
     public bool EndScriptRequested { get; set; }
     public CallNode? CurrentCall { get; set; }
+    public string? ReturnCode { get; set; }                          // NEW
     public List<Dictionary<string, object>> Effects { get; } = new();
 
-    /// <summary>Invoked by RUN statements. Args are already evaluated.</summary>
     public Action<string, Dictionary<string, object>>? RunScript { get; set; }
+    public Func<string, SuiteNode?>? TaskLookup { get; set; }
 }

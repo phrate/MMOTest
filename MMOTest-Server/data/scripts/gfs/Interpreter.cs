@@ -4,7 +4,7 @@ using System.Text;
 
 namespace MMOTest.Server.Gfs;
 
-public enum ExecResult { Normal, Skipped, Continued, Ended }
+public enum ExecResult { Normal, Skipped, Continued, Ended, ReturnFromTask }
 
 public static class Interpreter
 {
@@ -67,6 +67,9 @@ public static class Interpreter
                 if (r == ExecResult.Continued) return ExecResult.Normal;
                 return r;
 
+            case TaskCallNode tc:
+                return ExecuteTaskCallWithHandlers(tc, ctx, functions);
+
             case RunNode run:
                 HandleRun(run, ctx, functions);
                 return ExecResult.Normal;
@@ -77,13 +80,77 @@ public static class Interpreter
             case ContinueNode:
                 return ExecResult.Continued;
 
+            case CodeNode cn:
+                ctx.ReturnCode = cn.Code;
+                return ExecResult.ReturnFromTask;
+
             case ExprStmtNode e:
                 Evaluate(e.Expr, ctx, functions);
                 return ExecResult.Normal;
+            case AnimNode an:
+                HandleAnim(an, ctx, functions);
+                return ExecResult.Normal;
 
             default:
-                throw new Exception($"[GFS] Unsupported statement in [generic]: {stmt.GetType().Name}");
+                throw new Exception($"[GFS] Unsupported statement {stmt.GetType().Name} at line {stmt.Line}");
         }
+    }
+
+    private static ExecResult ExecuteTaskCallWithHandlers(TaskCallNode tc, CallContext ctx, FunctionRegistry functions)
+    {
+        if (ctx.TaskLookup == null)
+            throw new Exception("[GFS] TASK calls are not supported in this context");
+        var taskDef = ctx.TaskLookup(tc.TaskName);
+        if (taskDef == null)
+            throw new Exception($"[GFS] Unknown TASK '{tc.TaskName}'");
+
+        var declaredArgs = taskDef.TaskArgs ?? new List<string>();
+        if (tc.Arguments.Count != declaredArgs.Count)
+            throw new Exception($"[GFS] TASK '{tc.TaskName}' expects {declaredArgs.Count} arg(s), got {tc.Arguments.Count}");
+
+        var childLocals = new Dictionary<string, object>();
+        for (int i = 0; i < tc.Arguments.Count; i++)
+            childLocals[declaredArgs[i]] = Evaluate(tc.Arguments[i], ctx, functions)!;
+
+        var childCtx = new CallContext
+        {
+            System = ctx.System,
+            Locals = childLocals,
+            Args = new Dictionary<string, object>(),
+            SelfPlayerId = ctx.SelfPlayerId,
+            ScriptPath = tc.TaskName,
+            RunScript = ctx.RunScript,
+            CurrentCall = ctx.CurrentCall,
+            TaskLookup = ctx.TaskLookup,
+        };
+
+        var taskResult = ExecuteBlock(taskDef.Statements, childCtx, functions);
+
+        if (childCtx.EndScriptRequested) ctx.EndScriptRequested = true;
+        ctx.Effects.AddRange(childCtx.Effects);
+
+        // Legacy direct signals propagate immediately; only CODE-based returns dispatch.
+        if (taskResult == ExecResult.Ended) return ExecResult.Ended;
+        if (taskResult == ExecResult.Skipped) return ExecResult.Skipped;
+
+        // Everything else (ReturnFromTask, Normal, Continued) resolves to a code,
+        // defaulting to "NULL" when no CODE was set.
+        string effectiveCode = taskResult == ExecResult.ReturnFromTask
+            ? (childCtx.ReturnCode ?? "NULL").ToUpperInvariant()
+            : "NULL";
+
+        if (tc.Handlers.Count > 0)
+        {
+            foreach (var h in tc.Handlers)
+            {
+                if (h.Code.ToUpperInvariant() == effectiveCode)
+                {
+                    var handlerResult = ExecuteBlock(h.Body, ctx, functions);
+                    return handlerResult == ExecResult.Continued ? ExecResult.Normal : handlerResult;
+                }
+            }
+        }
+        return ExecResult.Normal;
     }
 
     private static void HandleChat(ChatNode c, CallContext ctx, FunctionRegistry functions)
@@ -99,8 +166,16 @@ public static class Interpreter
             string body;
             if (c.Kind == ChatKind.Private)
             {
-                var selfId = ctx.System.TryGetValue("SELF_ID", out var sid) ? sid?.ToString() ?? "?" : "?";
-                body = string.Format(PrivatePrefixFmt, selfId) + text;
+                // Prefer username; fall back to id if SELF_USERNAME isn't set.
+                string displayName;
+                if (ctx.System.TryGetValue("SELF_USERNAME", out var uname)
+                        && uname is string us && !string.IsNullOrEmpty(us))
+                    displayName = us;
+                else if (ctx.System.TryGetValue("SELF_ID", out var sid) && sid != null)
+                    displayName = sid.ToString()!;
+                else
+                    displayName = "?";
+                body = string.Format(PrivatePrefixFmt, displayName) + text;
             }
             else // PrivateLocal
             {
@@ -127,6 +202,25 @@ public static class Interpreter
         {
             ["kind"] = effectKind,
             ["text"] = text
+        });
+    }
+
+    private static void HandleAnim(AnimNode an, CallContext ctx, FunctionRegistry functions)
+    {
+        long durationMs = 0;
+        if (an.DurationExpr != null)
+        {
+            var dv = Evaluate(an.DurationExpr, ctx, functions);
+            if (dv != null)
+            {
+                try { durationMs = Convert.ToInt64(dv); } catch { durationMs = 0; }
+            }
+        }
+        ctx.Effects.Add(new Dictionary<string, object>
+        {
+            ["kind"] = "anim_set",
+            ["anim"] = an.AnimName,
+            ["duration_ms"] = durationMs
         });
     }
 
@@ -166,8 +260,21 @@ public static class Interpreter
                 };
             case ArrayNode a:
                 var arr = new List<object?>();
-                foreach (var item in a.Items) arr.Add(Evaluate(item, ctx, functions));
+                foreach (var item in a.Items)
+                {
+                    if (item is ArrayIfNode aif)
+                    {
+                        if (Truthy(Evaluate(aif.Condition, ctx, functions)))
+                            arr.Add(Evaluate(aif.Item, ctx, functions));
+                    }
+                    else
+                    {
+                        arr.Add(Evaluate(item, ctx, functions));
+                    }
+                }
                 return arr;
+            case ArrayIfNode:
+                throw new Exception("[GFS] array_if cannot be evaluated outside an array");
             case DictNode d:
                 var dict = new Dictionary<string, object?>();
                 foreach (var kv in d.Entries) dict[kv.Key] = Evaluate(kv.Value, ctx, functions);
@@ -195,6 +302,10 @@ public static class Interpreter
                 finally { ctx.CurrentCall = prev; }
             case ChatNode:
                 throw new Exception("[GFS] chat cannot be used as an expression");
+            case CodeNode:
+                throw new Exception("[GFS] CODE cannot be used as an expression");
+            case TaskCallNode:
+                throw new Exception("[GFS] TASK call cannot be used as an expression");
             default:
                 throw new Exception($"[GFS] Cannot evaluate {node.GetType().Name}");
         }
@@ -225,7 +336,8 @@ public static class Interpreter
                 string name = text.Substring(i + 1, j - i - 1);
                 object? v = ResolveRef("local", name, ctx);
                 if (v == null) v = ResolveRef("arg", name, ctx);
-                sb.Append(v?.ToString() ?? "");
+                if (v == null) v = ResolveRef("system", name, ctx);   // NEW
+                sb.Append(FormatValue(v));
                 i = j + 1;
             }
             else { sb.Append(text[i]); i++; }
@@ -249,7 +361,8 @@ public static class Interpreter
             if (!part.IsRef) { sb.Append(part.Literal); continue; }
             var v = ResolveRef("local", part.RefName, ctx);
             if (v == null) v = ResolveRef("arg", part.RefName, ctx);
-            sb.Append(v?.ToString() ?? "");
+            if (v == null) v = ResolveRef("system", part.RefName, ctx);   // NEW
+            sb.Append(FormatValue(v));
         }
         return sb.ToString();
     }
@@ -275,4 +388,32 @@ public static class Interpreter
         System.Collections.IList ilist => ilist.Count == 0,
         _ => false
     };
+
+    /// <summary>
+    /// Human-readable rendering of any GFS value. Lists become [a, b], dicts become
+    /// {k=v, k=v}, null becomes "null". Without this, `chat local "x=`x`"` renders
+    /// the CLR type name (`System.Collections.Generic.List`1[System.Object]`).
+    /// </summary>
+    public static string FormatValue(object? v)
+    {
+        if (v == null) return "null";
+        if (v is string s) return s;
+        if (v is bool b) return b ? "true" : "false";
+        if (v is long l) return l.ToString();
+        if (v is int i) return i.ToString();
+        if (v is double d) return d.ToString();
+        if (v is List<object?> list)
+        {
+            var parts = new List<string>(list.Count);
+            foreach (var item in list) parts.Add(FormatValue(item));
+            return "[" + string.Join(", ", parts) + "]";
+        }
+        if (v is Dictionary<string, object?> dict)
+        {
+            var parts = new List<string>(dict.Count);
+            foreach (var kv in dict) parts.Add($"{kv.Key}={FormatValue(kv.Value)}");
+            return "{" + string.Join(", ", parts) + "}";
+        }
+        return v.ToString() ?? "";
+    }
 }

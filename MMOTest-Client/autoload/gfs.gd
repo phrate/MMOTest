@@ -83,6 +83,30 @@ func _truthy(v: Variant) -> bool:
 	return true
 
 
+## Interpolates `name` references inside a string using locals, then args,
+## then system vars — same precedence as backtick handling in chat.
+func _interpolate_backticks(text: String, locals: Dictionary, args: Dictionary, system: Dictionary) -> String:
+	var out := ""
+	var i := 0
+	while i < text.length():
+		if text[i] == "`":
+			var j := text.find("`", i + 1)
+			if j < 0:
+				out += text[i]
+				i += 1
+				continue
+			var name := text.substr(i + 1, j - i - 1)
+			var v = locals.get(name)
+			if v == null: v = args.get(name)
+			if v == null: v = system.get(name)
+			out += str(v) if v != null else ""
+			i = j + 1
+		else:
+			out += text[i]
+			i += 1
+	return out
+
+
 func _evaluate(node: Dictionary, locals: Dictionary, args: Dictionary, system: Dictionary) -> Variant:
 	var kind: String = node.get("kind", "")
 	match kind:
@@ -98,11 +122,6 @@ func _evaluate(node: Dictionary, locals: Dictionary, args: Dictionary, system: D
 				"arg":    return args.get(name)
 				"system": return system.get(name)
 			return null
-		"array":
-			var items := []
-			for item in node.get("items", []):
-				items.append(_evaluate(item, locals, args, system))
-			return items
 		"dict":
 			var out := {}
 			var entries: Dictionary = node.get("entries", {})
@@ -114,20 +133,54 @@ func _evaluate(node: Dictionary, locals: Dictionary, args: Dictionary, system: D
 			var raw_args: Dictionary = node.get("args", {})
 			for key in raw_args.keys():
 				action_args[str(key)] = _evaluate(raw_args[key], locals, args, system)
+
+			# Display is human-readable text — interpolate backticks against
+			# locals/args/system, matching how chat strings work server-side.
+			var display_val = _evaluate(node.get("display_node", {}), locals, args, system)
+			if typeof(display_val) == TYPE_STRING:
+				display_val = _interpolate_backticks(String(display_val), locals, args, system)
+
 			return {
 				"id": node.get("key", ""),
 				"script": _evaluate(node.get("script_node", {}), locals, args, system),
-				"display": _evaluate(node.get("display_node", {}), locals, args, system),
+				"display": display_val,
 				"args": action_args,
 			}
 		"is_empty":
 			var v := _evaluate(node.get("operand", {}), locals, args, system)
 			var is_emp := _is_empty(v)
 			return !is_emp if node.get("negated", false) else is_emp
+		"array":
+			var items := []
+			for item in node.get("items", []):
+				if typeof(item) != TYPE_DICTIONARY:
+					continue
+				if item.get("kind", "") == "array_if":
+					var cond = _evaluate(item.get("condition", {}), locals, args, system)
+					if _truthy(cond):
+						var inner = _evaluate(item.get("item", {}), locals, args, system)
+						if inner != null:
+							items.append(inner)
+				else:
+					items.append(_evaluate(item, locals, args, system))
+			return items
 		"call":
-			# Client has no function registry yet; return null for now.
-			push_warning("[Gfs] client-side call not supported: " + str(node.get("name", "")))
-			return null
+			var fname: String = str(node.get("name", ""))
+			match fname:
+				"NpcIsAttackable":
+					var npc_id := int(system.get("NPC_ID", 0))
+					if npc_id == 0:
+						return false
+					var npc_entry: Dictionary = Npcs.get_npc(npc_id)
+					if npc_entry.is_empty():
+						return false
+					return bool(npc_entry.get("attackable", true))
+				_:
+					push_warning("[Gfs] unknown client function: " + fname)
+					return null
+		
+		
+		
 		_:
 			return null
 

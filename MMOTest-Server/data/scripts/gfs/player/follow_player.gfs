@@ -10,10 +10,16 @@ self_id = ${SELF_ID}
 
 self_tile = GetPlayerTile(self_id)
 follow_tile = GetPlayerTile(follow_id)
+
+//chat local "DIAG: self_id=`self_id` follow_id=`follow_id` self_tile=`self_tile` follow_tile=`follow_tile`"
+
 if follow_tile is empty:
+    //chat local "DIAG: follow_tile empty, ending"
     _end_script()
 
 if TileDistanceMoreThanOne(self_tile, follow_tile):
     Player.MoveToNearestTile(follow_tile)
+    //chat local "DIAG: route=`SELF_PATHFINDING_ROUTE`"
     if ${SELF_PATHFINDING_ROUTE} is empty:
+        //chat local "DIAG: route empty, ending"
         _end_script()

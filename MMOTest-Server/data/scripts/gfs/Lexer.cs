@@ -230,6 +230,9 @@ public sealed class Lexer
             "run" => TokenKind.RUN,
             "skip" => TokenKind.SKIP,
             "continue" => TokenKind.CONTINUE,
+            "code" => TokenKind.CODE,
+            "on" => TokenKind.ON,
+            "anim" => TokenKind.ANIM,
             _ => TokenKind.IDENT,
         };
         _tokens.Add(new Token(kind, text, _line, _col));
