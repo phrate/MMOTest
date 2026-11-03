@@ -43,6 +43,7 @@ func _ready() -> void:
 	Players.player_moved.connect(_on_player_moved)
 	Npcs.npc_added.connect(_on_npc_added)
 	Npcs.npc_removed.connect(_on_npc_removed)
+	Npcs.npc_moved.connect(_on_npc_moved)
 	Network.chat_received.connect(_on_chat_received)
 	Network.overhead_received.connect(_on_overhead_received)
 	Network.anim_changed_received.connect(_on_anim_changed)
@@ -65,6 +66,8 @@ func _exit_tree() -> void:
 		Npcs.npc_added.disconnect(_on_npc_added)
 	if Npcs.npc_removed.is_connected(_on_npc_removed):
 		Npcs.npc_removed.disconnect(_on_npc_removed)
+	if Npcs.npc_moved.is_connected(_on_npc_moved):
+		Npcs.npc_moved.disconnect(_on_npc_moved)
 
 
 func _on_player_added(player_id: int) -> void:
@@ -190,7 +193,23 @@ func _instantiate_npc(entry: Dictionary) -> void:
 			float(entry.get("x", 0.0)),
 			float(entry.get("y", 0.0)),
 			float(entry.get("z", 0.0))),
-		0.0)
+		float(entry.get("yaw", 0.0)))
 	var anim := str(entry.get("anim", ""))
 	if anim != "":
 		node.play_scripted_anim(anim, 0)
+
+
+func _on_npc_moved(npc_id: int) -> void:
+	if not _npcs.has(npc_id): return
+	var data: Dictionary = Npcs.get_npc(npc_id)
+	var node: Node3D = _npcs[npc_id]
+	var new_pos := Vector3(
+		float(data.get("x", 0.0)),
+		float(data.get("y", 0.0)),
+		float(data.get("z", 0.0)))
+	var yaw := float(data.get("yaw", 0.0))
+	# Snap on large gaps (teleport / chunk re-entry), interpolate otherwise.
+	if node.global_position.distance_to(new_pos) > 5.0:
+		node.teleport(new_pos, yaw)
+	else:
+		node.set_target(new_pos, yaw)

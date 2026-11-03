@@ -13,6 +13,7 @@ extends Node
 signal changed
 signal npc_added(npc_id: int)
 signal npc_removed(npc_id: int)
+signal npc_moved(npc_id: int)
 
 var _npcs: Dictionary = {}   # npc_id (int) -> entry dict from server
 
@@ -20,6 +21,7 @@ var _npcs: Dictionary = {}   # npc_id (int) -> entry dict from server
 func _ready() -> void:
 	Network.npc_joined.connect(_on_network_npc_joined)
 	Network.npc_left.connect(_on_network_npc_left)
+	Network.npc_moved.connect(_on_network_npc_moved)
 	Network.state_changed.connect(_on_network_state_changed)
 
 
@@ -75,3 +77,12 @@ func _on_network_state_changed(state: int) -> void:
 		for id in ids:
 			npc_removed.emit(int(id))
 		changed.emit()
+
+
+func _on_network_npc_moved(npc_id: int, x: float, y: float, z: float, yaw: float) -> void:
+	if not _npcs.has(npc_id): return
+	_npcs[npc_id]["x"] = x
+	_npcs[npc_id]["y"] = y
+	_npcs[npc_id]["z"] = z
+	_npcs[npc_id]["yaw"] = yaw
+	npc_moved.emit(npc_id)

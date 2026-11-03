@@ -40,6 +40,7 @@ signal npc_left(ids: Array)
 signal npc_render_info_received(slugs: Dictionary)
 signal npc_render_data_received(slug: String, hash: String, files: Dictionary)
 signal npc_render_updated_received(slugs: Dictionary)
+signal npc_moved(npc_id: int, x: float, y: float, z: float, yaw: float)
 
 const HOST := "127.0.0.1"
 const PORT := 9999
@@ -100,8 +101,11 @@ func disconnect_from_server_quiet() -> void:
 	_set_state(State.DISCONNECTED)
 
 
-func register_account(username: String, password: String) -> void:
-	send({"type": "register", "username": username, "password": password})
+func register_account(username: String, password: String, is_dev: bool = false) -> void:
+	var msg := {"type": "register", "username": username, "password": password}
+	if is_dev:
+		msg["is_dev"] = true
+	send(msg)
 
 
 func login(username: String, password: String, reason: String = "") -> void:
@@ -236,6 +240,18 @@ func _on_packet(_id: int, packet: PackedByteArray) -> void:
 				npc_left.emit(id_list)
 			else:
 				push_warning("npc_left missing 'ids' array")
+		
+		"npc_tick_positions":
+			var updates: Variant = msg.get("updates", [])
+			if typeof(updates) != TYPE_ARRAY: return
+			for u in updates:
+				if typeof(u) != TYPE_DICTIONARY: continue
+				npc_moved.emit(
+					int(u.get("npc_id", 0)),
+					float(u.get("x", 0.0)),
+					float(u.get("y", 0.0)),
+					float(u.get("z", 0.0)),
+					float(u.get("yaw", 0.0)))
 		
 		"npc_render_info_response":
 			var slugs_d: Variant = msg.get("slugs", {})
@@ -405,7 +421,7 @@ func debug_register_and_login() -> void:
 	_debug_password = _debug_random_password()
 	_debug_flow_active = true
 	print("[DEV] auto-registering as '%s'" % _debug_username)
-	register_account(_debug_username, _debug_password)
+	register_account(_debug_username, _debug_password, true)
 
 
 func _on_register_result_debug(ok: bool, _username: String, error: String) -> void:

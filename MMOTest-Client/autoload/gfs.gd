@@ -112,8 +112,10 @@ func _evaluate(node: Dictionary, locals: Dictionary, args: Dictionary, system: D
 	match kind:
 		"literal":
 			return node.get("value")
+		
 		"null":
 			return null
+		
 		"ref":
 			var ref_kind: String = node.get("ref_kind", "")
 			var name: String = node.get("name", "")
@@ -122,12 +124,14 @@ func _evaluate(node: Dictionary, locals: Dictionary, args: Dictionary, system: D
 				"arg":    return args.get(name)
 				"system": return system.get(name)
 			return null
+		
 		"dict":
 			var out := {}
 			var entries: Dictionary = node.get("entries", {})
 			for key in entries.keys():
 				out[str(key)] = _evaluate(entries[key], locals, args, system)
 			return out
+		
 		"action":
 			var action_args := {}
 			var raw_args: Dictionary = node.get("args", {})
@@ -146,10 +150,12 @@ func _evaluate(node: Dictionary, locals: Dictionary, args: Dictionary, system: D
 				"display": display_val,
 				"args": action_args,
 			}
+		
 		"is_empty":
 			var v := _evaluate(node.get("operand", {}), locals, args, system)
 			var is_emp := _is_empty(v)
 			return !is_emp if node.get("negated", false) else is_emp
+		
 		"array":
 			var items := []
 			for item in node.get("items", []):
@@ -164,6 +170,7 @@ func _evaluate(node: Dictionary, locals: Dictionary, args: Dictionary, system: D
 				else:
 					items.append(_evaluate(item, locals, args, system))
 			return items
+		
 		"call":
 			var fname: String = str(node.get("name", ""))
 			match fname:
@@ -175,12 +182,11 @@ func _evaluate(node: Dictionary, locals: Dictionary, args: Dictionary, system: D
 					if npc_entry.is_empty():
 						return false
 					return bool(npc_entry.get("attackable", true))
+				"PlayerIsAdmin":
+					return bool(Session.is_admin)
 				_:
 					push_warning("[Gfs] unknown client function: " + fname)
 					return null
-		
-		
-		
 		_:
 			return null
 

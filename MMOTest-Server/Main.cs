@@ -47,11 +47,23 @@ public partial class Main : Node
 	private readonly Dictionary<long, long> _peerByPlayerId = new();
 	private readonly Dictionary<long, PlayerPosition> _positions = new();
 
+	private double _npcVisRefreshAccum;
+	private const double NpcVisRefreshIntervalSeconds = 1.5;
+	private int _npcVisRefreshCounter;
+
+	// TEMP-DEV: scaffolding to exercise NPC movement before real AI lands.
+	// Delete this block (and DiagNpcWander export, DebugWanderTick, and the
+	// call to DebugWanderTick in _Process) when AI packages are wired in.
+	[ExportGroup("NPC")]
+	[Export] public int NpcViewChunkRadius { get; set; } = 10;
+	[Export] public bool DiagNpcWander { get; set; } = false;
+	private double _wanderAccumulator;
+	private const double WanderIntervalSeconds = 3.0;
+	private readonly Random _wanderRng = new();
+
 	private readonly Dictionary<long, ActiveNpc> _npcs = new();
 	private readonly Dictionary<long, HashSet<long>> _visibleNpcs = new();  // peerId -> npc ids
 	private readonly Dictionary<long, Vector2I> _lastPlayerChunk = new();   // peerId -> chunk
-
-	private const int NpcViewChunkRadius = 2;
 
 	// Per-peer remaining path. Front of the list is the next waypoint. Empty list
 	// (transient) means "arrived, about to be cleaned up in the same tick".
@@ -117,6 +129,10 @@ public partial class Main : Node
 			_dummyHash = PasswordHasher.Hash("dummy-password-for-timing");
 			GD.Print($"[Server] SQLite {_db.GetSqliteVersion()} ready at {dbPath}");
 
+			int respawned = _db.RespawnAllDeadNpcsSync();
+			if (respawned > 0)
+				GD.Print($"[Server] Auto-respawned {respawned} dead NPC(s) on startup");
+
 			if (EnsureWorldLoaded())
 			{
 				_lastBroadcastVersion = _worldVersion;
@@ -150,6 +166,7 @@ public partial class Main : Node
 			_gfsFns = new Gfs.FunctionRegistry();
 			Gfs.Utils.TilesUtils.Register(_gfsFns, this);
 			Gfs.Utils.PlayerUtils.Register(_gfsFns, this);
+			Gfs.Utils.CombatUtils.Register(_gfsFns, this);
 			_perTick = new Gfs.PerTickManager(_gfsFns);
 			_gfs.ScriptsChanged += OnGfsScriptsChanged;
 
@@ -229,6 +246,8 @@ public partial class Main : Node
 			Diag.Log("diag_npc", $"Render bundles updated, notified {_sessions.Count} client(s)");
 		}
 
+		DebugWanderTick(delta);   // TEMP-DEV
+
 		_gfs.Poll();
 	}
 
@@ -267,7 +286,47 @@ public partial class Main : Node
 			}
 		}
 
-		// 2. Per-tick scripts (ALWAYS run, even when no movement is in flight).
+		// 2. NPC movement
+		if (_npcs.Count > 0)
+		{
+			var npcUpdates = new List<object>();
+			foreach (var npc in _npcs.Values)
+			{
+				if (npc.IsDead) continue;
+				if (npc.Path.Count == 0) continue;
+
+				StepNpcMovement(npc);
+
+				if (MathF.Abs(npc.PosX - npc.LastSentX) > 0.001f ||
+					MathF.Abs(npc.PosY - npc.LastSentY) > 0.001f ||
+					MathF.Abs(npc.PosZ - npc.LastSentZ) > 0.001f ||
+					MathF.Abs(npc.Yaw  - npc.LastSentYaw) > 0.01f)
+				{
+					npc.LastSentX = npc.PosX;
+					npc.LastSentY = npc.PosY;
+					npc.LastSentZ = npc.PosZ;
+					npc.LastSentYaw = npc.Yaw;
+					npcUpdates.Add(new
+					{
+						npc_id = npc.Id,
+						x = npc.PosX,
+						y = npc.PosY,
+						z = npc.PosZ,
+						yaw = npc.Yaw
+					});
+				}
+			}
+			if (npcUpdates.Count > 0)
+			{
+				Broadcast(new { type = "npc_tick_positions", updates = npcUpdates },
+					channel: 1, mode : MultiplayerPeer.TransferModeEnum.UnreliableOrdered);
+			}
+		}
+
+		// 2b. NPC respawn sweep
+		CheckNpcRespawns();
+
+		// 3. Per-tick scripts (ALWAYS run, even when no movement is in flight).
 		var tickEffects = _perTick.TickAll();
 		if (tickEffects.Count > 0)
 		{
@@ -287,6 +346,10 @@ public partial class Main : Node
 		}
 
 		// NPC visibility: refresh only when a player crosses a chunk boundary.
+		_npcVisRefreshCounter++;
+		bool periodicNpcRefresh = _npcVisRefreshCounter >= 5;
+		if (periodicNpcRefresh) _npcVisRefreshCounter = 0;
+
 		foreach (long peerId in _sessions.Keys.ToList())
 		{
 			if (!_sessions.TryGetValue(peerId, out var sess)) continue;
@@ -297,11 +360,12 @@ public partial class Main : Node
 				ActiveNpc.FloorDiv(tx, _chunkSize),
 				ActiveNpc.FloorDiv(ty, _chunkSize));
 
-			if (!_lastPlayerChunk.TryGetValue(peerId, out var last) || last != chunk)
-			{
-				_lastPlayerChunk[peerId] = chunk;
+			bool playerChunkChanged =
+				!_lastPlayerChunk.TryGetValue(peerId, out var last) || last != chunk;
+			if (playerChunkChanged) _lastPlayerChunk[peerId] = chunk;
+
+			if (playerChunkChanged || periodicNpcRefresh)
 				RefreshNpcVisibility(peerId, tx, ty);
-			}
 		}
 	}
 
@@ -354,6 +418,54 @@ public partial class Main : Node
 		int tileY = (int)MathF.Round(z);
 		var tinfo = GetTileInfo(tileX, tileY);
 		return (new PlayerPosition(x, tinfo.Z, z, yaw), path.Count == 0);
+	}
+
+	private void StepNpcMovement(ActiveNpc npc)
+	{
+		float remaining = WalkSpeed * (float)TickIntervalSeconds;
+		float x = npc.PosX;
+		float z = npc.PosZ;
+		float yaw = npc.Yaw;
+
+		while (remaining > 0.0001f && npc.Path.Count > 0)
+		{
+			var target = npc.Path[0];
+			float dx = target.X - x;
+			float dz = target.Y - z;
+			float dist = MathF.Sqrt(dx * dx + dz * dz);
+
+			if (dist < 0.0001f)
+			{
+				npc.Path.RemoveAt(0);
+				continue;
+			}
+
+			yaw = MathF.Atan2(-dx, -dz);
+
+			if (dist <= remaining)
+			{
+				x = target.X;
+				z = target.Y;
+				remaining -= dist;
+				npc.Path.RemoveAt(0);
+			}
+			else
+			{
+				float ratio = remaining / dist;
+				x += dx * ratio;
+				z += dz * ratio;
+				remaining = 0;
+			}
+		}
+
+		int tileX = (int)MathF.Round(x);
+		int tileY = (int)MathF.Round(z);
+		var tinfo = GetTileInfo(tileX, tileY);
+
+		npc.PosX = x;
+		npc.PosY = tinfo.Z;
+		npc.PosZ = z;
+		npc.Yaw = yaw;
 	}
 
 	private TileInfo GetTileInfo(int x, int y)
@@ -480,7 +592,14 @@ public partial class Main : Node
 			switch (type)
 			{
 				case "hello":       await HandleHelloAsync(peerId); break;
-				case "register":    await HandleRegisterAsync(peerId, GetString(root, "username"), GetString(root, "password")); break;
+				case "register":
+				{
+					bool isDev = OS.IsDebugBuild()
+						&& root.TryGetProperty("is_dev", out var devEl)
+						&& devEl.ValueKind == JsonValueKind.True;
+					await HandleRegisterAsync(peerId, GetString(root, "username"), GetString(root, "password"), isDev);
+					break;
+				}
 				case "login":       await HandleLoginAsync(peerId, GetString(root, "username"), GetString(root, "password"), GetString(root, "reason")); break;
 				case "world_info":  HandleWorldInfo(peerId); break;
 				case "world_fetch": HandleWorldFetch(peerId); break;
@@ -834,7 +953,7 @@ public partial class Main : Node
 		Send(peerId, new { type = "hello_ok", sqlite_version = version, total_players = total });
 	}
 
-	private async Task HandleRegisterAsync(long peerId, string username, string password)
+	private async Task HandleRegisterAsync(long peerId, string username, string password, bool isDev = false)
 	{
 		if (!UsernameRegex.IsMatch(username))
 		{ SendError(peerId, "register_result", ErrorKeys.RegisterUsernameInvalid, new { min = MinUsernameLength, max = MaxUsernameLength }); return; }
@@ -846,31 +965,13 @@ public partial class Main : Node
 		try
 		{
 			string hash = await PasswordHasher.HashAsync(password);
-			var (created, playerId) = await _db.TryCreatePlayerAsync(username, hash);
-
-			if (!created)
-			{
-				SendError(peerId, "register_result", ErrorKeys.RegisterUsernameTaken);
-				return;
-			}
-
-			Diag.Log("diag_login", $"Registered: {username} (id {playerId})");
-
-			// Create the player's combat and skill rows.
-			bool statsOk = await _db.EnsurePlayerStatsAsync(playerId);
-			if (!statsOk)
-			{
-				// Account exists — don't fail the register, just log. The login path
-				// will self-heal on the next successful auth.
-				GD.PrintErr($"[Server] Stats init failed for {username} (id {playerId}); will retry on login");
-			}
-			GD.Print($"[Server] Sending register_result to peer {peerId} ({username})");
+			bool makeAdmin = isDev && OS.IsDebugBuild();
+			var (created, playerId) = await _db.TryCreatePlayerAsync(username, hash, makeAdmin);
+			if (!created) { SendError(peerId, "register_result", ErrorKeys.RegisterUsernameTaken); return; }
+			GD.Print($"[Server] Registered: {username} (id {playerId}{(makeAdmin ? ", dev admin" : "")})");
 			Send(peerId, new { type = "register_result", ok = true, username });
 		}
-		finally
-		{
-			_authInProgress.Remove(peerId);
-		}
+		finally { _authInProgress.Remove(peerId); }
 	}
 
 	private async Task HandleLoginAsync(long peerId, string username, string password, string reason = "")
@@ -1259,39 +1360,17 @@ public partial class Main : Node
 
 	internal List<Vector2I> PathfindToNearest(long selfPlayerId, int goalX, int goalY)
 	{
-		if (!_positions.TryGetValue(selfPlayerId, out var pos))
-		{
-			//GD.Print($"[Server] PathfindToNearest: no position for player {selfPlayerId}");
-			return new();
-		}
-		int sx = (int)MathF.Round(pos.X);
-		int sy = (int)MathF.Round(pos.Z);
+		if (!_positions.TryGetValue(selfPlayerId, out var pos)) return new();
+		return PathfindBetween((int)MathF.Round(pos.X), (int)MathF.Round(pos.Z), goalX, goalY);
+	}
 
-		if (!TryGetTileInfo(sx, sy, out _))
-		{
-			//GD.Print($"[Server] PathfindToNearest: self tile ({sx},{sy}) not in _tiles (player {selfPlayerId})");
-			return new();
-		}
-
-		// ---- DIAG: world state at the moment of the click ----
-		//GD.Print($"[Server] PathfindToNearest: start=({sx},{sy}) goal=({goalX},{goalY}) _tiles.Count={_tiles.Count}");
-		int walkableOrth = 0;
-		foreach (var d in new[] { new Vector2I(1,0), new Vector2I(-1,0), new Vector2I(0,1), new Vector2I(0,-1) })
-		{
-			var n = new Vector2I(sx + d.X, sy + d.Y);
-			if (TryGetTileInfo(n.X, n.Y, out var ninfo))
-			{
-				if (ninfo.Walkable) walkableOrth++;
-				//else GD.Print($"[Server]   neighbor ({n.X},{n.Y}) present but NOT walkable");
-			}
-			//else GD.Print($"[Server]   neighbor ({n.X},{n.Y}) NOT in _tiles");
-		}
-		//GD.Print($"[Server]   {walkableOrth}/4 orthogonal neighbors walkable");
-		// -------------------------------------------------------
+	internal List<Vector2I> PathfindBetween(int startX, int startY, int goalX, int goalY)
+	{
+		if (!TryGetTileInfo(startX, startY, out _)) return new();
 
 		var queue = new Queue<Vector2I>();
 		var cameFrom = new Dictionary<Vector2I, Vector2I?>();
-		var start = new Vector2I(sx, sy);
+		var start = new Vector2I(startX, startY);
 		var goal = new Vector2I(goalX, goalY);
 		queue.Enqueue(start);
 		cameFrom[start] = null;
@@ -1307,7 +1386,7 @@ public partial class Main : Node
 		{
 			if (++expansions > MAX_EXPANSIONS)
 			{
-				Diag.Error("diag_pathfinding", $"hit {MAX_EXPANSIONS} expansions; using best-so-far.");
+				Diag.Error("diag_pathfinding", $"PathfindBetween hit {MAX_EXPANSIONS} expansions; using best-so-far");
 				break;
 			}
 			var cur = queue.Dequeue();
@@ -1330,12 +1409,7 @@ public partial class Main : Node
 			}
 		}
 
-		if (best == null)
-		{
-			//GD.Print($"[Server] PathfindToNearest: BFS exhausted, best=null");
-			return new();
-		}
-
+		if (best == null) return new();
 		var path = new List<Vector2I>();
 		Vector2I? node = best;
 		while (node.HasValue && node.Value != start)
@@ -1343,7 +1417,6 @@ public partial class Main : Node
 			path.Insert(0, node.Value);
 			node = cameFrom[node.Value];
 		}
-		//GD.Print($"[Server] PathfindToNearest: expansions={expansions} bestDist={bestDist} route={path.Count}");
 		return path;
 	}
 
@@ -1369,9 +1442,10 @@ public partial class Main : Node
 		id = npc.Id,
 		name = npc.Name,
 		display = npc.Display,
-		x = npc.TileX,
-		y = npc.TileZ,
-		z = npc.TileY,
+		x = npc.PosX,
+		y = npc.PosY,
+		z = npc.PosZ,
+		yaw = npc.Yaw,
 		anim = npc.PlayingAnimation,
 		attackable = npc.Attackable,
 		final_level = npc.FinalLevel,
@@ -1450,6 +1524,115 @@ public partial class Main : Node
 				files = filesDict
 			});
 			Diag.Log("diag_npc", $"Sent render bundle '{slug}' to peer {peerId} ({bundle.Files.Count} files)");
+		}
+	}
+
+	/// <summary>
+	/// Movement entry point. Any caller (AI package, script, debug) asks an NPC
+	/// to walk to a tile. Computes a path via the shared BFS. Idempotent if the
+	/// NPC is already moving toward that exact tile.
+	/// </summary>
+	internal void MoveNpcTo(long npcId, int tileX, int tileY)
+	{
+		if (!_npcs.TryGetValue(npcId, out var npc)) return;
+		if (npc.IsDead) return;
+		if (!IsValidTile(tileX, tileY)) return;
+
+		int curX = (int)MathF.Round(npc.PosX);
+		int curY = (int)MathF.Round(npc.PosZ);
+		if (curX == tileX && curY == tileY) return;
+
+		var path = PathfindBetween(curX, curY, tileX, tileY);
+		if (path.Count == 0) return;
+		npc.Path = path;
+	}
+
+	// ====================================================================
+	// TEMP-DEV: debug NPC wander. Delete when real AI packages are wired in.
+	// Set DiagNpcWander=true in the scene inspector to enable.
+	// ====================================================================
+	private void DebugWanderTick(double delta)
+	{
+		if (!DiagNpcWander) return;
+		_wanderAccumulator += delta;
+		if (_wanderAccumulator < WanderIntervalSeconds) return;
+		_wanderAccumulator = 0;
+
+		foreach (var npc in _npcs.Values)
+		{
+			if (npc.IsDead) continue;
+			if (npc.Path.Count > 0) continue;
+			if (npc.AiPackageState != "wander") continue;
+			for (int attempt = 0; attempt < 8; attempt++)
+			{
+				int dx = _wanderRng.Next(-3, 4);
+				int dy = _wanderRng.Next(-3, 4);
+				if (dx == 0 && dy == 0) continue;
+				int tx = npc.TileX + dx;
+				int ty = npc.TileY + dy;
+				if (IsValidTile(tx, ty))
+				{
+					MoveNpcTo(npc.Id, tx, ty);
+					break;
+				}
+			}
+		}
+	}
+
+	// ---------- NPC death / respawn ----------
+	internal void KillNpc(long npcId)
+	{
+		if (!_npcs.TryGetValue(npcId, out var npc)) return;
+		if (npc.IsDead) return;
+
+		npc.IsDead = true;
+		npc.DiedAtMs = (long)Time.GetTicksMsec();
+		npc.Path.Clear();
+		_ = _db.MarkNpcDeadAsync(npc.Id);
+		Diag.Log("diag_npc", $"NPC {npc.Name} (id {npc.Id}) killed; respawns in {npc.SpawnTimerSeconds}s");
+		NotifyNpcVisibilityChanged();
+	}
+
+	private void ReviveNpc(ActiveNpc npc)
+	{
+		npc.IsDead = false;
+		npc.DiedAtMs = 0;
+		npc.ResetPositionToHome();
+		npc.Path.Clear();
+		_ = _db.ReviveNpcAsync(npc.Id);
+		Diag.Log("diag_npc", $"NPC {npc.Name} (id {npc.Id}) respawned at home tile");
+	}
+
+	private void CheckNpcRespawns()
+	{
+		long now = (long)Time.GetTicksMsec();
+		bool changed = false;
+		foreach (var npc in _npcs.Values)
+		{
+			if (!npc.IsDead) continue;
+			if (npc.DiedAtMs <= 0) continue;
+			if (now - npc.DiedAtMs >= npc.SpawnTimerSeconds * 1000L)
+			{
+				ReviveNpc(npc);
+				changed = true;
+			}
+		}
+		if (changed) NotifyNpcVisibilityChanged();
+	}
+
+	/// <summary>
+	/// Re-run NPC visibility diff against all logged-in players. Called after
+	/// death, revive, or any state change that flips IsDead.
+	/// </summary>
+	private void NotifyNpcVisibilityChanged()
+	{
+		foreach (long peerId in _sessions.Keys.ToList())
+		{
+			if (!_sessions.TryGetValue(peerId, out var sess)) continue;
+			if (!_positions.TryGetValue(sess.PlayerId, out var pos)) continue;
+			int tx = (int)MathF.Round(pos.X);
+			int ty = (int)MathF.Round(pos.Z);
+			RefreshNpcVisibility(peerId, tx, ty);
 		}
 	}
 }

@@ -360,11 +360,13 @@ public class Database
         return (long)cmd.ExecuteScalar();
     });
 
-    public Task<(bool Created, long Id)> TryCreatePlayerAsync(string username, string passwordHash) => Task.Run(() =>
+    public Task<(bool Created, long Id)> TryCreatePlayerAsync(string username, string passwordHash, bool isAdmin = false) => Task.Run(() =>
     {
         using var conn = Open();
         using var cmd = conn.CreateCommand();
-        cmd.CommandText = @"INSERT INTO players (username, password_hash) VALUES ($u, $h) RETURNING id;";
+        cmd.CommandText = isAdmin
+            ? "INSERT INTO players (username, password_hash, is_admin) VALUES ($u, $h, 1) RETURNING id;"
+            : "INSERT INTO players (username, password_hash) VALUES ($u, $h) RETURNING id;";
         cmd.Parameters.AddWithValue("$u", username);
         cmd.Parameters.AddWithValue("$h", passwordHash);
         try { return (true, (long)cmd.ExecuteScalar()); }
@@ -450,14 +452,14 @@ public class Database
             SELECT n.id, n.name, n.display, n.tile_x, n.tile_y, n.tile_z,
                 n.playing_animation, n.is_dead, n.attackable,
                 n.combat_levels_id, COALESCE(c.final_level, 1),
-                n.render_slug
+                n.render_slug, n.ai_package_state, n.spawn_timer
             FROM npcs n
             LEFT JOIN combat_levels c ON n.combat_levels_id = c.id;";
         using var reader = cmd.ExecuteReader();
         var list = new List<ActiveNpc>();
         while (reader.Read())
         {
-            list.Add(new ActiveNpc
+            var npc = new ActiveNpc
             {
                 Id = reader.GetInt64(0),
                 Name = reader.GetString(1),
@@ -471,8 +473,107 @@ public class Database
                 CombatLevelsId = reader.IsDBNull(9) ? null : reader.GetInt64(9),
                 FinalLevel = reader.GetInt32(10),
                 RenderSlug = reader.IsDBNull(11) ? "" : reader.GetString(11),
-            });
+                AiPackageState = reader.IsDBNull(12) ? "idle" : reader.GetString(12),
+                SpawnTimerSeconds = (int)reader.GetInt64(13),
+            };
+            npc.ResetPositionToHome();
+            list.Add(npc);
         }
         return list;
     }
+
+    /// <summary>
+    /// On server startup: any NPC flagged is_dead or is_dying from a previous
+    /// session is brought back to life. Full HP, no status effects, no died_at.
+    /// Chunk activation re-evaluates normally afterwards.
+    /// </summary>
+    public int RespawnAllDeadNpcsSync()
+    {
+        using var conn = Open();
+        using var tx = conn.BeginTransaction();
+
+        using (var cmd = conn.CreateCommand())
+        {
+            cmd.Transaction = tx;
+            cmd.CommandText = @"
+                UPDATE combat_levels SET
+                    hitpoints = max_hitpoints,
+                    accuracy  = max_accuracy,
+                    strength  = max_strength,
+                    defence   = max_defence,
+                    ether     = max_ether,
+                    poisoned  = 0, burning = 0, frozen = 0
+                WHERE id IN (
+                    SELECT combat_levels_id FROM npcs
+                    WHERE (is_dead = 1 OR is_dying = 1) AND combat_levels_id IS NOT NULL
+                );";
+            cmd.ExecuteNonQuery();
+        }
+
+        int count;
+        using (var cmd = conn.CreateCommand())
+        {
+            cmd.Transaction = tx;
+            cmd.CommandText = @"
+                UPDATE npcs SET is_dead = 0, is_dying = 0, died_at = NULL
+                WHERE is_dead = 1 OR is_dying = 1;";
+            count = cmd.ExecuteNonQuery();
+        }
+
+        tx.Commit();
+        return count;
+    }
+
+
+    public Task MarkNpcDeadAsync(long npcId) => Task.Run(() =>
+    {
+        using var conn = Open();
+        using var tx = conn.BeginTransaction();
+        using (var cmd = conn.CreateCommand())
+        {
+            cmd.Transaction = tx;
+            cmd.CommandText = @"UPDATE npcs SET is_dead = 1, is_dying = 0, died_at = datetime('now') WHERE id = $id;";
+            cmd.Parameters.AddWithValue("$id", npcId);
+            cmd.ExecuteNonQuery();
+        }
+        using (var cmd = conn.CreateCommand())
+        {
+            cmd.Transaction = tx;
+            cmd.CommandText = @"
+                UPDATE combat_levels SET hitpoints = 0, poisoned = 0, burning = 0, frozen = 0
+                WHERE id = (SELECT combat_levels_id FROM npcs WHERE id = $id);";
+            cmd.Parameters.AddWithValue("$id", npcId);
+            cmd.ExecuteNonQuery();
+        }
+        tx.Commit();
+    });
+
+    public Task ReviveNpcAsync(long npcId) => Task.Run(() =>
+    {
+        using var conn = Open();
+        using var tx = conn.BeginTransaction();
+        using (var cmd = conn.CreateCommand())
+        {
+            cmd.Transaction = tx;
+            cmd.CommandText = @"UPDATE npcs SET is_dead = 0, is_dying = 0, died_at = NULL WHERE id = $id;";
+            cmd.Parameters.AddWithValue("$id", npcId);
+            cmd.ExecuteNonQuery();
+        }
+        using (var cmd = conn.CreateCommand())
+        {
+            cmd.Transaction = tx;
+            cmd.CommandText = @"
+                UPDATE combat_levels SET
+                    hitpoints = max_hitpoints,
+                    accuracy = max_accuracy,
+                    strength = max_strength,
+                    defence = max_defence,
+                    ether = max_ether,
+                    poisoned = 0, burning = 0, frozen = 0
+                WHERE id = (SELECT combat_levels_id FROM npcs WHERE id = $id);";
+            cmd.Parameters.AddWithValue("$id", npcId);
+            cmd.ExecuteNonQuery();
+        }
+        tx.Commit();
+    });
 }
