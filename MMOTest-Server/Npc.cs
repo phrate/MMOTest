@@ -6,32 +6,45 @@ namespace MMOTest.Server;
 
 public sealed class ActiveNpc
 {
-    // Immutable at runtime — set from DB at load.
     public long Id { get; init; }
     public string Name { get; init; } = "";
-    public string Display { get; init; } = "";
-    public int TileX { get; init; }   // home tile (spawn point)
+    public int TileX { get; init; }
     public int TileY { get; init; }
     public int TileZ { get; init; }
     public string PlayingAnimation { get; init; } = "";
-    public bool Attackable { get; init; } = true;
     public long? CombatLevelsId { get; init; }
     public int FinalLevel { get; init; } = 1;
     public string RenderSlug { get; init; } = "";
-    public string AiPackageState { get; init; } = "idle";
 
-    // Runtime mutable — set on load, updated by movement.
-    public bool IsDead { get; set; }
+    // Editable at runtime via admin NPC editor.
+    public string Display { get; set; } = "";
+    public bool Attackable { get; set; } = true;
+    public string AiPackageState { get; set; } = "idle";
+    public string AiActionState { get; set; } = "none";
+    public string LootTableName { get; set; } = "common_loot_1";
     public int SpawnTimerSeconds { get; set; } = 3;
-    public long DiedAtMs { get; set; } = 0;
+    public int Hitpoints { get; set; } = 3;
+    public int MaxHitpoints { get; set; } = 3;
+    public int Accuracy { get; set; } = 1;
+    public int Strength { get; set; } = 1;
+    public int Defence { get; set; } = 1;
+    public int MeleeBonus { get; set; } = 0;
+    public int MeleeDefense { get; set; } = 0;
+    public int AttackSpeedTicks { get; set; } = 10;   // 3.0s
+    public bool Aggressive { get; set; } = false;
+    public int AggroRangeTiles { get; set; } = 8;
+
+    // Runtime mutable.
+    public bool IsDead { get; set; }
+    public long DiedAtMs { get; set; }
+    public long HealAccumulatorTicks { get; set; } = 0;
     public float PosX { get; set; }
     public float PosY { get; set; }
     public float PosZ { get; set; }
     public float Yaw { get; set; }
     public List<Vector2I> Path { get; set; } = new();
+    public bool ReturningHome { get; set; } = false;
 
-    // Broadcast tracking — diff against these to decide whether to send an
-    // update this tick. NaN means "never sent", forcing the first send.
     public float LastSentX { get; set; } = float.NaN;
     public float LastSentY { get; set; } = float.NaN;
     public float LastSentZ { get; set; } = float.NaN;
@@ -49,7 +62,6 @@ public sealed class ActiveNpc
         return q;
     }
 
-    /// <summary>Initialize runtime position from the home tile. Called once after load.</summary>
     public void ResetPositionToHome()
     {
         PosX = TileX;

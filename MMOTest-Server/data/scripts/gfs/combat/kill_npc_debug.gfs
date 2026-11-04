@@ -4,4 +4,4 @@
 npc_id = $"npc_id"
 
 KillNpc(npc_id)
-chat local "Killed NPC `npc_id`."
+chat local "[Admin] Killed NPC `npc_id`."

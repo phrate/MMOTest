@@ -10,5 +10,6 @@ actions = [
         attack: "combat/combat_start_npc.gfs", "Attack `npc_display_name` (`npc_combat_final_level`)", {"npc_id"=npc_id}
     examine: "examine/examine_npc.gfs", "Examine", {"npc_id"=npc_id}
     if PlayerIsAdmin():
-        diag_kill: "combat/kill_npc_debug.gfs", "[Diag] Kill", {"npc_id"=npc_id}
+        diag_edit: "combat/npc_editor_diag.gfs", "[Admin] Edit", {"npc_id"=npc_id}
+        diag_kill: "combat/kill_npc_debug.gfs", "[Admin] Kill", {"npc_id"=npc_id}
 ]

@@ -5,6 +5,8 @@ signal changed
 signal player_added(player_id: int)
 signal player_removed(player_id: int)
 signal player_moved(player_id: int)
+signal player_hp_changed(player_id: int)
+signal player_combat_state_changed(player_id: int)
 
 var _players: Dictionary = {}
 var _pending_positions: Dictionary = {}
@@ -16,6 +18,8 @@ func _ready() -> void:
 	Network.player_left.connect(_on_player_left)
 	Network.player_moved.connect(_on_network_player_moved)
 	Network.state_changed.connect(_on_state_changed)
+	Network.player_hp_updated.connect(_on_network_player_hp_updated)
+	Network.player_combat_state.connect(_on_network_player_combat_state)
 
 
 func all() -> Array:
@@ -103,6 +107,22 @@ func _add(p: Dictionary) -> bool:
 		"is_admin": bool(p.get("is_admin", false)),
 		"position": pos,
 		"yaw": yaw,
+		"hitpoints": int(p.get("hitpoints", 10)),
+		"max_hitpoints": int(p.get("max_hitpoints", 10)),
+		"in_combat": false,
 	}
 	player_added.emit(pid)
 	return true
+
+
+func _on_network_player_hp_updated(player_id: int, hp: int, maxhp: int) -> void:
+	if not _players.has(player_id): return
+	_players[player_id]["hitpoints"] = hp
+	_players[player_id]["max_hitpoints"] = maxhp
+	player_hp_changed.emit(player_id)
+
+
+func _on_network_player_combat_state(player_id: int, in_c: bool, _npc_id: int) -> void:
+	if not _players.has(player_id): return
+	_players[player_id]["in_combat"] = in_c
+	player_combat_state_changed.emit(player_id)

@@ -1,11 +1,3 @@
-res://Main.tscn
+res://editor/NpcEditorBridge.cs
 res://Main.cs
 res://editor/WorldEditor.cs
-res://editor/world_editor.tscn
-res://editor/NpcEditorBridge.cs
-res://editor/npc_editor_panel.tscn
-res://editor/npc_editor_panel.gd
-res://editor/npc_editor.tscn
-res://editor/npc_editor.gd
-res://npc_render/player/hitbox.json
-res://npc_render/player/player.tscn

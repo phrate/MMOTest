@@ -35,6 +35,8 @@ func _ready() -> void:
 
 
 func _input(event: InputEvent) -> void:
+	if _is_modal_open():
+		return
 	# Wheel over the chat box: consume at _input so the camera's _unhandled_input
 	# never sees it. Manual scroll of the log below.
 	if event is InputEventMouseButton and event.pressed \
@@ -151,3 +153,10 @@ func _append_line(line: String) -> void:
 
 func _escape(s: String) -> String:
 	return s.replace("[", "[lb]")
+
+
+func _is_modal_open() -> bool:
+	for m in get_tree().get_nodes_in_group("modal_blockers"):
+		if m is CanvasItem and (m as CanvasItem).visible:
+			return true
+	return false

@@ -7,6 +7,10 @@ var player_id := 0
 var username := ""
 var login_count := 0
 var is_admin := false
+var current_hp: int = 10
+var max_hp: int = 10
+var in_combat: bool = false
+var combat_target_npc_id: int = 0
 var spawn_position := Vector3.ZERO
 var spawn_yaw := 0.0
 
@@ -23,6 +27,8 @@ func _ready() -> void:
 	Network.state_changed.connect(_on_state_changed)
 	Network.world_updated.connect(_on_world_updated)
 	Network.server_shutdown.connect(_on_server_shutdown)
+	Network.player_hp_updated.connect(_on_network_player_hp_updated)
+	Network.player_combat_state.connect(_on_network_player_combat_state)
 
 
 func cache_password(password: String) -> void:
@@ -41,6 +47,8 @@ func _on_login_result(ok: bool, data: Dictionary) -> void:
 	username = data["username"]
 	login_count = int(data["login_count"])
 	is_admin = data.get("is_admin", false)
+	current_hp = int(data.get("hitpoints", 10))
+	max_hp = int(data.get("max_hitpoints", 10))
 	if data.has("spawn"):
 		var s: Dictionary = data["spawn"]
 		spawn_position = Vector3(float(s["x"]), float(s["y"]), float(s["z"]))
@@ -208,3 +216,21 @@ func _reset_state_for_hotfix() -> void:
 	spawn_position = Vector3.ZERO
 	spawn_yaw = 0.0
 	changed.emit()
+
+
+func _on_network_player_hp_updated(player_id: int, hp: int, maxhp: int) -> void:
+	if player_id != player_id_self(): return
+	current_hp = hp
+	max_hp = maxhp
+	changed.emit()
+
+
+func _on_network_player_combat_state(player_id: int, in_c: bool, npc_id: int) -> void:
+	if player_id != player_id_self(): return
+	in_combat = in_c
+	combat_target_npc_id = npc_id if in_c else 0
+	changed.emit()
+
+
+func player_id_self() -> int:
+	return player_id

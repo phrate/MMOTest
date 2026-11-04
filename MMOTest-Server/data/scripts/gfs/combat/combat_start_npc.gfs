@@ -3,4 +3,4 @@
 
 npc_id = $"npc_id"
 
-chat local "Combat with NPC `npc_id` not implemented yet."
+EngageNpc(npc_id)

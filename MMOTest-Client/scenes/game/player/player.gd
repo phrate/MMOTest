@@ -1,40 +1,60 @@
 extends CharacterBody3D
-## Local player. Loads the "player" render scene + hitbox from NpcRender,
-## same pipeline as NPCs, so visual and hitbox are swappable via the server.
+## Local player. Delegates all visual state to the EntityVisuals child.
 
 signal walk_rejected(tile: Vector2i, reason: String)
 
 const INVALID_TILE := Vector2i(0x7FFFFFFF, 0x7FFFFFFF)
-const CHAT_BUBBLE_SECONDS := 5.0
-const MOVING_THRESHOLD_SQ := 0.0001
 const RENDER_SLUG := "player"
+const ORB_SHADER := """
+shader_type canvas_item;
+
+uniform float fill : hint_range(0.0, 1.0) = 1.0;
+uniform vec4 fill_color : source_color = vec4(0.15, 0.85, 0.15, 1.0);
+uniform vec4 bg_color : source_color = vec4(0.30, 0.03, 0.03, 1.0);
+uniform vec4 outline_color : source_color = vec4(0.05, 0.03, 0.02, 1.0);
+
+void fragment() {
+	vec2 c = UV - vec2(0.5);
+	float d = length(c) * 2.0;
+	if (d > 1.0) {
+		discard;
+	}
+	float level = 1.0 - fill;
+	vec3 col = (UV.y > level) ? fill_color.rgb : bg_color.rgb;
+	if (d > 0.90) {
+		col = outline_color.rgb;
+	}
+	COLOR = vec4(col, 1.0);
+}
+"""
 
 @export var move_speed := 2.0
 @export var camera: Camera3D
 
 var _target_pos: Vector3
 var _target_yaw: float = 0.0
-var _pending_path_id: int = -1
-var _last_request_id: int = -1
-var _last_path_length: int = 0
-var _chat_hide_at_ms: int = 0
-var _current_anim: String = ""
-var _scripted_anim: String = ""
-var _scripted_end_ms: int = 0
-var _last_frame_pos := Vector3.ZERO
-var _frame_vel := 0.0
+var _pending_path_id := -1
+var _last_request_id := -1
+var _last_path_length := 0
 
 var _render_scene_instance: Node3D = null
-var _render_anim_player: AnimationPlayer = null
-var _hitbox_is_fallback: bool = false
+var _hitbox_is_fallback := false
+var _self_hp_orb: Control
+var _self_hp_orb_material: ShaderMaterial
+var _self_hp_label: Label
 
 var _context_menu: PopupMenu = null
-var _context_target_id: int = 0
+var _context_target_id := 0
 var _context_actions: Array = []
 
-@onready var name_label: Label3D = get_node_or_null("NameLabel") as Label3D
-@onready var chat_label: Label3D = _resolve_chat_label()
-@onready var anim_player: AnimationPlayer = _ensure_anim_player()
+@onready var visuals: EntityVisuals = _make_visuals()
+
+
+func _make_visuals() -> EntityVisuals:
+	var v := EntityVisuals.new()
+	v.name = "Visuals"
+	add_child(v)
+	return v
 
 
 func _ready() -> void:
@@ -42,20 +62,48 @@ func _ready() -> void:
 	if camera == null:
 		camera = get_node_or_null("Camera3D")
 	global_position = Session.spawn_position
-	global_position.y = float(World.get_z(roundi(global_position.x), roundi(global_position.z)))
 	rotation.y = Session.spawn_yaw
 	_target_pos = Session.spawn_position
 	_target_yaw = Session.spawn_yaw
-	_last_frame_pos = global_position
 	if camera != null and camera.has_method("snap_now"):
 		camera.snap_now()
 	set_username(Session.username)
-	Session.changed.connect(func() -> void: set_username(Session.username))
+	Session.changed.connect(_on_session_changed)
 	Network.self_position_updated.connect(_on_self_position_updated)
+	Network.player_respawned.connect(_on_player_respawned)
 	Pathfinder.path_found.connect(_on_path_found)
 	Pathfinder.path_failed.connect(_on_path_failed)
 	NpcRender.slug_ready.connect(_on_render_slug_ready)
 	_apply_render_scene()
+	_build_self_hp_orb()
+	_on_session_changed()
+
+
+# ---------- Public API (delegates) ----------
+
+func set_username(u: String) -> void:
+	visuals.set_name_text(u)
+
+func show_chat_message(text: String) -> void:
+	visuals.show_chat_message(text)
+
+func update_hp(hp: int, max_hp: int) -> void:
+	visuals.update_hp(hp, max_hp)
+
+func bump_hp_bar() -> void:
+	visuals.bump_hp_bar()
+
+func show_damage(amount: int) -> void:
+	visuals.show_damage(amount)
+
+func play_scripted_anim(anim: String, duration_ms: int) -> void:
+	visuals.play_scripted_anim(anim, duration_ms)
+
+func set_in_combat(in_c: bool) -> void:
+	visuals.set_in_combat(in_c)
+
+func get_entity_type() -> String:
+	return "player"
 
 
 # ---------- Render scene ----------
@@ -70,7 +118,6 @@ func _clear_render_scene() -> void:
 	if _render_scene_instance != null and is_instance_valid(_render_scene_instance):
 		_render_scene_instance.queue_free()
 		_render_scene_instance = null
-	_render_anim_player = null
 	var hb := get_node_or_null("Hitbox")
 	if hb != null:
 		remove_child(hb)
@@ -80,6 +127,7 @@ func _clear_render_scene() -> void:
 func _apply_render_scene() -> void:
 	var default_mesh := get_node_or_null("Mesh") as Node3D
 	var scene := NpcRender.get_scene(RENDER_SLUG)
+	var ap: AnimationPlayer = null
 
 	if scene != null:
 		if default_mesh != null: default_mesh.visible = false
@@ -88,26 +136,30 @@ func _apply_render_scene() -> void:
 			inst.name = "RenderScene"
 			add_child(inst)
 			_render_scene_instance = inst
-			_render_anim_player = _find_anim_player(inst)
-			if _render_anim_player == null:
-				var ap := AnimationPlayer.new()
+			ap = _find_anim_player(inst)
+			if ap == null:
+				ap = AnimationPlayer.new()
 				ap.name = "AnimationPlayer"
 				inst.add_child(ap)
-				_create_placeholder_anims(ap)
-				_render_anim_player = ap
-			else:
-				_create_placeholder_anims(_render_anim_player)
+			_ensure_placeholder_anims(ap)
 		else:
 			inst.queue_free()
 			if default_mesh != null: default_mesh.visible = true
 	else:
 		if default_mesh != null: default_mesh.visible = true
+		ap = get_node_or_null("AnimationPlayer") as AnimationPlayer
+		if ap == null:
+			ap = AnimationPlayer.new()
+			ap.name = "AnimationPlayer"
+			add_child(ap)
+		_ensure_placeholder_anims(ap)
+
+	visuals.set_anim_player(ap)
 
 	var editor_hb := NpcRender.get_hitbox(RENDER_SLUG)
 	if not editor_hb.is_empty():
 		_attach_editor_hitbox(editor_hb)
 		return
-
 	if _render_scene_instance != null:
 		var bodies := _find_all_collision_objects(_render_scene_instance)
 		if not bodies.is_empty():
@@ -116,7 +168,6 @@ func _apply_render_scene() -> void:
 				b.collision_mask = 0
 			_hitbox_is_fallback = false
 			return
-
 	_ensure_hitbox()
 
 
@@ -151,79 +202,145 @@ func _ensure_hitbox() -> void:
 	_hitbox_is_fallback = true
 
 
-# ---------- Camera / entity API ----------
-
-func get_entity_type() -> String:
-	return "player"
-
-
-func _resolve_chat_label() -> Label3D:
-	var existing := get_node_or_null("ChatLabel") as Label3D
-	if existing != null:
-		existing.visible = false
-		return existing
-	var new_label := Label3D.new()
-	new_label.name = "ChatLabel"
-	new_label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
-	new_label.no_depth_test = true
-	new_label.font_size = 24
-	new_label.pixel_size = 0.005
-	new_label.outline_modulate = Color(0, 0, 0, 1)
-	new_label.outline_size = 4
-	new_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	new_label.width = 500
-	new_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	new_label.position = Vector3(0, 1.9, 0)
-	new_label.visible = false
-	add_child(new_label)
-	return new_label
+func _find_anim_player(node: Node) -> AnimationPlayer:
+	if node is AnimationPlayer: return node
+	for c in node.get_children():
+		var ap := _find_anim_player(c)
+		if ap != null: return ap
+	return null
 
 
-func set_username(username: String) -> void:
-	if name_label == null: return
-	name_label.text = username
-	name_label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
-	name_label.no_depth_test = true
-	if name_label.position.y < 0.5:
-		name_label.position.y = 2.2
+func _ensure_placeholder_anims(ap: AnimationPlayer) -> void:
+	var lib := AnimationLibrary.new()
+	if not ap.has_animation("idle"):
+		var idle := Animation.new()
+		idle.length = 1.0
+		idle.loop_mode = Animation.LOOP_LINEAR
+		lib.add_animation("idle", idle)
+	if not ap.has_animation("walk"):
+		var walk := Animation.new()
+		walk.length = 0.4
+		walk.loop_mode = Animation.LOOP_LINEAR
+		var track := walk.add_track(Animation.TYPE_VALUE)
+		walk.track_set_path(track, "Mesh:position")
+		walk.track_insert_key(track, 0.0, Vector3(0, 0.9, 0))
+		walk.track_insert_key(track, 0.2, Vector3(0, 1.0, 0))
+		walk.track_insert_key(track, 0.4, Vector3(0, 0.9, 0))
+		lib.add_animation("walk", walk)
+	if lib.get_animation_list().size() > 0:
+		ap.add_animation_library("", lib)
 
 
-func show_chat_message(text: String) -> void:
-	if chat_label == null: return
-	chat_label.text = text
-	chat_label.visible = true
-	_chat_hide_at_ms = Time.get_ticks_msec() + int(CHAT_BUBBLE_SECONDS * 1000.0)
+# ---------- Self HP bar ----------
+
+func _build_self_hp_orb() -> void:
+	var cl := CanvasLayer.new()
+	cl.name = "SelfHpOrbLayer"
+	cl.layer = 10
+	add_child(cl)
+
+	_self_hp_orb = Control.new()
+	_self_hp_orb.name = "SelfHpOrb"
+	_self_hp_orb.anchor_left = 1.0
+	_self_hp_orb.anchor_right = 1.0
+	_self_hp_orb.anchor_top = 0.0
+	_self_hp_orb.anchor_bottom = 0.0
+	_self_hp_orb.offset_left = -160.0
+	_self_hp_orb.offset_right = -20.0
+	_self_hp_orb.offset_top = 20.0
+	_self_hp_orb.offset_bottom = 160.0
+	_self_hp_orb.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	cl.add_child(_self_hp_orb)
+
+	var rect := ColorRect.new()
+	rect.name = "OrbFill"
+	rect.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	rect.mouse_filter = Control.MOUSE_FILTER_IGNORE
+
+	var shader := Shader.new()
+	shader.code = ORB_SHADER
+	var mat := ShaderMaterial.new()
+	mat.shader = shader
+	mat.set_shader_parameter("fill_color", HealthBarColors.SELF_FILL)
+	mat.set_shader_parameter("bg_color", HealthBarColors.SELF_BG)
+	mat.set_shader_parameter("outline_color", Color(0.05, 0.03, 0.02, 1.0))
+	mat.set_shader_parameter("fill", 1.0)
+	rect.material = mat
+	_self_hp_orb.add_child(rect)
+	_self_hp_orb_material = mat
+
+	_self_hp_label = Label.new()
+	_self_hp_label.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	_self_hp_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_self_hp_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	_self_hp_label.modulate = HealthBarColors.TARGET_TEXT
+	_self_hp_label.add_theme_font_size_override("font_size", 18)
+	_self_hp_label.add_theme_constant_override("outline_size", 5)
+	_self_hp_label.add_theme_color_override("font_outline_color", Color(0, 0, 0, 1))
+	_self_hp_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_self_hp_orb.add_child(_self_hp_label)
 
 
-# ---------- Input ----------
+func _on_session_changed() -> void:
+	var frac := clampf(float(Session.current_hp) / float(maxi(Session.max_hp, 1)), 0.0, 1.0)
+	if _self_hp_orb_material:
+		_self_hp_orb_material.set_shader_parameter("fill", frac)
+	if _self_hp_label:
+		_self_hp_label.text = "%d / %d" % [Session.current_hp, Session.max_hp]
+	visuals.update_hp(Session.current_hp, Session.max_hp)
+
+
+# ---------- Movement + input ----------
 
 func _unhandled_input(event: InputEvent) -> void:
 	if event is InputEventMouseButton and event.pressed:
 		if event.button_index == MOUSE_BUTTON_LEFT:
-			_try_set_move_target()
+			_try_primary_click()
 			get_viewport().set_input_as_handled()
 		elif event.button_index == MOUSE_BUTTON_RIGHT:
 			_try_right_click()
 			get_viewport().set_input_as_handled()
 
 
-func _try_set_move_target() -> void:
+func _try_primary_click() -> void:
 	var cam := get_viewport().get_camera_3d()
 	if cam == null: return
-	var mouse_pos := get_viewport().get_mouse_position()
-	var from := cam.project_ray_origin(mouse_pos)
-	var dir := cam.project_ray_normal(mouse_pos)
-	var tile := _ray_to_tile(from, dir)
-	if tile == INVALID_TILE: return
-	_request_path_to(tile)
+	var mp := get_viewport().get_mouse_position()
+	var from := cam.project_ray_origin(mp)
+	var dir := cam.project_ray_normal(mp)
+
+	var tile_hit := _ray_to_tile_with_t(from, dir)
+	var entity_hit := _find_entity_under_ray(from, dir)
+
+	# If an entity is hit and it's in front of the tile, try its primary action.
+	if entity_hit.node != null and entity_hit.t <= tile_hit.t:
+		var node: Node3D = entity_hit.node
+		var entity_type := "player"
+		if node.has_method("get_entity_type"):
+			entity_type = node.get_entity_type()
+
+		# Only NPCs support primary-click actions. Players are click-through.
+		if entity_type == "npc":
+			var npc_id: int = node.get_npc_id()
+			var actions: Array = Tooltips.build_actions("npc", _npc_system_vars(npc_id))
+			if not actions.is_empty():
+				var action: Dictionary = actions[0]
+				var script_path: String = str(action.get("script", ""))
+				if not script_path.is_empty():
+					Network.run_action(script_path, action.get("args", {}), npc_id)
+					return
+
+	# Fall through: walk to the clicked tile.
+	if tile_hit.tile == INVALID_TILE: return
+	_request_path_to(tile_hit.tile)
 
 
 func _try_right_click() -> void:
 	var cam := get_viewport().get_camera_3d()
 	if cam == null: return
-	var mouse_pos := get_viewport().get_mouse_position()
-	var from := cam.project_ray_origin(mouse_pos)
-	var dir := cam.project_ray_normal(mouse_pos)
+	var mp := get_viewport().get_mouse_position()
+	var from := cam.project_ray_origin(mp)
+	var dir := cam.project_ray_normal(mp)
 
 	var tile_hit := _ray_to_tile_with_t(from, dir)
 	var entity_hit := _find_entity_under_ray(from, dir)
@@ -238,46 +355,32 @@ func _try_right_click() -> void:
 
 	var target_id := 0
 	var system_vars := {}
-
 	if entity_type == "npc":
 		target_id = node.get_npc_id()
-		var npc_data: Dictionary = Npcs.get_npc(target_id)
-		system_vars = {
-			"SELF_ID": Session.player_id,
-			"NPC_ID": target_id,
-			"NPC_DISPLAY_NAME": str(npc_data.get("display", "")),
-			"NPC_COMBAT_FINAL_LEVEL": int(npc_data.get("final_level", 0)),
-		}
+		system_vars = _npc_system_vars(target_id)
 	else:
 		target_id = node.get_player_id()
-		var target_username := ""
+		var uname := ""
 		if "username" in node:
-			target_username = str(node.username)
-		system_vars = {
-			"SELF_ID": Session.player_id,
-			"PLAYER_ID": target_id,
-			"PLAYER_NAME": target_username,
-		}
+			uname = str(node.username)
+		system_vars = _player_system_vars(target_id, uname)
 
 	var actions: Array = Tooltips.build_actions(entity_type, system_vars)
-	_show_context_menu(target_id, actions, mouse_pos)
+	_show_context_menu(target_id, actions, mp)
 
 
 func _find_entity_under_ray(from: Vector3, dir: Vector3) -> Dictionary:
 	var space := get_world_3d().direct_space_state
-	var query := PhysicsRayQueryParameters3D.create(
+	var q := PhysicsRayQueryParameters3D.create(
 		from, from + dir * 300.0, Hitboxes.HITBOX_COLLISION_LAYER)
-	query.collide_with_areas = false
-	query.collide_with_bodies = true
-	var hit := space.intersect_ray(query)
-	if hit.is_empty():
-		return {"node": null, "t": INF}
+	q.collide_with_areas = false
+	q.collide_with_bodies = true
+	var hit := space.intersect_ray(q)
+	if hit.is_empty(): return {"node": null, "t": INF}
 	var body = hit.collider
-	if not (body is StaticBody3D):
-		return {"node": null, "t": INF}
+	if not (body is StaticBody3D): return {"node": null, "t": INF}
 	var entity: Node3D = body.get_parent()
-	if entity == null or entity == self:
-		return {"node": null, "t": INF}
+	if entity == null or entity == self: return {"node": null, "t": INF}
 	return {"node": entity, "t": from.distance_to(hit.position)}
 
 
@@ -314,10 +417,8 @@ func _on_context_menu_selected(id: int) -> void:
 
 
 func _request_path_to(tile: Vector2i) -> void:
-	var current_tile := Vector2i(
-		roundi(global_position.x),
-		roundi(global_position.z))
-	_pending_path_id = Pathfinder.request_path(current_tile, tile)
+	var cur := Vector2i(roundi(global_position.x), roundi(global_position.z))
+	_pending_path_id = Pathfinder.request_path(cur, tile)
 	_last_request_id = _pending_path_id
 	_last_path_length = 0
 
@@ -337,14 +438,7 @@ func _on_path_failed(request_id: int, reason: String) -> void:
 	walk_rejected.emit(Vector2i.ZERO, reason)
 
 
-# ---------- Movement ----------
-
 func _process(delta: float) -> void:
-	if _chat_hide_at_ms > 0 and Time.get_ticks_msec() >= _chat_hide_at_ms:
-		if chat_label != null:
-			chat_label.visible = false
-		_chat_hide_at_ms = 0
-
 	var to_target := _target_pos - global_position
 	var horiz_sq := to_target.x * to_target.x + to_target.z * to_target.z
 	var speed := move_speed
@@ -359,87 +453,28 @@ func _process(delta: float) -> void:
 		global_position = global_position.move_toward(_target_pos, step)
 	rotation.y = _target_yaw
 
-	var frame_dist := global_position.distance_to(_last_frame_pos)
-	_last_frame_pos = global_position
-	var inst_vel := frame_dist / delta if delta > 0.0 else 0.0
-	_frame_vel = lerpf(_frame_vel, inst_vel, 1.0 - exp(-15.0 * delta))
-
-	_update_anim()
-
 
 func _on_self_position_updated(x: float, y: float, z: float, yaw: float) -> void:
 	_target_pos = Vector3(x, y, z)
 	_target_yaw = yaw
 
 
-# ---------- Animation ----------
-
-func _current_anim_player() -> AnimationPlayer:
-	if _render_anim_player != null and is_instance_valid(_render_anim_player):
-		return _render_anim_player
-	return anim_player
-
-
-func _find_anim_player(node: Node) -> AnimationPlayer:
-	if node is AnimationPlayer: return node
-	for c in node.get_children():
-		var ap := _find_anim_player(c)
-		if ap != null: return ap
-	return null
-
-
-func _ensure_anim_player() -> AnimationPlayer:
-	var existing := get_node_or_null("AnimationPlayer") as AnimationPlayer
-	if existing != null:
-		return existing
-	var ap := AnimationPlayer.new()
-	ap.name = "AnimationPlayer"
-	add_child(ap)
-	_create_placeholder_anims(ap)
-	return ap
-
-
-func _create_placeholder_anims(ap: AnimationPlayer) -> void:
-	var lib := AnimationLibrary.new()
-	if not ap.has_animation("idle"):
-		var idle := Animation.new()
-		idle.length = 1.0
-		idle.loop_mode = Animation.LOOP_LINEAR
-		lib.add_animation("idle", idle)
-	if not ap.has_animation("walk"):
-		var walk := Animation.new()
-		walk.length = 0.4
-		walk.loop_mode = Animation.LOOP_LINEAR
-		var track := walk.add_track(Animation.TYPE_VALUE)
-		walk.track_set_path(track, "Mesh:position")
-		walk.track_insert_key(track, 0.0, Vector3(0, 0.9, 0))
-		walk.track_insert_key(track, 0.2, Vector3(0, 1.0, 0))
-		walk.track_insert_key(track, 0.4, Vector3(0, 0.9, 0))
-		lib.add_animation("walk", walk)
-	if lib.get_animation_list().size() > 0:
-		ap.add_animation_library("", lib)
-
-
-func _update_anim() -> void:
-	var desired: String
-	var now := Time.get_ticks_msec()
-	if _scripted_anim != "":
-		if now < _scripted_end_ms:
-			desired = _scripted_anim
-		else:
-			_scripted_anim = ""
-			desired = _derived_anim()
-	else:
-		desired = _derived_anim()
-	if desired == _current_anim: return
-	_current_anim = desired
-	var ap := _current_anim_player()
-	if ap != null and ap.has_animation(desired):
-		ap.play(desired)
-
-
-func _derived_anim() -> String:
-	return "walk" if _frame_vel > 0.5 else "idle"
+func _on_player_respawned(x: float, y: float, z: float, yaw: float, hp: int, max_hp: int) -> void:
+	visuals.reset_hp_tracking()
+	# Cancel any in-flight pathfind so a late response can't re-trigger walking.
+	_pending_path_id = -1
+	_last_path_length = 0
+	global_position = Vector3(x, y, z)
+	rotation.y = yaw
+	_target_pos = global_position
+	_target_yaw = yaw
+	Session.current_hp = hp
+	Session.max_hp = max_hp
+	Session.in_combat = false
+	Session.combat_target_npc_id = 0
+	Session.changed.emit()
+	if camera != null and camera.has_method("snap_now"):
+		camera.snap_now()
 
 
 # ---------- Debug / ray ----------
@@ -447,23 +482,22 @@ func _derived_anim() -> String:
 func get_tile_under_mouse() -> Vector2i:
 	var cam := get_viewport().get_camera_3d()
 	if cam == null: return INVALID_TILE
-	var mouse_pos := get_viewport().get_mouse_position()
-	return _ray_to_tile(cam.project_ray_origin(mouse_pos), cam.project_ray_normal(mouse_pos))
+	var mp := get_viewport().get_mouse_position()
+	return _ray_to_tile(cam.project_ray_origin(mp), cam.project_ray_normal(mp))
 
 
 func get_debug_info() -> Dictionary:
 	var ct := Vector2i(roundi(global_position.x), roundi(global_position.z))
 	var tt := Vector2i(roundi(_target_pos.x), roundi(_target_pos.z))
-	var state: String
+	var state := "idle"
 	if _pending_path_id != -1: state = "requesting"
 	elif global_position.distance_squared_to(_target_pos) > 0.01: state = "walking"
-	else: state = "idle"
 	return {
 		"current_tile": ct, "current_z": World.get_z(ct.x, ct.y),
 		"target_tile": tt, "target_z": World.get_z(tt.x, tt.y),
 		"state": state, "path_length": _last_path_length,
 		"request_id": _last_request_id,
-		"anim": _current_anim,
+		"anim": visuals.get_current_anim(),
 	}
 
 
@@ -547,3 +581,21 @@ func _ray_wall_face(from: Vector3, dir: Vector3, tx: int, ty: int, d: Vector2i, 
 	var n := Vector3(d.x, 0.0, d.y)
 	if dir.dot(n) >= 0.0: return -1.0
 	return t
+
+
+func _npc_system_vars(npc_id: int) -> Dictionary:
+	var npc_data: Dictionary = Npcs.get_npc(npc_id)
+	return {
+		"SELF_ID": Session.player_id,
+		"NPC_ID": npc_id,
+		"NPC_DISPLAY_NAME": str(npc_data.get("display", "")),
+		"NPC_COMBAT_FINAL_LEVEL": int(npc_data.get("final_level", 0)),
+	}
+
+
+func _player_system_vars(player_id: int, username: String) -> Dictionary:
+	return {
+		"SELF_ID": Session.player_id,
+		"PLAYER_ID": player_id,
+		"PLAYER_NAME": username,
+	}

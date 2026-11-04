@@ -14,6 +14,9 @@ signal changed
 signal npc_added(npc_id: int)
 signal npc_removed(npc_id: int)
 signal npc_moved(npc_id: int)
+signal npc_hp_changed(npc_id: int)
+signal npc_combat_state_changed(npc_id: int)
+signal npc_replaced(npc_id: int)
 
 var _npcs: Dictionary = {}   # npc_id (int) -> entry dict from server
 
@@ -23,6 +26,9 @@ func _ready() -> void:
 	Network.npc_left.connect(_on_network_npc_left)
 	Network.npc_moved.connect(_on_network_npc_moved)
 	Network.state_changed.connect(_on_network_state_changed)
+	Network.npc_hp_updated.connect(_on_network_npc_hp_updated)
+	Network.npc_updated.connect(_on_network_npc_updated)
+	Network.npc_combat_state.connect(_on_network_npc_combat_state)
 
 
 # ---------- Queries ----------
@@ -52,6 +58,7 @@ func _on_network_npc_joined(npcs: Array) -> void:
 		var npc_id := int(entry.get("id", 0))
 		if npc_id == 0: continue
 		if _npcs.has(npc_id): continue
+		entry["in_combat"] = false
 		_npcs[npc_id] = entry
 		npc_added.emit(npc_id)
 		added_any = true
@@ -86,3 +93,26 @@ func _on_network_npc_moved(npc_id: int, x: float, y: float, z: float, yaw: float
 	_npcs[npc_id]["z"] = z
 	_npcs[npc_id]["yaw"] = yaw
 	npc_moved.emit(npc_id)
+
+
+func _on_network_npc_hp_updated(npc_id: int, hp: int, maxhp: int) -> void:
+	if not _npcs.has(npc_id): return
+	_npcs[npc_id]["hitpoints"] = hp
+	_npcs[npc_id]["max_hitpoints"] = maxhp
+	npc_hp_changed.emit(npc_id)
+
+
+func _on_network_npc_updated(entry: Dictionary) -> void:
+	var npc_id := int(entry.get("id", 0))
+	if npc_id == 0: return
+	var existing: Dictionary = _npcs.get(npc_id, {})
+	# Preserve in_combat flag across updates (server doesn't resend it)
+	if existing.has("in_combat"): entry["in_combat"] = existing["in_combat"]
+	_npcs[npc_id] = entry
+	npc_replaced.emit(npc_id)
+
+
+func _on_network_npc_combat_state(npc_id: int, in_c: bool) -> void:
+	if not _npcs.has(npc_id): return
+	_npcs[npc_id]["in_combat"] = in_c
+	npc_combat_state_changed.emit(npc_id)

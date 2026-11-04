@@ -33,7 +33,7 @@ public partial class Main : Node
 
 	private static readonly Regex UsernameRegex = new($"^[A-Za-z0-9_]{{{MinUsernameLength},{MaxUsernameLength}}}$");
 
-	private record PlayerSession(long PlayerId, string Username, bool IsAdmin);
+	private record PlayerSession(long PlayerId, string Username, bool IsAdmin, long Sid);
 	internal record PlayerPosition(float X, float Y, float Z, float Yaw);
 	internal record TileInfo(int Z, bool Walkable);
 
@@ -50,6 +50,7 @@ public partial class Main : Node
 	private double _npcVisRefreshAccum;
 	private const double NpcVisRefreshIntervalSeconds = 1.5;
 	private int _npcVisRefreshCounter;
+	private readonly Dictionary<long, int> _npcCombatRefCount = new();
 
 	// TEMP-DEV: scaffolding to exercise NPC movement before real AI lands.
 	// Delete this block (and DiagNpcWander export, DebugWanderTick, and the
@@ -63,6 +64,27 @@ public partial class Main : Node
 
 	private readonly Dictionary<long, ActiveNpc> _npcs = new();
 	private readonly Dictionary<long, HashSet<long>> _visibleNpcs = new();  // peerId -> npc ids
+	// ---------- Combat state ----------
+	internal sealed class CombatPair
+{
+    public long PlayerId { get; init; }
+    public long NpcId { get; init; }
+    public long LastPlayerSwingTick { get; set; }
+    public long LastNpcSwingTick { get; set; }
+    public bool StateAnnounced { get; set; }
+    public bool InitiatedByPlayer { get; set; } = true;
+    public Vector2I LastChaseTarget { get; set; } = new(-99999, -99999);
+}
+	private readonly Dictionary<long, CombatPair> _combatByPlayer = new();
+	private readonly Dictionary<long, long> _pendingEngage = new(); // playerId -> npcId (approach phase)
+	private readonly Dictionary<long, CombatPair> _combatByNpc = new();
+	private readonly Dictionary<long, Database.PlayerCombatData> _playerCombat = new();
+	private readonly Dictionary<long, int> _playerHealAccumTicks = new();
+	private readonly Random _combatRng = new();
+private const int PlayerAttackSpeedTicks = 10;   // 3.0s unarmed default; equipment will override
+private const int AttackAnimDurationMs = 400;    // short swing visual, independent of cooldown	private const int CombatMaxDistanceTiles = 12;
+	private const int NpcLeashRadiusTiles = 15;
+
 	private readonly Dictionary<long, Vector2I> _lastPlayerChunk = new();   // peerId -> chunk
 
 	// Per-peer remaining path. Front of the list is the next waypoint. Empty list
@@ -293,6 +315,11 @@ public partial class Main : Node
 			foreach (var npc in _npcs.Values)
 			{
 				if (npc.IsDead) continue;
+				if (npc.ReturningHome && npc.Path.Count == 0 && DistanceFromSpawn(npc) <= 1)
+				{
+					npc.ReturningHome = false;
+					// No instant heal. Over-time healing (ProcessNpcHealing) handles regen.
+				}
 				if (npc.Path.Count == 0) continue;
 
 				StepNpcMovement(npc);
@@ -325,6 +352,15 @@ public partial class Main : Node
 
 		// 2b. NPC respawn sweep
 		CheckNpcRespawns();
+
+		// 2c. Combat
+		ProcessHostility();
+		ProcessPendingEngage();
+		ProcessCombat();
+
+		// 2d. Healing
+		ProcessNpcHealing();
+		ProcessPlayerHealing();
 
 		// 3. Per-tick scripts (ALWAYS run, even when no movement is in flight).
 		var tickEffects = _perTick.TickAll();
@@ -558,6 +594,11 @@ public partial class Main : Node
 		if (_sessions.Remove(peerId, out PlayerSession session))
 		{
 			_perTick?.EndAllFor(session.PlayerId);          // MOVED INSIDE — session is non-null here
+			if (_combatByPlayer.TryGetValue(session.PlayerId, out var combatPair))
+				EndCombat(combatPair);
+			_playerCombat.Remove(session.PlayerId);
+			_pendingEngage.Remove(session.PlayerId);
+			_playerHealAccumTicks.Remove(session.PlayerId);
 			_peerByPlayerId.Remove(session.PlayerId);
 
 			if (_positions.TryGetValue(session.PlayerId, out PlayerPosition pos))
@@ -603,6 +644,8 @@ public partial class Main : Node
 				case "login":       await HandleLoginAsync(peerId, GetString(root, "username"), GetString(root, "password"), GetString(root, "reason")); break;
 				case "world_info":  HandleWorldInfo(peerId); break;
 				case "world_fetch": HandleWorldFetch(peerId); break;
+				case "npc_editor_get":  HandleNpcEditorGet(peerId, root); break;
+				case "npc_editor_save": HandleNpcEditorSave(peerId, root); break;
 				case "dev_auto_login": await HandleDevAutoLoginAsync(peerId); break;
 				case "player_walk": HandlePlayerWalkBuffered(peerId, root); break;
 				case "ping":         HandlePing(peerId, root); break;
@@ -886,6 +929,15 @@ public partial class Main : Node
 	private void HandlePlayerWalkBuffered(long peerId, JsonElement root)
 	{
 		if (!_sessions.TryGetValue(peerId, out PlayerSession session)) return;
+		// Cancel any pending approach when the player manually walks.
+		_pendingEngage.Remove(session.PlayerId);
+
+		// Cancel any unannounced combat pair (defensive — shouldn't exist in
+		// the new model, but protects against future changes).
+		if (_combatByPlayer.TryGetValue(session.PlayerId, out var combatPair) && !combatPair.StateAnnounced)
+		{
+			EndCombat(combatPair);
+		}
 		// Manual click-to-walk cancels script-driven movement AND intent.
 		_perTick?.EndByStem(session.PlayerId, "follow_player");
 		_perTick?.EndByStem(session.PlayerId, "trade_player");
@@ -969,6 +1021,17 @@ public partial class Main : Node
 			var (created, playerId) = await _db.TryCreatePlayerAsync(username, hash, makeAdmin);
 			if (!created) { SendError(peerId, "register_result", ErrorKeys.RegisterUsernameTaken); return; }
 			GD.Print($"[Server] Registered: {username} (id {playerId}{(makeAdmin ? ", dev admin" : "")})");
+			if (makeAdmin)
+			{
+				await _db.EnsurePlayerStatsAsync(playerId);
+				await _db.EnsurePlayerInventoryAndBankAsync(playerId);
+				await _db.SetPlayerCombatStatsAsync(playerId, 50, 50, 50, 10, 10);
+				GD.Print($"[Server] Dev admin stats bumped for {username}");
+			}
+			else
+			{
+				await _db.EnsurePlayerInventoryAndBankAsync(playerId);
+			}
 			Send(peerId, new { type = "register_result", ok = true, username });
 		}
 		finally { _authInProgress.Remove(peerId); }
@@ -1011,8 +1074,18 @@ public partial class Main : Node
 			SendError(peerId, "login_result", ErrorKeys.LoginStatsInitFailed);
 			return;
 		}
+		if (!await _db.EnsurePlayerInventoryAndBankAsync(player.Id))
+		{
+			GD.PrintErr($"[Server] Failed to ensure inventory/bank for {player.Username} (id {player.Id}); login aborted");
+			SendError(peerId, "login_result", ErrorKeys.LoginStatsInitFailed);
+			return;
+		}
+		var combatData = await _db.GetPlayerCombatAsync(player.Id);
+		_playerCombat[player.Id] = combatData ?? new Database.PlayerCombatData(1, 1, 1, 0, 0, 10, 10, 1);
 
-		var session = new PlayerSession(player.Id, player.Username, player.IsAdmin);
+		long sid = Random.Shared.NextInt64(1, long.MaxValue);
+		_ = _db.SetPlayerSidAsync(player.Id, sid);
+		var session = new PlayerSession(player.Id, player.Username, player.IsAdmin, sid);
 		_sessions[peerId] = session;
 		_peerByPlayerId[player.Id] = peerId;
 
@@ -1049,7 +1122,10 @@ public partial class Main : Node
 			is_admin = player.IsAdmin,
 			login_count = loginCount,
 			total_players = totalPlayers,
-			spawn = new { x = spawnPos.X, y = spawnPos.Y, z = spawnPos.Z, yaw = spawnPos.Yaw }
+			spawn = new { x = spawnPos.X, y = spawnPos.Y, z = spawnPos.Z, yaw = spawnPos.Yaw,
+			hitpoints = combatData?.CurrentHp ?? 10,
+			max_hitpoints = combatData?.MaxHp ?? 10,
+ 		}
 		});
 
 		EnterWorld(peerId, session, spawnPos);
@@ -1450,6 +1526,8 @@ public partial class Main : Node
 		attackable = npc.Attackable,
 		final_level = npc.FinalLevel,
 		render_slug = npc.RenderSlug,
+		hitpoints = npc.Hitpoints,
+		max_hitpoints = npc.MaxHitpoints,
 	};
 
 	/// <summary>
@@ -1563,6 +1641,7 @@ public partial class Main : Node
 			if (npc.IsDead) continue;
 			if (npc.Path.Count > 0) continue;
 			if (npc.AiPackageState != "wander") continue;
+			if (_combatByNpc.ContainsKey(npc.Id)) continue;
 			for (int attempt = 0; attempt < 8; attempt++)
 			{
 				int dx = _wanderRng.Next(-3, 4);
@@ -1588,7 +1667,11 @@ public partial class Main : Node
 		npc.IsDead = true;
 		npc.DiedAtMs = (long)Time.GetTicksMsec();
 		npc.Path.Clear();
+		npc.Hitpoints = 0;
+		BroadcastNpcHp(npc);
 		_ = _db.MarkNpcDeadAsync(npc.Id);
+
+		if (_combatByNpc.TryGetValue(npcId, out var owner)) EndCombat(owner);
 		Diag.Log("diag_npc", $"NPC {npc.Name} (id {npc.Id}) killed; respawns in {npc.SpawnTimerSeconds}s");
 		NotifyNpcVisibilityChanged();
 	}
@@ -1597,10 +1680,12 @@ public partial class Main : Node
 	{
 		npc.IsDead = false;
 		npc.DiedAtMs = 0;
+		npc.Hitpoints = npc.MaxHitpoints;
+		npc.HealAccumulatorTicks = 0;
 		npc.ResetPositionToHome();
 		npc.Path.Clear();
 		_ = _db.ReviveNpcAsync(npc.Id);
-		Diag.Log("diag_npc", $"NPC {npc.Name} (id {npc.Id}) respawned at home tile");
+		Diag.Log("diag_npc", $"NPC {npc.Name} (id {npc.Id}) respawned with {npc.Hitpoints} HP");
 	}
 
 	private void CheckNpcRespawns()
@@ -1620,6 +1705,484 @@ public partial class Main : Node
 		if (changed) NotifyNpcVisibilityChanged();
 	}
 
+	// ---------- Combat orchestration ----------
+
+	private static bool CanSwingTick(long lastSwingTick, int attackSpeedTicks, long currentTick)
+		=> currentTick - lastSwingTick >= attackSpeedTicks;
+
+	/// <summary>
+/// Public entry point — called when the player clicks Attack on an NPC.
+/// If already adjacent, engages immediately. Otherwise records a pending
+/// pursuit. The NPC is not informed (no combat pair registered) until the
+/// player actually reaches them.
+/// </summary>
+internal void RequestEngage(long playerId, long npcId)
+{
+    if (!_npcs.TryGetValue(npcId, out var npc)) return;
+    if (npc.IsDead) return;
+    if (!npc.Attackable) return;
+
+    // Already in combat with some NPC?
+    if (_combatByPlayer.TryGetValue(playerId, out var existing))
+    {
+        if (existing.NpcId == npcId) return;
+        return;
+    }
+
+    // NPC is already engaged by another player.
+    if (_combatByNpc.ContainsKey(npcId))
+    {
+        if (_pendingEngage.TryGetValue(playerId, out var pendingNpc) && pendingNpc == npcId)
+            _pendingEngage.Remove(playerId);
+        ChatToPlayer(playerId, "That's already in a fight, I cannot engage.");
+        Diag.Log("diag_combat", $"Player {playerId} tried to engage already-engaged NPC {npc.Name} (id {npcId}); rejected");
+        return;
+    }
+
+    // Adjacent right now — engage immediately.
+    if (ArePositionsAdjacent(playerId, npc))
+    {
+        _pendingEngage.Remove(playerId);
+        EngageNpc(playerId, npcId);
+        return;
+    }
+
+    // Otherwise, pursue.
+    _pendingEngage[playerId] = npcId;
+    long peerId = -1;
+    foreach (var kv in _sessions) if (kv.Value.PlayerId == playerId) { peerId = kv.Key; break; }
+    if (peerId >= 0) _intents.Remove(peerId);
+    MovePlayerAdjacentToNpc(playerId, npc);
+    Diag.Log("diag_combat", $"Player {playerId} approaching NPC {npc.Name} (id {npcId})");
+}
+
+
+/// <summary>
+/// Called only when the player is already adjacent. Registers the pair and
+/// begins combat. The NPC becomes aware of the player from this moment.
+/// </summary>
+internal void EngageNpc(long playerId, long npcId, bool initiatedByPlayer = true)
+{
+    if (!_npcs.TryGetValue(npcId, out var npc)) return;
+    if (npc.IsDead) return;
+
+    // Already in combat with some NPC?
+    if (_combatByPlayer.TryGetValue(playerId, out var existing))
+    {
+        if (existing.NpcId == npcId) return;
+        return;
+    }
+
+    // NPC is already engaged by another player.
+    if (_combatByNpc.ContainsKey(npcId))
+    {
+        // Only notify the player if this was their own attempt. Hostility-driven
+        // engages should stay silent — the player never asked to attack.
+        if (initiatedByPlayer)
+            ChatToPlayer(playerId, "That's already in a fight, I cannot engage.");
+        Diag.Log("diag_combat", $"Player {playerId} tried to engage already-engaged NPC {npc.Name} (id {npcId}) at promotion; rejected");
+        return;
+    }
+
+    var pair = new CombatPair
+    {
+        PlayerId = playerId,
+        NpcId = npcId,
+        LastPlayerSwingTick = _currentTick - PlayerAttackSpeedTicks,
+        LastNpcSwingTick = _currentTick - npc.AttackSpeedTicks,
+        StateAnnounced = false,
+        InitiatedByPlayer = initiatedByPlayer,
+    };
+    _combatByPlayer[playerId] = pair;
+    if (!_combatByNpc.ContainsKey(npcId)) _combatByNpc[npcId] = pair;
+
+    Diag.Log("diag_combat", $"Player {playerId} engaged NPC {npc.Name} (id {npcId}) initiatedByPlayer={initiatedByPlayer}");
+}
+
+	private void EndCombat(CombatPair pair)
+	{
+		_combatByPlayer.Remove(pair.PlayerId);
+		bool wasOwner = _combatByNpc.TryGetValue(pair.NpcId, out var owner) && owner == pair;
+		if (wasOwner) _combatByNpc.Remove(pair.NpcId);
+
+		if (pair.StateAnnounced)
+		{
+			int prevRef = _npcCombatRefCount.TryGetValue(pair.NpcId, out var pc) ? pc : 0;
+			int newRef = Math.Max(0, prevRef - 1);
+			if (newRef == 0) _npcCombatRefCount.Remove(pair.NpcId);
+			else _npcCombatRefCount[pair.NpcId] = newRef;
+			if (prevRef > 0 && newRef == 0)
+				Broadcast(new { type = "npc_combat_state", npc_id = pair.NpcId, in_combat = false });
+			Broadcast(new
+			{
+				type = "player_combat_state",
+				player_id = pair.PlayerId,
+				in_combat = false,
+				npc_id = 0
+			});
+		}
+
+		Diag.Log("diag_combat", $"Combat ended: player {pair.PlayerId}, npc {pair.NpcId}");
+	}
+
+	private void ProcessCombat()
+{
+    if (_combatByPlayer.Count == 0) return;
+    var toEnd = new List<CombatPair>();
+
+    foreach (var pair in _combatByPlayer.Values)
+    {
+        if (!_npcs.TryGetValue(pair.NpcId, out var npc)) { toEnd.Add(pair); continue; }
+        if (npc.IsDead) { toEnd.Add(pair); continue; }
+        if (!_positions.ContainsKey(pair.PlayerId)) { toEnd.Add(pair); continue; }
+        if (!_playerCombat.ContainsKey(pair.PlayerId)) { toEnd.Add(pair); continue; }
+
+        if (!ArePositionsAdjacent(pair.PlayerId, npc))
+        {
+            // Player-initiated pre-engage: player walks toward the NPC. NPC
+            // stays put. Only applies before the first swing lands.
+            if (pair.InitiatedByPlayer && !pair.StateAnnounced)
+            {
+                MovePlayerAdjacentToNpc(pair.PlayerId, npc);
+                continue;
+            }
+
+            // Otherwise the NPC is the one pursuing. Leash check first.
+            if (DistanceFromSpawn(npc) > NpcLeashRadiusTiles)
+            {
+                EndCombat(pair);
+                npc.ReturningHome = true;
+                npc.Path.Clear();
+                MoveNpcTo(npc.Id, npc.TileX, npc.TileY);
+                Diag.Log("diag_combat", $"NPC {npc.Name} (id {npc.Id}) leash broken");
+                continue;
+            }
+
+            // NPC chases player, stopping adjacent.
+            if (_positions.TryGetValue(pair.PlayerId, out var ppos))
+            {
+                var playerTile = new Vector2I(
+                    (int)MathF.Round(ppos.X),
+                    (int)MathF.Round(ppos.Z));
+                if (pair.LastChaseTarget != playerTile)
+                {
+                    pair.LastChaseTarget = playerTile;
+                    int nx = (int)MathF.Round(npc.PosX);
+                    int ny = (int)MathF.Round(npc.PosZ);
+
+                    if (nx == playerTile.X && ny == playerTile.Y)
+                    {
+                        Vector2I[] dirs = { new(1,0), new(-1,0), new(0,1), new(0,-1),
+                                            new(1,1), new(1,-1), new(-1,1), new(-1,-1) };
+                        foreach (var d in dirs)
+                        {
+                            var cand = playerTile + d;
+                            if (IsValidTile(cand.X, cand.Y))
+                            {
+                                npc.Path = new List<Vector2I> { cand };
+                                break;
+                            }
+                        }
+                    }
+                    else
+                    {
+                        var route = PathfindBetween(nx, ny, playerTile.X, playerTile.Y);
+                        if (route.Count > 0)
+                        {
+                            if (route[^1] == playerTile) route.RemoveAt(route.Count - 1);
+                            if (route.Count > 0) npc.Path = route;
+                        }
+                    }
+                }
+            }
+            continue;
+        }
+
+        // Adjacent — announce state on first tick we're actually in range.
+        if (!pair.StateAnnounced)
+        {
+            pair.StateAnnounced = true;
+            int prevRef = _npcCombatRefCount.TryGetValue(npc.Id, out var pc) ? pc : 0;
+            _npcCombatRefCount[npc.Id] = prevRef + 1;
+            if (prevRef == 0)
+                Broadcast(new { type = "npc_combat_state", npc_id = npc.Id, in_combat = true });
+            Broadcast(new
+            {
+                type = "player_combat_state",
+                player_id = pair.PlayerId,
+                in_combat = true,
+                npc_id = npc.Id
+            });
+        }
+
+        if (!IsPlayerMoving(pair.PlayerId)
+            && CanSwingTick(pair.LastPlayerSwingTick, PlayerAttackSpeedTicks, _currentTick))
+        {
+            ResolvePlayerAttack(pair, npc);
+            pair.LastPlayerSwingTick = _currentTick;
+            if (npc.IsDead || !_playerCombat.ContainsKey(pair.PlayerId)) { toEnd.Add(pair); continue; }
+        }
+
+        if (_combatByNpc.TryGetValue(pair.NpcId, out var npcOwner) && npcOwner == pair)
+        {
+            if (CanSwingTick(pair.LastNpcSwingTick, npc.AttackSpeedTicks, _currentTick))
+            {
+                ResolveNpcAttack(pair, npc);
+                pair.LastNpcSwingTick = _currentTick;
+                if (!_playerCombat.TryGetValue(pair.PlayerId, out var pd) || pd.CurrentHp <= 0)
+                {
+                    HandlePlayerDeath(pair.PlayerId);
+                    toEnd.Add(pair);
+                    continue;
+                }
+            }
+        }
+    }
+
+    foreach (var pair in toEnd) EndCombat(pair);
+}
+
+private void ProcessNpcHealing()
+{
+    // ~20s in combat, ~8s out of combat (tick = 0.3s).
+    const int IN_COMBAT_HEAL_TICKS  = 268;
+    const int OUT_COMBAT_HEAL_TICKS = 27;
+    const int IN_COMBAT_HEAL_PCT  = 10;
+    const int OUT_COMBAT_HEAL_PCT = 25;
+
+    foreach (var npc in _npcs.Values)
+    {
+        if (npc.IsDead) continue;
+        if (npc.Hitpoints >= npc.MaxHitpoints) continue;
+
+        npc.HealAccumulatorTicks++;
+        bool inCombat = _combatByNpc.ContainsKey(npc.Id);
+        int threshold = inCombat ? IN_COMBAT_HEAL_TICKS : OUT_COMBAT_HEAL_TICKS;
+        int pct       = inCombat ? IN_COMBAT_HEAL_PCT  : OUT_COMBAT_HEAL_PCT;
+
+        if (npc.HealAccumulatorTicks < threshold) continue;
+
+        npc.HealAccumulatorTicks = 0;
+        int heal = Math.Max(1, (npc.MaxHitpoints * pct) / 100);
+        int newHp = Math.Min(npc.MaxHitpoints, npc.Hitpoints + heal);
+        if (newHp == npc.Hitpoints) continue;
+
+        npc.Hitpoints = newHp;
+        _ = _db.SetNpcHpAsync(npc.Id, newHp);
+        BroadcastNpcHp(npc);
+        Diag.Log("diag_combat", $"NPC {npc.Name} healed to {newHp}/{npc.MaxHitpoints} ({(inCombat ? "in combat" : "out of combat")})");
+    }
+}
+
+private void ProcessPlayerHealing()
+{
+    // ~25s (tick = 0.3s). Applies regardless of combat state.
+    const int HEAL_INTERVAL_TICKS = 83;
+    const int HEAL_PCT = 10;
+
+    foreach (var kv in _playerCombat)
+    {
+        long playerId = kv.Key;
+        var data = kv.Value;
+        if (data.CurrentHp >= data.MaxHp) { _playerHealAccumTicks[playerId] = 0; continue; }
+        if (!_positions.ContainsKey(playerId)) continue;
+
+        int accum = (_playerHealAccumTicks.TryGetValue(playerId, out var a) ? a : 0) + 1;
+        if (accum < HEAL_INTERVAL_TICKS)
+        {
+            _playerHealAccumTicks[playerId] = accum;
+            continue;
+        }
+
+        _playerHealAccumTicks[playerId] = 0;
+        int heal = Math.Max(1, (data.MaxHp * HEAL_PCT) / 100);
+        int newHp = Math.Min(data.MaxHp, data.CurrentHp + heal);
+        if (newHp == data.CurrentHp) continue;
+
+        _playerCombat[playerId] = data with { CurrentHp = newHp };
+        _ = _db.SetPlayerHpAsync(playerId, newHp);
+        BroadcastPlayerHp(playerId, newHp, data.MaxHp);
+        Diag.Log("diag_combat", $"Player {playerId} regen to {newHp}/{data.MaxHp}");
+    }
+}
+
+	private void ResolvePlayerAttack(CombatPair pair, ActiveNpc npc)
+{
+    if (!_playerCombat.TryGetValue(pair.PlayerId, out var stats)) return;
+    BroadcastPlayerAnim(pair.PlayerId, "attack", AttackAnimDurationMs);
+
+    bool hit = RollHit(stats.Accuracy, stats.MeleeBonus, npc.Defence, npc.MeleeDefense);
+    int damage = hit ? RollDamage(stats.Strength, stats.MeleeBonus) : 0;
+
+    if (damage > 0)
+    {
+        npc.Hitpoints = Math.Max(0, npc.Hitpoints - damage);
+        _ = _db.SetNpcHpAsync(npc.Id, npc.Hitpoints);
+        BroadcastNpcHp(npc);
+    }
+
+    // Always broadcast a damage number, even on a 0-hit.
+    Broadcast(new { type = "damage_number", target_type = "npc", target_id = npc.Id, amount = damage });
+
+    if (npc.Hitpoints <= 0)
+    {
+        KillNpc(npc.Id);
+        return;
+    }
+    if (!_combatByNpc.ContainsKey(npc.Id)) _combatByNpc[npc.Id] = pair;
+}
+
+	private void ResolveNpcAttack(CombatPair pair, ActiveNpc npc)
+{
+    if (!_playerCombat.TryGetValue(pair.PlayerId, out var pd)) return;
+    BroadcastNpcAnim(npc.Id, "attack", AttackAnimDurationMs);
+
+    bool hit = RollHit(npc.Accuracy, npc.MeleeBonus, pd.Defence, pd.MeleeDefense);
+    int damage = hit ? RollDamage(npc.Strength, npc.MeleeBonus) : 0;
+
+    if (damage > 0)
+    {
+        int newHp = Math.Max(0, pd.CurrentHp - damage);
+        _playerCombat[pair.PlayerId] = pd with { CurrentHp = newHp };
+        _ = _db.SetPlayerHpAsync(pair.PlayerId, newHp);
+        BroadcastPlayerHp(pair.PlayerId, newHp, pd.MaxHp);
+    }
+
+    // Always broadcast a damage number, even on a 0-hit.
+    Broadcast(new { type = "damage_number", target_type = "player", target_id = pair.PlayerId, amount = damage });
+}
+
+	private void HandlePlayerDeath(long playerId)
+{
+    long peerId = -1;
+    foreach (var kv in _sessions) if (kv.Value.PlayerId == playerId) { peerId = kv.Key; break; }
+    if (peerId < 0) return;
+
+    if (_combatByPlayer.TryGetValue(playerId, out var pair)) EndCombat(pair);
+
+    // Clear all movement state so the player doesn't resume walking toward
+    // their last destination (or re-route to an NPC) from spawn position.
+    _intents.Remove(peerId);
+    _pendingEngage.Remove(playerId);
+
+    var spawnPos = ComputeSpawnPosition(playerId);
+    _positions[playerId] = spawnPos;
+
+    int hp = 10;
+    if (_playerCombat.TryGetValue(playerId, out var pd))
+    {
+        _playerCombat[playerId] = pd with { CurrentHp = pd.MaxHp };
+        _ = _db.SetPlayerHpAsync(playerId, pd.MaxHp);
+        hp = pd.MaxHp;
+    }
+    _playerHealAccumTicks[playerId] = 0;
+
+    Send(peerId, new
+    {
+        type = "player_respawned",
+        x = spawnPos.X, y = spawnPos.Y, z = spawnPos.Z, yaw = 0f,
+        hitpoints = hp, max_hitpoints = hp
+    });
+    BroadcastPlayerAnim(playerId, "death", 1000);
+    Diag.Log("diag_combat", $"Player {playerId} died and respawned at ({spawnPos.X}, {spawnPos.Z})");
+}
+
+	private bool ArePositionsAdjacent(long playerId, ActiveNpc npc)
+	{
+		if (!_positions.TryGetValue(playerId, out var ppos)) return false;
+		int px = (int)MathF.Round(ppos.X);
+		int py = (int)MathF.Round(ppos.Z);
+		int nx = (int)MathF.Round(npc.PosX);
+		int ny = (int)MathF.Round(npc.PosZ);
+		int dx = Math.Abs(px - nx);
+		int dy = Math.Abs(py - ny);
+		if (dx > 1 || dy > 1) return false;
+		if (dx == 0 && dy == 0) return false;
+		return true;
+	}
+
+	private int DistanceTiles(long playerId, ActiveNpc npc)
+	{
+		if (!_positions.TryGetValue(playerId, out var ppos)) return int.MaxValue;
+		int dx = (int)MathF.Round(ppos.X) - (int)MathF.Round(npc.PosX);
+		int dy = (int)MathF.Round(ppos.Z) - (int)MathF.Round(npc.PosZ);
+		return Math.Max(Math.Abs(dx), Math.Abs(dy));
+	}
+
+	/// <summary>
+/// True if the player has an active movement intent (auto-path or manual click).
+/// Used to gate auto-retaliate: swings only happen when standing still.
+/// </summary>
+private bool IsPlayerMoving(long playerId)
+{
+    foreach (var kv in _sessions)
+    {
+        if (kv.Value.PlayerId != playerId) continue;
+        return _intents.TryGetValue(kv.Key, out var path) && path.Count > 0;
+    }
+    return false;
+}
+
+private int DistanceFromSpawn(ActiveNpc npc)
+{
+    int dx = (int)MathF.Round(npc.PosX) - npc.TileX;
+    int dy = (int)MathF.Round(npc.PosZ) - npc.TileY;
+    return Math.Max(Math.Abs(dx), Math.Abs(dy));
+}
+
+	private void MovePlayerAdjacentToNpc(long playerId, ActiveNpc npc)
+	{
+		long peerId = -1;
+		foreach (var kv in _sessions) if (kv.Value.PlayerId == playerId) { peerId = kv.Key; break; }
+		if (peerId < 0) return;
+		if (_intents.ContainsKey(peerId)) return;
+		int nx = (int)MathF.Round(npc.PosX);
+		int ny = (int)MathF.Round(npc.PosZ);
+		var route = PathfindToNearest(playerId, nx, ny);
+		if (route.Count == 0) return;
+		var goal = new Vector2I(nx, ny);
+		if (route[^1] == goal) route.RemoveAt(route.Count - 1);
+		if (route.Count == 0) return;
+		SetIntent(playerId, route);
+	}
+
+	private bool RollHit(int accuracy, int accuracyBonus, int defence, int defenceBonus)
+	{
+		int effectiveAcc = Math.Max(1, accuracy) + 8;
+		int attackRoll = effectiveAcc * (accuracyBonus + 64);
+		int effectiveDef = Math.Max(1, defence) + 8;
+		int defenceRoll = effectiveDef * (defenceBonus + 64);
+		if (attackRoll > defenceRoll)
+			return _combatRng.NextDouble() < 1.0 - (defenceRoll + 2.0) / (2.0 * (attackRoll + 1.0));
+		return _combatRng.NextDouble() < (double)attackRoll / (2.0 * (defenceRoll + 1.0));
+	}
+
+	private int RollDamage(int strength, int strengthBonus)
+	{
+		int effectiveStr = Math.Max(1, strength) + 8;
+		int maxHit = (int)MathF.Floor(0.5f + effectiveStr * (strengthBonus + 64) / 640f);
+		if (maxHit < 1) maxHit = 1;
+		return _combatRng.Next(0, maxHit + 1);
+	}
+
+	private void ChatToPlayer(long playerId, string message)
+	{
+		long peerId = -1;
+		foreach (var kv in _sessions) if (kv.Value.PlayerId == playerId) { peerId = kv.Key; break; }
+		if (peerId < 0) return;
+		Send(peerId, new { type = "private_message", text = message });
+	}
+
+	private void BroadcastPlayerAnim(long playerId, string anim, int durationMs)
+	{
+		Broadcast(new { type = "anim_changed", player_id = playerId, anim = anim, duration_ms = durationMs });
+	}
+
+	private void BroadcastNpcAnim(long npcId, string anim, int durationMs)
+	{
+		Broadcast(new { type = "npc_anim_changed", npc_id = npcId, anim = anim, duration_ms = durationMs });
+	}
+
 	/// <summary>
 	/// Re-run NPC visibility diff against all logged-in players. Called after
 	/// death, revive, or any state change that flips IsDead.
@@ -1635,4 +2198,237 @@ public partial class Main : Node
 			RefreshNpcVisibility(peerId, tx, ty);
 		}
 	}
+
+	private void BroadcastNpcHp(ActiveNpc npc)
+	{
+		Broadcast(new
+		{
+			type = "npc_hp_updated",
+			npc_id = npc.Id,
+			hitpoints = npc.Hitpoints,
+			max_hitpoints = npc.MaxHitpoints
+		});
+	}
+
+	private void BroadcastPlayerHp(long playerId, int hp, int maxHp)
+	{
+		Broadcast(new
+		{
+			type = "player_hp_updated",
+			player_id = playerId,
+			hitpoints = hp,
+			max_hitpoints = maxHp
+		});
+	}
+
+	// ---------- Admin NPC editor ----------
+
+	internal void OpenNpcEditorForPlayer(long playerId, long npcId)
+	{
+		long peerId = -1;
+		foreach (var kv in _sessions) if (kv.Value.PlayerId == playerId) { peerId = kv.Key; break; }
+		if (peerId < 0) return;
+		if (!_sessions[peerId].IsAdmin)
+		{
+			ChatToPlayer(playerId, "Admin only.");
+			return;
+		}
+		if (!_npcs.ContainsKey(npcId)) return;
+		Send(peerId, new { type = "npc_editor_open", npc_id = npcId });
+	}
+
+	private void HandleNpcEditorGet(long peerId, JsonElement root)
+	{
+		if (!_sessions.TryGetValue(peerId, out var session)) return;
+		if (!session.IsAdmin) return;
+		if (!root.TryGetProperty("npc_id", out var idEl) || !idEl.TryGetInt64(out long npcId)) return;
+		if (!_npcs.TryGetValue(npcId, out var npc)) return;
+
+		Send(peerId, new
+		{
+			type = "npc_editor_data",
+			npc = new
+			{
+				id = npc.Id,
+				name = npc.Name,
+				display = npc.Display,
+				attackable = npc.Attackable,
+				hitpoints = npc.Hitpoints,
+				max_hitpoints = npc.MaxHitpoints,
+				accuracy = npc.Accuracy,
+				strength = npc.Strength,
+				defence = npc.Defence,
+				melee_bonus = npc.MeleeBonus,
+				melee_defense = npc.MeleeDefense,
+				spawn_timer = npc.SpawnTimerSeconds,
+				ai_package_state = npc.AiPackageState,
+				ai_action_state = npc.AiActionState,
+				loot_table_name = npc.LootTableName,
+				aggressive = npc.Aggressive,
+				aggro_range = npc.AggroRangeTiles,
+			}
+		});
+	}
+
+	private void HandleNpcEditorSave(long peerId, JsonElement root)
+	{
+		if (!_sessions.TryGetValue(peerId, out var session)) return;
+		if (!session.IsAdmin) return;
+		if (!root.TryGetProperty("npc_id", out var idEl) || !idEl.TryGetInt64(out long npcId)) return;
+		if (!_npcs.TryGetValue(npcId, out var npc)) return;
+		if (!root.TryGetProperty("updates", out var upEl) || upEl.ValueKind != JsonValueKind.Object) return;
+
+		var u = new Dictionary<string, object>();
+		foreach (var prop in upEl.EnumerateObject())
+		{
+			u[prop.Name] = prop.Value.ValueKind switch
+			{
+				JsonValueKind.True => true,
+				JsonValueKind.False => false,
+				JsonValueKind.String => prop.Value.GetString() ?? "",
+				JsonValueKind.Number => prop.Value.TryGetInt32(out int iv) ? iv : 0,
+				_ => (object)0,
+			};
+		}
+
+		try
+		{
+			if (u.ContainsKey("display"))          npc.Display = u["display"].ToString() ?? npc.Display;
+			if (u.ContainsKey("attackable"))       npc.Attackable = (bool)u["attackable"];
+			if (u.ContainsKey("ai_package_state")) npc.AiPackageState = u["ai_package_state"].ToString() ?? "idle";
+			if (u.ContainsKey("ai_action_state"))  npc.AiActionState = u["ai_action_state"].ToString() ?? "none";
+			if (u.ContainsKey("loot_table_name"))  npc.LootTableName = u["loot_table_name"].ToString() ?? "common_loot_1";
+			if (u.ContainsKey("spawn_timer"))      npc.SpawnTimerSeconds = Math.Max(1, Convert.ToInt32(u["spawn_timer"]));
+			if (u.ContainsKey("hitpoints"))        npc.Hitpoints = Math.Max(0, Convert.ToInt32(u["hitpoints"]));
+			if (u.ContainsKey("max_hitpoints"))    npc.MaxHitpoints = Math.Max(1, Convert.ToInt32(u["max_hitpoints"]));
+			// HP > max: bump max to match. Admin edits shouldn't silently clamp.
+			if (npc.Hitpoints > npc.MaxHitpoints)  npc.MaxHitpoints = npc.Hitpoints;
+			if (u.ContainsKey("accuracy"))         npc.Accuracy = Math.Max(1, Convert.ToInt32(u["accuracy"]));
+			if (u.ContainsKey("strength"))         npc.Strength = Math.Max(1, Convert.ToInt32(u["strength"]));
+			if (u.ContainsKey("defence"))          npc.Defence = Math.Max(1, Convert.ToInt32(u["defence"]));
+			if (u.ContainsKey("melee_bonus"))      npc.MeleeBonus = Math.Max(0, Convert.ToInt32(u["melee_bonus"]));
+			if (u.ContainsKey("melee_defense"))    npc.MeleeDefense = Math.Max(0, Convert.ToInt32(u["melee_defense"]));
+			if (u.ContainsKey("aggressive"))  npc.Aggressive = (bool)u["aggressive"];
+			if (u.ContainsKey("aggro_range")) npc.AggroRangeTiles = Math.Max(1, Convert.ToInt32(u["aggro_range"]));
+
+			// Sync the save dict to the FINAL values so the DB matches memory.
+			u["display"]          = npc.Display;
+			u["attackable"]       = npc.Attackable;
+			u["ai_package_state"] = npc.AiPackageState;
+			u["ai_action_state"]  = npc.AiActionState;
+			u["loot_table_name"]  = npc.LootTableName;
+			u["spawn_timer"]      = npc.SpawnTimerSeconds;
+			u["hitpoints"]        = npc.Hitpoints;
+			u["max_hitpoints"]    = npc.MaxHitpoints;
+			u["accuracy"]         = npc.Accuracy;
+			u["strength"]         = npc.Strength;
+			u["defence"]          = npc.Defence;
+			u["melee_bonus"]      = npc.MeleeBonus;
+			u["melee_defense"]    = npc.MeleeDefense;
+			u["aggressive"]  = npc.Aggressive;
+			u["aggro_range"] = npc.AggroRangeTiles;
+
+			_ = _db.SaveAdminNpcEditAsync(npcId, u);
+			BroadcastNpcHp(npc);
+			Broadcast(new { type = "npc_updated", npc = NpcToPacket(npc) });
+			NotifyNpcVisibilityChanged();
+			Send(peerId, new { type = "npc_editor_saved", ok = true, npc_id = npcId });
+		}
+		catch (Exception e)
+		{
+			GD.PrintErr($"[Server] npc_editor_save: {e.Message}");
+			SendError(peerId, "npc_editor_saved", "npc.save_failed");
+		}
+	}
+
+/// <summary>
+/// Each tick, check all pending pursuits. Promote to real combat when the
+/// player becomes adjacent. Re-route the player if the NPC moved.
+/// </summary>
+private void ProcessPendingEngage()
+{
+    if (_pendingEngage.Count == 0) return;
+
+    var toRemove = new List<long>();
+    var toEngage = new List<(long playerId, long npcId)>();
+
+    foreach (var kv in _pendingEngage)
+    {
+        long playerId = kv.Key;
+        long npcId = kv.Value;
+
+        if (!_npcs.TryGetValue(npcId, out var npc) || npc.IsDead)
+        {
+            toRemove.Add(playerId);
+            continue;
+        }
+        if (!_positions.ContainsKey(playerId))
+        {
+            toRemove.Add(playerId);
+            continue;
+        }
+        if (ArePositionsAdjacent(playerId, npc))
+        {
+            toRemove.Add(playerId);
+            toEngage.Add((playerId, npcId));
+            continue;
+        }
+        // Keep pursuing. MovePlayerAdjacentToNpc no-ops if player already routing.
+        MovePlayerAdjacentToNpc(playerId, npc);
+    }
+
+    foreach (var p in toRemove) _pendingEngage.Remove(p);
+    foreach (var (pid, nid) in toEngage) EngageNpc(pid, nid);
+}
+
+/// <summary>
+/// Aggressive NPCs scan for players within aggro_range and engage those whose
+/// final_level is within [1, npc.FinalLevel * 2]. Skips NPCs already in combat,
+/// returning home, dead, or past their leash.
+/// </summary>
+private void ProcessHostility()
+{
+    foreach (var npc in _npcs.Values)
+    {
+        if (!npc.Aggressive) continue;
+        if (npc.IsDead) continue;
+        if (_combatByNpc.ContainsKey(npc.Id)) continue;
+        if (npc.ReturningHome) continue;
+        if (DistanceFromSpawn(npc) > NpcLeashRadiusTiles) continue;
+
+        int nx = (int)MathF.Round(npc.PosX);
+        int ny = (int)MathF.Round(npc.PosZ);
+
+        long bestPlayer = 0;
+        int bestDist = int.MaxValue;
+        int levelCap = npc.FinalLevel * 2;
+
+        foreach (var kv in _sessions)
+        {
+            long playerId = kv.Value.PlayerId;
+            if (!_positions.ContainsKey(playerId)) continue;
+            if (_combatByPlayer.ContainsKey(playerId)) continue;
+            if (!_playerCombat.TryGetValue(playerId, out var pdata)) continue;
+            if (pdata.FinalLevel < 1 || pdata.FinalLevel > levelCap) continue;
+            if (pdata.CurrentHp <= 0) continue;
+
+            var ppos = _positions[playerId];
+            int px = (int)MathF.Round(ppos.X);
+            int py = (int)MathF.Round(ppos.Z);
+            int dist = Math.Max(Math.Abs(px - nx), Math.Abs(py - ny));
+            if (dist > npc.AggroRangeTiles) continue;
+            if (dist < bestDist)
+            {
+                bestDist = dist;
+                bestPlayer = playerId;
+            }
+        }
+
+        if (bestPlayer != 0)
+        {
+			Diag.Log("diag_combat", $"Hostile NPC {npc.Name} (id {npc.Id}) aggroed on player {bestPlayer} (dist {bestDist})");
+			EngageNpc(bestPlayer, npc.Id, initiatedByPlayer: false);
+        }
+    }
+}
 }

@@ -14,6 +14,9 @@ signal player_joined(player_id: int, username: String, is_admin: bool, x: float,
 signal player_left(player_id: int)
 signal player_moved(player_id: int, x: float, y: float, z: float, yaw: float)
 signal self_position_updated(x: float, y: float, z: float, yaw: float)
+signal player_hp_updated(player_id: int, hitpoints: int, max_hitpoints: int)
+signal player_combat_state(player_id: int, in_combat: bool, npc_id: int)
+signal player_respawned(x: float, y: float, z: float, yaw: float, hitpoints: int, max_hitpoints: int)
 
 signal world_info_received(server_version: int, server_format: int)
 signal world_data_received(data: Dictionary)
@@ -41,6 +44,14 @@ signal npc_render_info_received(slugs: Dictionary)
 signal npc_render_data_received(slug: String, hash: String, files: Dictionary)
 signal npc_render_updated_received(slugs: Dictionary)
 signal npc_moved(npc_id: int, x: float, y: float, z: float, yaw: float)
+signal npc_anim_changed(npc_id: int, anim: String, duration_ms: int)
+signal npc_hp_updated(npc_id: int, hitpoints: int, max_hitpoints: int)
+signal damage_number(target_type: String, target_id: int, amount: int)
+signal npc_updated(npc: Dictionary)
+signal npc_combat_state(npc_id: int, in_combat: bool)
+signal npc_editor_open(npc_id: int)
+signal npc_editor_data(npc: Dictionary)
+signal npc_editor_saved(ok: bool, npc_id: int)
 
 const HOST := "127.0.0.1"
 const PORT := 9999
@@ -151,6 +162,14 @@ func send_walk_path(path: Array) -> void:
 	send({"type": "player_walk", "path": arr})
 
 
+func send_npc_editor_get(npc_id: int) -> void:
+	send({"type": "npc_editor_get", "npc_id": npc_id})
+
+
+func send_npc_editor_save(npc_id: int, updates: Dictionary) -> void:
+	send({"type": "npc_editor_save", "npc_id": npc_id, "updates": updates})
+
+
 func send_chat(message: String) -> void:
 	send({"type": "chat_send", "message": message})
 
@@ -199,24 +218,19 @@ func _on_packet(_id: int, packet: PackedByteArray) -> void:
 
 	match msg.get("type", ""):
 		"hello_ok":
-			
 			hello_received.emit(msg["sqlite_version"], int(msg["total_players"]))
 		"register_result":
-			
 			register_result.emit(msg["ok"], msg.get("username", ""), _error_text(msg))
-			
 		"login_result":
 			if not msg["ok"]:
 				msg["error"] = _error_text(msg)
 			login_result.emit(msg["ok"], msg)
-
 		"world_state":
 			var players: Variant = msg.get("players", [])
 			if typeof(players) == TYPE_ARRAY:
 				world_state_received.emit(players)
 			else:
 				push_warning("world_state missing 'players' array.")
-				
 		"player_joined":
 			player_joined.emit(
 				int(msg["player_id"]),
@@ -226,21 +240,18 @@ func _on_packet(_id: int, packet: PackedByteArray) -> void:
 				float(msg.get("y", 0.0)),
 				float(msg.get("z", 0.0)),
 				float(msg.get("yaw", 0.0)))
-				
 		"npc_joined":
 			var list: Variant = msg.get("npcs", [])
 			if typeof(list) == TYPE_ARRAY:
 				npc_joined.emit(list)
 			else:
 				push_warning("npc_joined missing 'npcs' array")
-		
 		"npc_left":
 			var id_list: Variant = msg.get("ids", [])
 			if typeof(id_list) == TYPE_ARRAY:
 				npc_left.emit(id_list)
 			else:
 				push_warning("npc_left missing 'ids' array")
-		
 		"npc_tick_positions":
 			var updates: Variant = msg.get("updates", [])
 			if typeof(updates) != TYPE_ARRAY: return
@@ -252,15 +263,12 @@ func _on_packet(_id: int, packet: PackedByteArray) -> void:
 					float(u.get("y", 0.0)),
 					float(u.get("z", 0.0)),
 					float(u.get("yaw", 0.0)))
-		
 		"npc_render_info_response":
 			var slugs_d: Variant = msg.get("slugs", {})
 			if typeof(slugs_d) == TYPE_DICTIONARY:
 				npc_render_info_received.emit(slugs_d)
 			else:
 				push_warning("npc_render_info_response missing 'slugs'")
-		
-		
 		"npc_render_data":
 			var slug := str(msg.get("slug", ""))
 			var hash := str(msg.get("hash", ""))
@@ -269,14 +277,12 @@ func _on_packet(_id: int, packet: PackedByteArray) -> void:
 				push_warning("npc_render_data malformed")
 			else:
 				npc_render_data_received.emit(slug, hash, files_d)
-		
 		"npc_render_updated":
 			var upd_slugs: Variant = msg.get("slugs", {})
 			if typeof(upd_slugs) == TYPE_DICTIONARY:
 				npc_render_updated_received.emit(upd_slugs)
 			else:
 				push_warning("npc_render_updated missing 'slugs'")
-
 		"tick_positions":
 			server_tick = int(msg.get("tick", 0))
 			var updates: Variant = msg.get("updates", [])
@@ -295,18 +301,15 @@ func _on_packet(_id: int, packet: PackedByteArray) -> void:
 					self_position_updated.emit(ux, uy, uz, uyaw)
 				else:
 					player_moved.emit(pid, ux, uy, uz, uyaw)
-
 		"pong":
 			var sent_t := int(msg.get("t", 0))
 			if sent_t > 0:
 				rtt_ms = Time.get_ticks_msec() - sent_t
 				pong_received.emit(rtt_ms)
-
 		"shutdown":
 			server_shutdown.emit(
 				String(msg.get("reason", "")),
 				int(msg.get("reconnect_after_ms", 1000)))
-
 		"world_info_result":
 			if msg.get("ok", false):
 				world_info_received.emit(
@@ -314,7 +317,6 @@ func _on_packet(_id: int, packet: PackedByteArray) -> void:
 					int(msg.get("format_version", 0)))
 			else:
 				world_error.emit(_error_text(msg))
-		
 		"world_data":
 			if msg.get("ok", false):
 				var data: Variant = msg.get("data", {})
@@ -325,13 +327,11 @@ func _on_packet(_id: int, packet: PackedByteArray) -> void:
 					world_error.emit(Texts.get_text("world.error.bad_data"))
 			else:
 				world_error.emit(_error_text(msg))
-
 		"world_updated":
 			print("[Network] world_updated received: v%d" % int(msg.get("world_version", 0)))
 			world_updated.emit(
 				int(msg.get("world_version", 0)),
 				int(msg.get("format_version", 0)))
-		
 		"tooltips_info_result":
 			if msg.get("ok", false):
 				tooltips_info_received.emit(
@@ -341,7 +341,6 @@ func _on_packet(_id: int, packet: PackedByteArray) -> void:
 					msg.get("scripts", {}))
 			else:
 				push_warning("tooltips_info failed: ", msg.get("error_key", ""))
-			
 		"gfs_info_result":
 			if msg.get("ok", false):
 				gfs_info_received.emit(
@@ -350,17 +349,14 @@ func _on_packet(_id: int, packet: PackedByteArray) -> void:
 					msg.get("scripts", {}))
 			else:
 				push_warning("gfs_info failed: ", msg.get("error_key", ""))
-				
 		"gfs_updated":
 			gfs_updated.emit(
 				int(msg.get("version", 0)),
 				msg.get("scripts", {}))
-				
 		"run_action_result":
 			run_action_result.emit(
 				msg.get("ok", false),
 				msg.get("effects", []))
-		
 		"chat_message":
 			var fc: Variant = msg.get("from_chunk", [])
 			var cx := 0
@@ -372,7 +368,6 @@ func _on_packet(_id: int, packet: PackedByteArray) -> void:
 				String(msg.get("username", "")),
 				String(msg.get("message", "")),
 				Vector2i(cx, cy))
-				
 		"overhead_message":
 			var fc: Variant = msg.get("from_chunk", [])
 			var cx := 0
@@ -384,16 +379,64 @@ func _on_packet(_id: int, packet: PackedByteArray) -> void:
 				String(msg.get("username", "")),
 				String(msg.get("text", "")),
 				Vector2i(cx, cy))
-
 		"private_message":
 			private_message_received.emit(String(msg.get("text", "")))
-		
 		"anim_changed":
 			anim_changed_received.emit(
 				int(msg.get("player_id", 0)),
 				String(msg.get("anim", "")),
 				int(msg.get("duration_ms", 0)))
-
+		"npc_anim_changed":
+			npc_anim_changed.emit(
+				int(msg.get("npc_id", 0)),
+				String(msg.get("anim", "")),
+				int(msg.get("duration_ms", 0)))
+		"player_respawned":
+			player_respawned.emit(
+				float(msg.get("x", 0.0)),
+				float(msg.get("y", 0.0)),
+				float(msg.get("z", 0.0)),
+				float(msg.get("yaw", 0.0)),
+				int(msg.get("hitpoints", 10)),
+				int(msg.get("max_hitpoints", 10)))
+		"npc_hp_updated":
+			npc_hp_updated.emit(
+				int(msg.get("npc_id", 0)),
+				int(msg.get("hitpoints", 0)),
+				int(msg.get("max_hitpoints", 1)))
+		"npc_updated":
+			var nupd: Variant = msg.get("npc", {})
+			if typeof(nupd) == TYPE_DICTIONARY:
+				npc_updated.emit(nupd)
+		"player_hp_updated":
+			player_hp_updated.emit(
+				int(msg.get("player_id", 0)),
+				int(msg.get("hitpoints", 10)),
+				int(msg.get("max_hitpoints", 10)))
+		"player_combat_state":
+			player_combat_state.emit(
+				int(msg.get("player_id", 0)),
+				bool(msg.get("in_combat", false)),
+				int(msg.get("npc_id", 0)))
+		"npc_combat_state":
+			npc_combat_state.emit(
+				int(msg.get("npc_id", 0)),
+				bool(msg.get("in_combat", false)))
+		"npc_editor_open":
+			npc_editor_open.emit(int(msg.get("npc_id", 0)))
+		"npc_editor_data":
+			var ndata: Variant = msg.get("npc", {})
+			if typeof(ndata) == TYPE_DICTIONARY:
+				npc_editor_data.emit(ndata)
+		"npc_editor_saved":
+			npc_editor_saved.emit(
+				bool(msg.get("ok", false)),
+				int(msg.get("npc_id", 0)))
+		"damage_number":
+			damage_number.emit(
+				String(msg.get("target_type", "")),
+				int(msg.get("target_id", 0)),
+				int(msg.get("amount", 0)))
 		_:
 			push_warning("Unknown message from server: %s" % str(msg))
 
