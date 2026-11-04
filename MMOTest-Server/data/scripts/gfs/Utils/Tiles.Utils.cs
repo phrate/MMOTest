@@ -33,6 +33,15 @@ public static class TilesUtils
                 return true;
             return false;
         });
+    
+        reg.Register("IsSameTile", (ctx, args) =>
+        {
+            if (args.Count < 2) return false;
+            var a = AsTile(args[0]);
+            var b = AsTile(args[1]);
+            if (a == null || b == null) return false;
+            return a.Value.X == b.Value.X && a.Value.Y == b.Value.Y;
+        });
     }
 
     private static (int X, int Y)? AsTile(object? v)

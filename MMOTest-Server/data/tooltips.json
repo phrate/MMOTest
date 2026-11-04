@@ -1,6 +1,6 @@
 {
 	"format_version": 1,
-	"version": 6,
+	"version": 7,
 	"entries": {
 		"player": "tooltips/tooltip_player.gfs",
 		"npc": "tooltips/tooltip_npc_generic.gfs"

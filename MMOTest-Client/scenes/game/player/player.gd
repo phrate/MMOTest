@@ -31,6 +31,7 @@ void fragment() {
 @export var move_speed := 2.0
 @export var camera: Camera3D
 
+var _game_scene: Node = null
 var _target_pos: Vector3
 var _target_yaw: float = 0.0
 var _pending_path_id := -1
@@ -44,10 +45,23 @@ var _self_hp_orb_material: ShaderMaterial
 var _self_hp_label: Label
 
 var _context_menu: PopupMenu = null
-var _context_target_id := 0
-var _context_actions: Array = []
+var _context_merged: Array = []
+
+var _hover_layer: CanvasLayer
+var _hover_panel: PanelContainer
+var _hover_label: Label
+const HOVER_LINGER_MS := 200
+var _hover_target: Node3D = null
+var _hover_last_hit_ms: int = 0
 
 @onready var visuals: EntityVisuals = _make_visuals()
+
+
+
+func _game() -> Node:
+	if _game_scene == null or not is_instance_valid(_game_scene):
+		_game_scene = get_tree().get_first_node_in_group("game_scene")
+	return _game_scene
 
 
 func _make_visuals() -> EntityVisuals:
@@ -77,6 +91,7 @@ func _ready() -> void:
 	_apply_render_scene()
 	_build_self_hp_orb()
 	_on_session_changed()
+	_build_hover_tooltip()
 
 
 # ---------- Public API (delegates) ----------
@@ -295,9 +310,11 @@ func _on_session_changed() -> void:
 func _unhandled_input(event: InputEvent) -> void:
 	if event is InputEventMouseButton and event.pressed:
 		if event.button_index == MOUSE_BUTTON_LEFT:
+			if _hover_panel: _hover_panel.visible = false
 			_try_primary_click()
 			get_viewport().set_input_as_handled()
 		elif event.button_index == MOUSE_BUTTON_RIGHT:
+			if _hover_panel: _hover_panel.visible = false
 			_try_right_click()
 			get_viewport().set_input_as_handled()
 
@@ -312,25 +329,34 @@ func _try_primary_click() -> void:
 	var tile_hit := _ray_to_tile_with_t(from, dir)
 	var entity_hit := _find_entity_under_ray(from, dir)
 
-	# If an entity is hit and it's in front of the tile, try its primary action.
 	if entity_hit.node != null and entity_hit.t <= tile_hit.t:
-		var node: Node3D = entity_hit.node
-		var entity_type := "player"
-		if node.has_method("get_entity_type"):
-			entity_type = node.get_entity_type()
+		var clicked: Node3D = entity_hit.node
+		var tile := Vector2i(roundi(clicked.global_position.x), roundi(clicked.global_position.z))
+		var entities: Array = []
+		if _game() != null:
+			entities = _game().get_entities_on_tile(tile)
+		if entities.is_empty():
+			entities = [clicked]
 
-		# Only NPCs support primary-click actions. Players are click-through.
-		if entity_type == "npc":
-			var npc_id: int = node.get_npc_id()
-			var actions: Array = Tooltips.build_actions("npc", _npc_system_vars(npc_id))
-			if not actions.is_empty():
-				var action: Dictionary = actions[0]
-				var script_path: String = str(action.get("script", ""))
-				if not script_path.is_empty():
-					Network.run_action(script_path, action.get("args", {}), npc_id)
-					return
+		# Priority winner determines what left-click does. Players → click-through.
+		var winner: Node3D = clicked
+		if _game() != null:
+			winner = _game().pick_priority_winner(tile, entities)
 
-	# Fall through: walk to the clicked tile.
+		if winner != null:
+			var wtype := "player"
+			if winner.has_method("get_entity_type"):
+				wtype = winner.get_entity_type()
+			if wtype == "npc":
+				var npc_id: int = winner.get_npc_id()
+				var actions: Array = Tooltips.build_actions("npc", _npc_system_vars(npc_id))
+				if not actions.is_empty():
+					var action: Dictionary = actions[0]
+					var script_path: String = str(action.get("script", ""))
+					if not script_path.is_empty():
+						Network.run_action(script_path, action.get("args", {}), npc_id)
+						return
+
 	if tile_hit.tile == INVALID_TILE: return
 	_request_path_to(tile_hit.tile)
 
@@ -347,26 +373,66 @@ func _try_right_click() -> void:
 	if entity_hit.node == null: return
 	if entity_hit.t > tile_hit.t: return
 
-	var node: Node3D = entity_hit.node
-	var entity_type := "player"
-	if node.has_method("get_entity_type"):
-		entity_type = node.get_entity_type()
-	if not Tooltips.has_tooltip_menu(entity_type): return
+	var clicked: Node3D = entity_hit.node
+	var tile := Vector2i(roundi(clicked.global_position.x), roundi(clicked.global_position.z))
 
-	var target_id := 0
-	var system_vars := {}
-	if entity_type == "npc":
-		target_id = node.get_npc_id()
-		system_vars = _npc_system_vars(target_id)
+	var entities: Array = []
+	if _game() != null:
+		entities = _game().get_entities_on_tile(tile)
+	if entities.is_empty():
+		entities = [clicked]
+
+	# Sort: players (by sid) then NPCs (by id).
+	entities.sort_custom(_compare_entities_for_tooltip)
+
+	# Merge each entity's tooltip actions in order.
+	var merged: Array = []
+	for node in entities:
+		if not is_instance_valid(node): continue
+		var etype := "player"
+		if node.has_method("get_entity_type"):
+			etype = node.get_entity_type()
+		if not Tooltips.has_tooltip_menu(etype): continue
+
+		var target_id := 0
+		var system_vars := {}
+		if etype == "npc":
+			target_id = node.get_npc_id()
+			system_vars = _npc_system_vars(target_id)
+		else:
+			target_id = node.get_player_id()
+			var uname := ""
+			if "username" in node:
+				uname = str(node.username)
+			system_vars = _player_system_vars(target_id, uname)
+
+		var acts: Array = Tooltips.build_actions(etype, system_vars)
+		for act in acts:
+			merged.append({
+				"display": str(act.get("display", "")),
+				"script": str(act.get("script", "")),
+				"args": act.get("args", {}),
+				"target_id": target_id,
+			})
+
+	_show_merged_context_menu(merged, mp)
+
+
+func _compare_entities_for_tooltip(a: Node, b: Node) -> bool:
+	var at := "player"
+	var bt := "player"
+	if a.has_method("get_entity_type"): at = a.get_entity_type()
+	if b.has_method("get_entity_type"): bt = b.get_entity_type()
+
+	if at == "player" and bt == "npc": return true
+	if at == "npc" and bt == "player": return false
+
+	if at == "player":
+		var asid := int(Players.get_player(a.get_player_id()).get("sid", 0x7FFFFFFF))
+		var bsid := int(Players.get_player(b.get_player_id()).get("sid", 0x7FFFFFFF))
+		return asid < bsid
 	else:
-		target_id = node.get_player_id()
-		var uname := ""
-		if "username" in node:
-			uname = str(node.username)
-		system_vars = _player_system_vars(target_id, uname)
-
-	var actions: Array = Tooltips.build_actions(entity_type, system_vars)
-	_show_context_menu(target_id, actions, mp)
+		return a.get_npc_id() < b.get_npc_id()
 
 
 func _find_entity_under_ray(from: Vector3, dir: Vector3) -> Dictionary:
@@ -384,15 +450,14 @@ func _find_entity_under_ray(from: Vector3, dir: Vector3) -> Dictionary:
 	return {"node": entity, "t": from.distance_to(hit.position)}
 
 
-func _show_context_menu(target_id: int, actions: Array, mouse_pos: Vector2) -> void:
-	if actions.is_empty(): return
+func _show_merged_context_menu(items: Array, mouse_pos: Vector2) -> void:
+	if items.is_empty(): return
 	var menu := _ensure_context_menu()
 	menu.clear()
-	_context_target_id = target_id
-	_context_actions = actions
+	_context_merged = items
 	var id := 0
-	for action in actions:
-		menu.add_item(str(action.get("display", action.get("id", "?"))), id)
+	for item in items:
+		menu.add_item(str(item.get("display", "?")), id)
 		id += 1
 	menu.position = Vector2i(mouse_pos)
 	menu.popup()
@@ -409,11 +474,12 @@ func _ensure_context_menu() -> PopupMenu:
 
 
 func _on_context_menu_selected(id: int) -> void:
-	if id < 0 or id >= _context_actions.size(): return
-	var action: Dictionary = _context_actions[id]
-	var script_path: String = str(action.get("script", ""))
+	if id < 0 or id >= _context_merged.size(): return
+	var item: Dictionary = _context_merged[id]
+	var script_path: String = str(item.get("script", ""))
 	if script_path.is_empty(): return
-	Network.run_action(script_path, action.get("args", {}), _context_target_id)
+	var target_id: int = int(item.get("target_id", 0))
+	Network.run_action(script_path, item.get("args", {}), target_id)
 
 
 func _request_path_to(tile: Vector2i) -> void:
@@ -452,6 +518,7 @@ func _process(delta: float) -> void:
 	else:
 		global_position = global_position.move_toward(_target_pos, step)
 	rotation.y = _target_yaw
+	_update_hover_tooltip()
 
 
 func _on_self_position_updated(x: float, y: float, z: float, yaw: float) -> void:
@@ -599,3 +666,164 @@ func _player_system_vars(player_id: int, username: String) -> Dictionary:
 		"PLAYER_ID": player_id,
 		"PLAYER_NAME": username,
 	}
+
+
+func _build_hover_tooltip() -> void:
+	_hover_layer = CanvasLayer.new()
+	_hover_layer.name = "HoverTooltipLayer"
+	_hover_layer.layer = 9
+	add_child(_hover_layer)
+
+	_hover_panel = PanelContainer.new()
+	_hover_panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_hover_panel.visible = false
+
+	var style := StyleBoxFlat.new()
+	style.bg_color = Color(0.05, 0.05, 0.05, 0.85)
+	style.border_color = Color(1, 1, 1, 0.15)
+	style.border_width_left = 1
+	style.border_width_right = 1
+	style.border_width_top = 1
+	style.border_width_bottom = 1
+	style.content_margin_left = 6
+	style.content_margin_right = 6
+	style.content_margin_top = 3
+	style.content_margin_bottom = 3
+	_hover_panel.add_theme_stylebox_override("panel", style)
+	_hover_layer.add_child(_hover_panel)
+
+	_hover_label = Label.new()
+	_hover_label.add_theme_font_size_override("font_size", 13)
+	_hover_label.add_theme_color_override("font_color", Color(1, 1, 1))
+	_hover_label.add_theme_constant_override("outline_size", 3)
+	_hover_label.add_theme_color_override("font_outline_color", Color(0, 0, 0))
+	_hover_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_hover_panel.add_child(_hover_label)
+
+
+func _update_hover_tooltip() -> void:
+	if _hover_panel == null: return
+
+	# Hard-hide conditions bypass linger entirely.
+	for m in get_tree().get_nodes_in_group("modal_blockers"):
+		if m is CanvasItem and (m as CanvasItem).visible:
+			_hover_target = null
+			_hover_panel.visible = false
+			return
+	if get_viewport().gui_get_hovered_control() != null:
+		_hover_target = null
+		_hover_panel.visible = false
+		return
+
+	# Resolve this frame's candidate.
+	var candidate := _resolve_hover_target()
+	var now := Time.get_ticks_msec()
+
+	if candidate != null:
+		# Acquire or refresh the target.
+		_hover_target = candidate
+		_hover_last_hit_ms = now
+	elif _hover_target != null:
+		# No candidate this frame: linger on the previous target briefly.
+		if now - _hover_last_hit_ms > HOVER_LINGER_MS:
+			_hover_target = null
+
+	if _hover_target == null or not is_instance_valid(_hover_target) or not _hover_target.is_inside_tree():
+		_hover_panel.visible = false
+		return
+
+	var npc_id: int = _hover_target.get_npc_id()
+	var actions: Array = Tooltips.build_actions("npc", _npc_system_vars(npc_id))
+	if actions.is_empty():
+		_hover_panel.visible = false
+		return
+
+	var primary: Dictionary = actions[0]
+	_hover_label.text = str(primary.get("display", primary.get("id", "?")))
+
+	var mp := get_viewport().get_mouse_position()
+	_hover_panel.reset_size()
+	_hover_panel.position = Vector2i(mp + Vector2(16, 0))
+	_hover_panel.visible = true
+
+
+## Stateless per-frame resolution: which NPC should be shown *if* the timer
+## decides to switch? Returns null when nothing qualifies.
+func _resolve_hover_target() -> Node3D:
+	var cam := get_viewport().get_camera_3d()
+	if cam == null: return null
+
+	var mp := get_viewport().get_mouse_position()
+	var from := cam.project_ray_origin(mp)
+	var dir := cam.project_ray_normal(mp)
+	var space := get_world_3d().direct_space_state
+
+	# Identify which tile we're hovering by the nearest entity hit.
+	var hit1 := _find_entity_under_ray_any(from, dir)
+	if hit1.node == null: return null
+	var entity1: Node3D = hit1.node
+
+	var tile := Vector2i(
+		roundi(entity1.global_position.x),
+		roundi(entity1.global_position.z))
+	var entities: Array = []
+	if _game() != null:
+		entities = _game().get_entities_on_tile(tile)
+	if entities.is_empty():
+		entities = [entity1]
+
+	# The priority NPC on that tile (lowest npc_id).
+	var priority_npc: Node3D = null
+	for e in entities:
+		if not is_instance_valid(e): continue
+		if not e.has_method("get_entity_type"): continue
+		if e.get_entity_type() != "npc": continue
+		if priority_npc == null or e.get_npc_id() < priority_npc.get_npc_id():
+			priority_npc = e
+	if priority_npc == null: return null
+
+	# Walk the ray from the cursor. Skip every hitbox whose owning entity is
+	# NOT the priority NPC. The moment we hit a body owned by the priority
+	# NPC, we know its hitbox is under the cursor — return it. Anything in
+	# front (hidden NPCs, players) is transparent to this check.
+	var excludes: Array[RID] = []
+	for _i in range(16):
+		var q := PhysicsRayQueryParameters3D.create(
+			from, from + dir * 300.0, Hitboxes.HITBOX_COLLISION_LAYER)
+		q.collide_with_areas = false
+		q.collide_with_bodies = true
+		q.exclude = excludes
+		var hit := space.intersect_ray(q)
+		if hit.is_empty(): return null
+		var body = hit.collider
+		if not (body is StaticBody3D): return null
+		if _body_owned_by(body, priority_npc):
+			return priority_npc
+		excludes.append(body.get_rid())
+	return null
+
+
+## True if `body` (a StaticBody3D) is the priority NPC's hitbox — either
+## directly parented (auto/editor hitbox named "Hitbox") or nested inside
+## its render scene.
+func _body_owned_by(body: Node, entity: Node) -> bool:
+	var n: Node = body
+	while n != null:
+		if n == entity: return true
+		n = n.get_parent()
+	return false
+
+
+func _find_entity_under_ray_any(from: Vector3, dir: Vector3) -> Dictionary:
+	var space := get_world_3d().direct_space_state
+	var q := PhysicsRayQueryParameters3D.create(
+		from, from + dir * 300.0, Hitboxes.HITBOX_COLLISION_LAYER)
+	q.collide_with_areas = false
+	q.collide_with_bodies = true
+	var hit := space.intersect_ray(q)
+	if hit.is_empty(): return {"node": null, "t": INF}
+	var body = hit.collider
+	if not (body is StaticBody3D): return {"node": null, "t": INF}
+	var entity: Node3D = body.get_parent()
+	if entity == null: return {"node": null, "t": INF}
+	return {"node": entity, "t": from.distance_to(hit.position)}

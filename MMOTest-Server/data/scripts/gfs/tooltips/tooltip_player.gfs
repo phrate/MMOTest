@@ -2,10 +2,10 @@
 [tooltip]
 
 id = ${PLAYER_ID}
+player_display_name = ${PLAYER_NAME}
 
-// Rendered in order. Each entry: key: "script", "Display", {args}
 actions = [
-	follow: "player/follow_player.gfs", "Follow", {"follow_id"=id}
-	trade: "trade/trade_player.gfs", "Trade", {"id"=id, special=true, color=green}
-	examine: "examine/examine_player.gfs", "Examine", {"id"=id}
+    follow: "player/follow_player.gfs", "Follow `player_display_name`", {"follow_id"=id}
+    trade: "trade/trade_player.gfs", "Trade `player_display_name`", {"id"=id}
+    examine: "examine/examine_player.gfs", "Examine `player_display_name`", {"id"=id}
 ]

@@ -10,7 +10,7 @@ signal register_result(ok: bool, username: String, error: String)
 signal login_result(ok: bool, data: Dictionary)
 
 signal world_state_received(players: Array)
-signal player_joined(player_id: int, username: String, is_admin: bool, x: float, y: float, z: float, yaw: float)
+signal player_joined(player_id: int, username: String, is_admin: bool, x: float, y: float, z: float, yaw: float, sid: int)
 signal player_left(player_id: int)
 signal player_moved(player_id: int, x: float, y: float, z: float, yaw: float)
 signal self_position_updated(x: float, y: float, z: float, yaw: float)
@@ -239,7 +239,8 @@ func _on_packet(_id: int, packet: PackedByteArray) -> void:
 				float(msg.get("x", 0.0)),
 				float(msg.get("y", 0.0)),
 				float(msg.get("z", 0.0)),
-				float(msg.get("yaw", 0.0)))
+				float(msg.get("yaw", 0.0)),
+				int(msg.get("sid", 0)))
 		"npc_joined":
 			var list: Variant = msg.get("npcs", [])
 			if typeof(list) == TYPE_ARRAY:

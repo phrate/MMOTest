@@ -24,6 +24,8 @@ var _target_bar_npc_id: int = 0
 
 
 func _ready() -> void:
+	add_to_group("game_scene")
+	process_priority = 100
 	if not Session.is_logged_in():
 		return
 
@@ -68,6 +70,10 @@ func _ready() -> void:
 	add_child(_editor_overlay)
 
 	_build_target_hp_bar()
+
+
+func _process(_delta: float) -> void:
+	_update_visibility()
 
 
 func _exit_tree() -> void:
@@ -410,3 +416,104 @@ func _on_damage_number(target_type: String, target_id: int, amount: int) -> void
 			elif _remote_players.has(target_id):
 				_remote_players[target_id].show_damage(amount)
 				_remote_players[target_id].bump_hp_bar()
+
+
+func _update_visibility() -> void:
+	# The local player's rounded tile — treated as an automatic priority winner.
+	var local_tile := Vector2i(0x7FFFFFFF, 0x7FFFFFFF)
+	if _local_player != null and is_instance_valid(_local_player):
+		local_tile = Vector2i(
+			roundi(_local_player.global_position.x),
+			roundi(_local_player.global_position.z))
+
+	var groups: Dictionary = {}   # Vector2i -> Array[Node3D]
+
+	for id in _remote_players:
+		var node: Node3D = _remote_players[id]
+		if not is_instance_valid(node): continue
+		var tile := Vector2i(roundi(node.global_position.x), roundi(node.global_position.z))
+		if not groups.has(tile): groups[tile] = []
+		groups[tile].append(node)
+
+	for id in _npcs:
+		var node: Node3D = _npcs[id]
+		if not is_instance_valid(node): continue
+		var tile := Vector2i(roundi(node.global_position.x), roundi(node.global_position.z))
+		if not groups.has(tile): groups[tile] = []
+		groups[tile].append(node)
+
+	for tile in groups:
+		var stack: Array = groups[tile]
+
+		# Local player is on this tile — local player always wins rendering.
+		# Hide every remote entity here (transient overlap during wander/pathing).
+		if tile == local_tile:
+			for node in stack:
+				node.visible = false
+			continue
+
+		if stack.size() == 1:
+			stack[0].visible = true
+			continue
+
+		var winner: Node3D = pick_priority_winner(tile, stack)
+		for node in stack:
+			node.visible = (node == winner)
+
+
+## Returns all remote entities currently occupying `tile`, in raw (unsorted) order.
+func get_entities_on_tile(tile: Vector2i) -> Array:
+	var out: Array = []
+	for id in _remote_players:
+		var node: Node3D = _remote_players[id]
+		if not is_instance_valid(node): continue
+		if Vector2i(roundi(node.global_position.x), roundi(node.global_position.z)) == tile:
+			out.append(node)
+	for id in _npcs:
+		var node: Node3D = _npcs[id]
+		if not is_instance_valid(node): continue
+		if Vector2i(roundi(node.global_position.x), roundi(node.global_position.z)) == tile:
+			out.append(node)
+	return out
+
+
+## Priority winner for rendering + primary-click + hover:
+##   1. An NPC the local player is currently in combat with.
+##   2. A player (lower sid wins).
+##   3. An NPC (lower id wins).
+func pick_priority_winner(_tile: Vector2i, stack: Array) -> Node3D:
+	# Priority 1: an NPC the local player is currently in combat with.
+	for node in stack:
+		if not is_instance_valid(node): continue
+		if node.has_method("get_entity_type") and node.get_entity_type() == "npc":
+			if Session.combat_target_npc_id != 0 and node.get_npc_id() == Session.combat_target_npc_id:
+				return node
+
+	# Priority 2: a player, lower sid wins.
+	var best_player: Node3D = null
+	var best_sid: int = 0x7FFFFFFF
+	for node in stack:
+		if not is_instance_valid(node): continue
+		if node.has_method("get_entity_type") and node.get_entity_type() == "npc":
+			continue
+		var pid: int = node.get_player_id()
+		var sid: int = int(Players.get_player(pid).get("sid", 0))
+		if best_player == null or sid < best_sid:
+			best_sid = sid
+			best_player = node
+	if best_player != null: return best_player
+
+	# Priority 3: an NPC, lower id wins.
+	var best_npc: Node3D = null
+	var best_npc_id: int = 0x7FFFFFFF
+	for node in stack:
+		if not is_instance_valid(node): continue
+		if not node.has_method("get_entity_type") or node.get_entity_type() != "npc":
+			continue
+		var nid: int = node.get_npc_id()
+		if best_npc == null or nid < best_npc_id:
+			best_npc_id = nid
+			best_npc = node
+	if best_npc != null: return best_npc
+
+	return stack[0]

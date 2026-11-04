@@ -17,10 +17,27 @@ public static class PlayerUtils
                 ctx.System["SELF_PATHFINDING_ROUTE"] = new List<object?>();
                 return new List<object?>();
             }
+
+            // Same-tile case: step aside to an adjacent walkable tile so adjacency
+            // checks (trade, follow, combat) can pass on the next tick.
+            if (main.TryGetPosition(ctx.SelfPlayerId, out var curPos))
+            {
+                int cx = (int)Math.Round(curPos.X);
+                int cy = (int)Math.Round(curPos.Z);
+                if (cx == tile.Value.X && cy == tile.Value.Y)
+                {
+                    var adjRoute = main.FindAdjacentWalkablePath(cx, cy);
+                    var outAdj = new List<object?>();
+                    foreach (var t in adjRoute) outAdj.Add(new List<object?> { (long)t.X, (long)t.Y });
+                    ctx.System["SELF_PATHFINDING_ROUTE"] = outAdj;
+                    if (adjRoute.Count > 0) main.SetIntent(ctx.SelfPlayerId, adjRoute);
+                    return outAdj;
+                }
+            }
+
             var route = main.PathfindToNearest(ctx.SelfPlayerId, tile.Value.X, tile.Value.Y);
             var goal = new Vector2I(tile.Value.X, tile.Value.Y);
-            if (route.Count > 0 && route[^1] == goal)
-                route.RemoveAt(route.Count - 1);
+            if (route.Count > 0 && route[^1] == goal) route.RemoveAt(route.Count - 1);
             var outList = new List<object?>();
             foreach (var t in route) outList.Add(new List<object?> { (long)t.X, (long)t.Y });
             ctx.System["SELF_PATHFINDING_ROUTE"] = outList;

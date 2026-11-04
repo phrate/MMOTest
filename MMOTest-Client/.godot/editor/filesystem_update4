@@ -10,3 +10,5 @@ res://scenes/game/chat_box/chat_box.tscn
 res://scenes/game/tile_highlighter.tscn
 res://scenes/game/game.gd
 res://scenes/game/npc/npc_editor_overlay.gd
+res://autoload/Network.gd
+res://autoload/Players.gd

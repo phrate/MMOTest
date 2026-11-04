@@ -47,12 +47,13 @@ func _on_world_state(players: Array) -> void:
 
 
 func _on_player_joined(player_id: int, username: String, is_admin: bool,
-		x: float, y: float, z: float, yaw: float) -> void:
+		x: float, y: float, z: float, yaw: float, sid: int) -> void:
 	var d := {
 		"player_id": player_id,
 		"username": username,
 		"is_admin": is_admin,
 		"x": x, "y": y, "z": z, "yaw": yaw,
+		"sid": sid,
 	}
 	if _add(d):
 		changed.emit()
@@ -110,6 +111,7 @@ func _add(p: Dictionary) -> bool:
 		"hitpoints": int(p.get("hitpoints", 10)),
 		"max_hitpoints": int(p.get("max_hitpoints", 10)),
 		"in_combat": false,
+		"sid": int(p.get("sid", 0))
 	}
 	player_added.emit(pid)
 	return true
