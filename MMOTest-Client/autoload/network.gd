@@ -17,6 +17,7 @@ signal self_position_updated(x: float, y: float, z: float, yaw: float)
 signal player_hp_updated(player_id: int, hitpoints: int, max_hitpoints: int)
 signal player_combat_state(player_id: int, in_combat: bool, npc_id: int)
 signal player_respawned(x: float, y: float, z: float, yaw: float, hitpoints: int, max_hitpoints: int)
+signal inventory_data_received(slots: Array)
 
 signal world_info_received(server_version: int, server_format: int)
 signal world_data_received(data: Dictionary)
@@ -438,6 +439,12 @@ func _on_packet(_id: int, packet: PackedByteArray) -> void:
 				String(msg.get("target_type", "")),
 				int(msg.get("target_id", 0)),
 				int(msg.get("amount", 0)))
+		"inventory_data":
+			var inv_slots: Variant = msg.get("slots", [])
+			if typeof(inv_slots) == TYPE_ARRAY:
+				inventory_data_received.emit(inv_slots)
+			else:
+				push_warning("inventory_data missing 'slots' array")
 		_:
 			push_warning("Unknown message from server: %s" % str(msg))
 

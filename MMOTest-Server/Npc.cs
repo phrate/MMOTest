@@ -19,6 +19,8 @@ public sealed class ActiveNpc
     // Editable at runtime via admin NPC editor.
     public string Display { get; set; } = "";
     public bool Attackable { get; set; } = true;
+    public bool Aggressive { get; set; } = false;
+    public int AggroRangeTiles { get; set; } = 8;
     public string AiPackageState { get; set; } = "idle";
     public string AiActionState { get; set; } = "none";
     public string LootTableName { get; set; } = "common_loot_1";
@@ -28,11 +30,15 @@ public sealed class ActiveNpc
     public int Accuracy { get; set; } = 1;
     public int Strength { get; set; } = 1;
     public int Defence { get; set; } = 1;
+    public int Ether { get; set; } = 1;
+    public int MaxEther { get; set; } = 1;
     public int MeleeBonus { get; set; } = 0;
+    public int RangedBonus { get; set; } = 0;
+    public int EtherBonus { get; set; } = 0;
     public int MeleeDefense { get; set; } = 0;
-    public int AttackSpeedTicks { get; set; } = 10;   // 3.0s
-    public bool Aggressive { get; set; } = false;
-    public int AggroRangeTiles { get; set; } = 8;
+    public int RangedDefense { get; set; } = 0;
+    public int EtherDefense { get; set; } = 0;
+    public int AttackSpeedTicks { get; set; } = 10;
 
     // Runtime mutable.
     public bool IsDead { get; set; }

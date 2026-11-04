@@ -1,0 +1,100 @@
+[gd_resource type="AnimationLibrary" load_steps=48 format=3 uid="uid://botxvh6r0g5cn"]
+
+[ext_resource type="Animation" uid="uid://dfe4npyosxeh4" path="res://resources/animations/standing_button_push.res" id="1_67ofn"]
+[ext_resource type="Animation" uid="uid://cjlm7bv3yff33" path="res://resources/animations/standing_climb_ladder_downward.res" id="2_cehrv"]
+[ext_resource type="Animation" uid="uid://dcm5fjc4bupmg" path="res://resources/animations/standing_climb_ladder_upward.res" id="3_7yyn4"]
+[ext_resource type="Animation" uid="uid://vq83ot38qxgd" path="res://resources/animations/standing_climb_stairs.res" id="4_bk6vi"]
+[ext_resource type="Animation" uid="uid://drnylqqhftx7y" path="res://resources/animations/standing_crouch.res" id="5_ty8bx"]
+[ext_resource type="Animation" uid="uid://bwbfcpu3vh2ou" path="res://resources/animations/standing_die_backward_1.res" id="6_e6grf"]
+[ext_resource type="Animation" uid="uid://b71fc23pw0biv" path="res://resources/animations/standing_die_backward_2.res" id="7_m114k"]
+[ext_resource type="Animation" uid="uid://bl2k4p305f4e7" path="res://resources/animations/standing_die_forward.res" id="8_8scfj"]
+[ext_resource type="Animation" uid="uid://dvfhblmgv3g34" path="res://resources/animations/standing_drink_1.res" id="9_n1r4v"]
+[ext_resource type="Animation" uid="uid://c8unwrhg6lv2y" path="res://resources/animations/standing_idle_1.res" id="10_yf4rd"]
+[ext_resource type="Animation" uid="uid://gmjv1fb4kl4g" path="res://resources/animations/standing_idle_2.res" id="11_hxq18"]
+[ext_resource type="Animation" uid="uid://7fa7urceotbp" path="res://resources/animations/standing_idle_3.res" id="12_eebv8"]
+[ext_resource type="Animation" uid="uid://cdw44o4og2yy7" path="res://resources/animations/standing_jump_1.res" id="13_1b2cx"]
+[ext_resource type="Animation" uid="uid://bekcd4e8kynqf" path="res://resources/animations/standing_jump_2.res" id="14_41alh"]
+[ext_resource type="Animation" uid="uid://dypvghxlwoqgm" path="res://resources/animations/standing_jump_3.res" id="15_nrvls"]
+[ext_resource type="Animation" uid="uid://dhpwkkiarj1x5" path="res://resources/animations/standing_melee_attack_1.res" id="16_i88sa"]
+[ext_resource type="Animation" uid="uid://c5dwl5lr2oetd" path="res://resources/animations/standing_melee_attack_2.res" id="17_sqrij"]
+[ext_resource type="Animation" uid="uid://7wr5abhmj1co" path="res://resources/animations/standing_melee_attack_3.res" id="18_wfdro"]
+[ext_resource type="Animation" uid="uid://by46g7gkoh2io" path="res://resources/animations/standing_melee_block_1.res" id="19_b26ty"]
+[ext_resource type="Animation" uid="uid://diir1ggo7bf4y" path="res://resources/animations/standing_melee_block_die_1.res" id="20_08tj4"]
+[ext_resource type="Animation" uid="uid://d37l3lvc8pvcp" path="res://resources/animations/standing_melee_block_die_2.res" id="21_kb43m"]
+[ext_resource type="Animation" uid="uid://c5mj700qoxbfx" path="res://resources/animations/standing_melee_block_dodge_1.res" id="22_06emu"]
+[ext_resource type="Animation" uid="uid://bcsr730bb6cft" path="res://resources/animations/standing_melee_block_hurt_1.res" id="23_kpjqd"]
+[ext_resource type="Animation" uid="uid://d3k0ln0eyd7rx" path="res://resources/animations/standing_melee_block_hurt_2.res" id="24_0cws2"]
+[ext_resource type="Animation" uid="uid://0fk8g4w5yu3u" path="res://resources/animations/standing_melee_block_hurt_3.res" id="25_q4v6u"]
+[ext_resource type="Animation" uid="uid://bftynu14mbqvq" path="res://resources/animations/standing_melee_idle_1.res" id="26_wau8u"]
+[ext_resource type="Animation" uid="uid://6kt7gxgup0xt" path="res://resources/animations/standing_melee_kick_1.res" id="27_k1fgd"]
+[ext_resource type="Animation" uid="uid://cmofp456alphn" path="res://resources/animations/standing_melee_kick_2.res" id="28_1tiqk"]
+[ext_resource type="Animation" uid="uid://o2r1k0geoucu" path="res://resources/animations/standing_melee_kick_3.res" id="29_cfoqs"]
+[ext_resource type="Animation" uid="uid://id4mofpcqq12" path="res://resources/animations/standing_melee_taunt.res" id="30_tqjfr"]
+[ext_resource type="Animation" uid="uid://bs5opx8cig1s6" path="res://resources/animations/standing_pick_up_1.res" id="31_4fv6t"]
+[ext_resource type="Animation" uid="uid://bcrslrof71sfd" path="res://resources/animations/standing_pick_up_2.res" id="32_2h8nv"]
+[ext_resource type="Animation" uid="uid://deqld6lls8grx" path="res://resources/animations/standing_place_floor.res" id="33_ciay6"]
+[ext_resource type="Animation" uid="uid://d0o2gynf0qwy3" path="res://resources/animations/standing_run_backward.res" id="34_ydfjv"]
+[ext_resource type="Animation" uid="uid://cqtu3akscj65f" path="res://resources/animations/standing_run_forward.res" id="35_c4vud"]
+[ext_resource type="Animation" uid="uid://7ku5gwx5pj7u" path="res://resources/animations/standing_run_jump.res" id="36_viqa1"]
+[ext_resource type="Animation" uid="uid://hgxxe0kdme3p" path="res://resources/animations/standing_sit_chair.res" id="37_tn4yh"]
+[ext_resource type="Animation" uid="uid://pmohd3uq03fk" path="res://resources/animations/standing_strafe_run_left.res" id="38_ej25e"]
+[ext_resource type="Animation" uid="uid://bhpitmxrpoqv7" path="res://resources/animations/standing_strafe_run_right.res" id="39_7hh0x"]
+[ext_resource type="Animation" uid="uid://3umrfcoxd3lk" path="res://resources/animations/standing_strafe_walk_left.res" id="40_hfcmt"]
+[ext_resource type="Animation" uid="uid://nls3qtiv0o8t" path="res://resources/animations/standing_strafe_walk_right.res" id="41_bi13y"]
+[ext_resource type="Animation" uid="uid://danwtxuc7m8im" path="res://resources/animations/standing_turn_left_90.res" id="42_6xsvc"]
+[ext_resource type="Animation" uid="uid://bupqxc2s3t6ty" path="res://resources/animations/standing_turn_right_90.res" id="43_58t87"]
+[ext_resource type="Animation" uid="uid://dmg42vntmpvh2" path="res://resources/animations/standing_use_tablet.res" id="44_ueqm7"]
+[ext_resource type="Animation" uid="uid://brkhdi43ctlxi" path="res://resources/animations/standing_walk_backward.res" id="45_7qvgt"]
+[ext_resource type="Animation" uid="uid://dg1add4m603h3" path="res://resources/animations/standing_walk_forward.res" id="46_ibup0"]
+[ext_resource type="Animation" uid="uid://bftnxis7mjtom" path="res://resources/animations/standing_walk_turn_180.res" id="47_6swwj"]
+
+[resource]
+_data = {
+&"standing_button_push": ExtResource("1_67ofn"),
+&"standing_climb_ladder_downward": ExtResource("2_cehrv"),
+&"standing_climb_ladder_upward": ExtResource("3_7yyn4"),
+&"standing_climb_stairs": ExtResource("4_bk6vi"),
+&"standing_crouch": ExtResource("5_ty8bx"),
+&"standing_die_backward_1": ExtResource("6_e6grf"),
+&"standing_die_backward_2": ExtResource("7_m114k"),
+&"standing_die_forward": ExtResource("8_8scfj"),
+&"standing_drink_1": ExtResource("9_n1r4v"),
+&"standing_idle_1": ExtResource("10_yf4rd"),
+&"standing_idle_2": ExtResource("11_hxq18"),
+&"standing_idle_3": ExtResource("12_eebv8"),
+&"standing_jump_1": ExtResource("13_1b2cx"),
+&"standing_jump_2": ExtResource("14_41alh"),
+&"standing_jump_3": ExtResource("15_nrvls"),
+&"standing_melee_attack_1": ExtResource("16_i88sa"),
+&"standing_melee_attack_2": ExtResource("17_sqrij"),
+&"standing_melee_attack_3": ExtResource("18_wfdro"),
+&"standing_melee_block_1": ExtResource("19_b26ty"),
+&"standing_melee_block_die_1": ExtResource("20_08tj4"),
+&"standing_melee_block_die_2": ExtResource("21_kb43m"),
+&"standing_melee_block_dodge_1": ExtResource("22_06emu"),
+&"standing_melee_block_hurt_1": ExtResource("23_kpjqd"),
+&"standing_melee_block_hurt_2": ExtResource("24_0cws2"),
+&"standing_melee_block_hurt_3": ExtResource("25_q4v6u"),
+&"standing_melee_idle_1": ExtResource("26_wau8u"),
+&"standing_melee_kick_1": ExtResource("27_k1fgd"),
+&"standing_melee_kick_2": ExtResource("28_1tiqk"),
+&"standing_melee_kick_3": ExtResource("29_cfoqs"),
+&"standing_melee_taunt": ExtResource("30_tqjfr"),
+&"standing_pick_up_1": ExtResource("31_4fv6t"),
+&"standing_pick_up_2": ExtResource("32_2h8nv"),
+&"standing_place_floor": ExtResource("33_ciay6"),
+&"standing_run_backward": ExtResource("34_ydfjv"),
+&"standing_run_forward": ExtResource("35_c4vud"),
+&"standing_run_jump": ExtResource("36_viqa1"),
+&"standing_sit_chair": ExtResource("37_tn4yh"),
+&"standing_strafe_run_left": ExtResource("38_ej25e"),
+&"standing_strafe_run_right": ExtResource("39_7hh0x"),
+&"standing_strafe_walk_left": ExtResource("40_hfcmt"),
+&"standing_strafe_walk_right": ExtResource("41_bi13y"),
+&"standing_turn_left_90": ExtResource("42_6xsvc"),
+&"standing_turn_right_90": ExtResource("43_58t87"),
+&"standing_use_tablet": ExtResource("44_ueqm7"),
+&"standing_walk_backward": ExtResource("45_7qvgt"),
+&"standing_walk_forward": ExtResource("46_ibup0"),
+&"standing_walk_turn_180": ExtResource("47_6swwj")
+}

@@ -1,0 +1,7 @@
+[server]
+[generic]
+
+slot = $"slot"
+item = GetSlotItem(slot)
+
+chat local "You use `item`."

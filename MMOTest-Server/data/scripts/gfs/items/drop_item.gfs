@@ -1,0 +1,12 @@
+[server]
+[generic]
+
+slot = $"slot"
+item = GetSlotItem(slot)
+qty = GetSlotQuantity(slot)
+
+if qty <= 0:
+    _end_script()
+
+ConsumeSlot(slot, 1)
+chat local "You drop the `item`."

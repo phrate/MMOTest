@@ -1,0 +1,18 @@
+[gd_resource type="AnimationLibrary" load_steps=7 format=3 uid="uid://b68bnkvp761qg"]
+
+[ext_resource type="Animation" uid="uid://dq8sknjkvlev3" path="res://resources/animations/falling_air_flail.res" id="1_axjmi"]
+[ext_resource type="Animation" uid="uid://bi5ibaxdm36is" path="res://resources/animations/falling_air_flat.res" id="2_gyfy0"]
+[ext_resource type="Animation" uid="uid://2afh4o6mdb7b" path="res://resources/animations/falling_air_float.res" id="3_i5rrd"]
+[ext_resource type="Animation" uid="uid://cyrvwfo0o6bye" path="res://resources/animations/falling_air_idle.res" id="4_ct4x4"]
+[ext_resource type="Animation" uid="uid://cc17u8ytq7tpn" path="res://resources/animations/falling_land_1.res" id="5_fsa8r"]
+[ext_resource type="Animation" uid="uid://vwgujmuisjtt" path="res://resources/animations/flying.res" id="6_bilij"]
+
+[resource]
+_data = {
+&"falling_air_flail": ExtResource("1_axjmi"),
+&"falling_air_flat": ExtResource("2_gyfy0"),
+&"falling_air_float": ExtResource("3_i5rrd"),
+&"falling_air_idle": ExtResource("4_ct4x4"),
+&"falling_land_1": ExtResource("5_fsa8r"),
+&"flying": ExtResource("6_bilij")
+}

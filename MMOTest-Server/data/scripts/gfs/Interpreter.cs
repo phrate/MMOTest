@@ -249,15 +249,25 @@ public static class Interpreter
             case NullNode: return null;
             case RefNode r: return ResolveRef(r.RefKind, r.Name, ctx);
             case NotNode n: return !Truthy(Evaluate(n.Operand, ctx, functions));
-            case BinaryOpNode b:
-                var left = Evaluate(b.Left, ctx, functions);
-                var right = Evaluate(b.Right, ctx, functions);
-                return b.Op switch
-                {
-                    "!=" => !ValueEquals(left, right),
-                    "==" => ValueEquals(left, right),
-                    _ => throw new Exception($"[GFS] Unknown binary op '{b.Op}'")
-                };
+			case BinaryOpNode b:
+				var left = Evaluate(b.Left, ctx, functions);
+				var right = Evaluate(b.Right, ctx, functions);
+				switch (b.Op)
+				{
+					case "==": return ValueEquals(left, right);
+					case "!=": return !ValueEquals(left, right);
+				}
+				var cmp = NumericCompare(left, right);
+				if (cmp == null)
+					throw new Exception($"[GFS] Cannot compare non-numeric operands with '{b.Op}'");
+				return b.Op switch
+				{
+					"<"  => cmp.Value < 0,
+					"<=" => cmp.Value <= 0,
+					">"  => cmp.Value > 0,
+					">=" => cmp.Value >= 0,
+					_ => throw new Exception($"[GFS] Unknown binary op '{b.Op}'")
+				};
             case ArrayNode a:
                 var arr = new List<object?>();
                 foreach (var item in a.Items)
@@ -321,6 +331,35 @@ public static class Interpreter
         if (a is double dia && b is long lib) return dia == lib;
         return a.ToString() == b.ToString();
     }
+
+/// <summary>
+/// Returns -1/0/1 for numeric comparison, or null if either side isn't a
+/// number (long, int, double, float, or a numeric string). Booleans coerce
+/// to 0/1. Used by <, <=, >, >= evaluation.
+/// </summary>
+private static int? NumericCompare(object? a, object? b)
+{
+	if (!TryToDouble(a, out double da)) return null;
+	if (!TryToDouble(b, out double db)) return null;
+	return da.CompareTo(db);
+}
+
+private static bool TryToDouble(object? v, out double result)
+{
+	switch (v)
+	{
+		case long l:   result = l; return true;
+		case int i:    result = i; return true;
+		case double d: result = d; return true;
+		case float f:  result = f; return true;
+		case bool bo:  result = bo ? 1 : 0; return true;
+		case string s when double.TryParse(s, System.Globalization.NumberStyles.Float,
+				System.Globalization.CultureInfo.InvariantCulture, out double parsed):
+			result = parsed; return true;
+		default:
+			result = 0; return false;
+	}
+}
 
     public static string RenderInterpolated(string text, CallContext ctx)
     {

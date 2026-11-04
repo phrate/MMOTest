@@ -1,62 +1,19 @@
-[gd_scene load_steps=9 format=3 uid="uid://cbaep7c5ub1qr"]
+[gd_scene load_steps=7 format=3 uid="uid://cbaep7c5ub1qr"]
 
 [ext_resource type="Script" uid="uid://d1vrplwx1kwp7" path="res://scenes/game/player/camera_3d.gd" id="1_4m2od"]
 [ext_resource type="Script" uid="uid://beskxuif7somw" path="res://scenes/game/player/player.gd" id="1_t5cse"]
 
-[sub_resource type="CapsuleMesh" id="CapsuleMesh_sul5r"]
-
-[sub_resource type="StandardMaterial3D" id="StandardMaterial3D_sul5r"]
-albedo_color = Color(0, 0.533333, 1, 1)
-
 [sub_resource type="Animation" id="Animation_abehh"]
 length = 0.001
-tracks/0/type = "value"
-tracks/0/imported = false
-tracks/0/enabled = true
-tracks/0/path = NodePath("Avatar/MeshInstance3D:position")
-tracks/0/interp = 1
-tracks/0/loop_wrap = true
-tracks/0/keys = {
-"times": PackedFloat32Array(0),
-"transitions": PackedFloat32Array(1),
-"update": 0,
-"values": [Vector3(0, 1, 0)]
-}
-tracks/1/type = "position_3d"
-tracks/1/imported = false
-tracks/1/enabled = true
-tracks/1/path = NodePath("Avatar/MeshInstance3D")
-tracks/1/interp = 1
-tracks/1/loop_wrap = true
-tracks/1/keys = PackedFloat32Array(0, 1, 0, 1, 0)
 
 [sub_resource type="Animation" id="Animation_t5cse"]
 resource_name = "idle"
 loop_mode = 1
-tracks/0/type = "position_3d"
-tracks/0/imported = false
-tracks/0/enabled = true
-tracks/0/path = NodePath("Avatar/MeshInstance3D")
-tracks/0/interp = 1
-tracks/0/loop_wrap = true
-tracks/0/keys = PackedFloat32Array(0, 1, 0, 1, 0)
 
 [sub_resource type="Animation" id="Animation_bkoau"]
 resource_name = "walk"
 length = 0.5
 loop_mode = 1
-tracks/0/type = "value"
-tracks/0/imported = false
-tracks/0/enabled = true
-tracks/0/path = NodePath("Avatar/MeshInstance3D:position")
-tracks/0/interp = 1
-tracks/0/loop_wrap = true
-tracks/0/keys = {
-"times": PackedFloat32Array(0, 0.25),
-"transitions": PackedFloat32Array(1, 1),
-"update": 0,
-"values": [Vector3(0, 1, 0), Vector3(0, 1.1, 0)]
-}
 
 [sub_resource type="AnimationLibrary" id="AnimationLibrary_prej5"]
 _data = {
@@ -73,7 +30,7 @@ transform = Transform3D(1, 0, 0, 0, 0.771935, 0.635701, 0, -0.635701, 0.771935, 
 current = true
 fov = 40.0
 script = ExtResource("1_4m2od")
-target = NodePath("../Avatar/MeshInstance3D")
+target = NodePath("")
 target_offset = Vector3(0, 0.35, 0)
 focus_smoothing = 30.0
 min_pitch_degrees = 25.0
@@ -90,12 +47,6 @@ min_fov = 40.0
 max_fov = 40.0
 
 [node name="Avatar" type="Node3D" parent="."]
-
-[node name="MeshInstance3D" type="MeshInstance3D" parent="Avatar"]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1, 0)
-mesh = SubResource("CapsuleMesh_sul5r")
-skeleton = NodePath("../..")
-surface_material_override/0 = SubResource("StandardMaterial3D_sul5r")
 
 [node name="NameLabel" type="Label3D" parent="."]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 2.75, 0)

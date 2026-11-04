@@ -1,0 +1,11 @@
+[client]
+[tooltip]
+
+item_name = ${ITEM_DISPLAY_NAME}
+item_slot = ${ITEM_SLOT}
+
+actions = [
+    use: "items/use_item.gfs", "Wear `item_name`", {"slot"=item_slot}
+    drop: "items/drop_item.gfs", "Drop `item_name`", {"slot"=item_slot}
+    examine: "items/examine_item.gfs", "Examine `item_name`", {"slot"=item_slot}
+]

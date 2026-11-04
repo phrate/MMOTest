@@ -94,6 +94,8 @@ func _apply_render_scene() -> void:
 			inst.name = "RenderScene"
 			add_child(inst)
 			_render_scene_instance = inst
+			visuals.fit_render_scene_for_slug(inst, RENDER_SLUG)
+			visuals.fit_name_label_above_node(inst)   # ← new line
 			ap = _find_anim_player(inst)
 			if ap == null:
 				ap = AnimationPlayer.new()

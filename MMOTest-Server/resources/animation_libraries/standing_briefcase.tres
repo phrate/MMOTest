@@ -1,0 +1,12 @@
+[gd_resource type="AnimationLibrary" load_steps=4 format=3 uid="uid://dfx68tskpdpha"]
+
+[ext_resource type="Animation" uid="uid://drqgdmnnrtyiu" path="res://resources/animations/standing_briefcase_idle.res" id="1_av6qm"]
+[ext_resource type="Animation" uid="uid://dqjwk40ypyw21" path="res://resources/animations/standing_briefcase_walk_forward.res" id="2_lqlv6"]
+[ext_resource type="Animation" uid="uid://bsujbpybwo676" path="res://resources/animations/standing_briefcase_walk_turn_180.res" id="3_lykuo"]
+
+[resource]
+_data = {
+&"standing_briefcase_idle": ExtResource("1_av6qm"),
+&"standing_briefcase_walk_forward": ExtResource("2_lqlv6"),
+&"standing_briefcase_walk_turn_180": ExtResource("3_lykuo")
+}

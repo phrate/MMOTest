@@ -83,6 +83,40 @@ func _truthy(v: Variant) -> bool:
 	return true
 
 
+func _values_equal(a, b) -> bool:
+	if a == null and b == null: return true
+	if a == null or b == null: return false
+	var ta := typeof(a)
+	var tb := typeof(b)
+	if ta == TYPE_INT and tb == TYPE_FLOAT: return float(a) == b
+	if ta == TYPE_FLOAT and tb == TYPE_INT: return a == float(b)
+	if ta == TYPE_STRING and tb == TYPE_STRING: return a == b
+	if ta == TYPE_BOOL and tb == TYPE_BOOL: return a == b
+	# Numeric cross-type
+	if (ta == TYPE_INT or ta == TYPE_FLOAT) and (tb == TYPE_INT or tb == TYPE_FLOAT):
+		return float(a) == float(b)
+	return str(a) == str(b)
+
+
+func _num_compare(a, b):
+	var fa = _to_float(a)
+	var fb = _to_float(b)
+	if fa == null or fb == null: return null
+	if fa < fb: return -1
+	if fa > fb: return 1
+	return 0
+
+
+func _to_float(v):
+	if v == null: return null
+	var t := typeof(v)
+	if t == TYPE_INT or t == TYPE_FLOAT: return float(v)
+	if t == TYPE_BOOL: return 1.0 if v else 0.0
+	if t == TYPE_STRING:
+		if String(v).is_valid_float(): return float(v)
+	return null
+
+
 ## Interpolates `name` references inside a string using locals, then args,
 ## then system vars — same precedence as backtick handling in chat.
 func _interpolate_backticks(text: String, locals: Dictionary, args: Dictionary, system: Dictionary) -> String:
@@ -170,6 +204,21 @@ func _evaluate(node: Dictionary, locals: Dictionary, args: Dictionary, system: D
 				else:
 					items.append(_evaluate(item, locals, args, system))
 			return items
+
+		"binary":
+			var left = _evaluate(node.get("left", {}), locals, args, system)
+			var right = _evaluate(node.get("right", {}), locals, args, system)
+			var op := str(node.get("op", ""))
+			if op == "==": return _values_equal(left, right)
+			if op == "!=": return not _values_equal(left, right)
+			var cmp = _num_compare(left, right)
+			if cmp == null: return false
+			match op:
+				"<":  return cmp < 0
+				"<=": return cmp <= 0
+				">":  return cmp > 0
+				">=": return cmp >= 0
+			return false
 		
 		"call":
 			var fname: String = str(node.get("name", ""))

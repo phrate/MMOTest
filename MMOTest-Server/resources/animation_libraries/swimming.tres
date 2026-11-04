@@ -1,0 +1,10 @@
+[gd_resource type="AnimationLibrary" load_steps=3 format=3 uid="uid://cvfhj8wcfqagn"]
+
+[ext_resource type="Animation" uid="uid://xfgv88wwwbhj" path="res://resources/animations/swimming_forward.res" id="1_sn5gk"]
+[ext_resource type="Animation" uid="uid://cb5my33pp1upv" path="res://resources/animations/swimming_tread.res" id="2_2386v"]
+
+[resource]
+_data = {
+&"swimming_forward": ExtResource("1_sn5gk"),
+&"swimming_tread": ExtResource("2_2386v")
+}

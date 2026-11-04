@@ -79,10 +79,13 @@ public partial class Main : Node
 	private readonly Dictionary<long, long> _pendingEngage = new(); // playerId -> npcId (approach phase)
 	private readonly Dictionary<long, CombatPair> _combatByNpc = new();
 	private readonly Dictionary<long, Database.PlayerCombatData> _playerCombat = new();
+	private readonly Dictionary<long, long[]> _inventoryByPlayer = new();
+	private readonly Dictionary<long, Database.ItemMeta> _itemsById = new();
+	private readonly Dictionary<string, long> _itemIdsBySlug = new();
 	private readonly Dictionary<long, int> _playerHealAccumTicks = new();
 	private readonly Random _combatRng = new();
-private const int PlayerAttackSpeedTicks = 10;   // 3.0s unarmed default; equipment will override
-private const int AttackAnimDurationMs = 400;    // short swing visual, independent of cooldown	private const int CombatMaxDistanceTiles = 12;
+	private const int PlayerAttackSpeedTicks = 10;   // 3.0s unarmed default; equipment will override
+	private const int AttackAnimDurationMs = 1400;    // matches humanoid.tres attack clip
 	private const int NpcLeashRadiusTiles = 15;
 
 	private readonly Dictionary<long, Vector2I> _lastPlayerChunk = new();   // peerId -> chunk
@@ -148,6 +151,15 @@ private const int AttackAnimDurationMs = 400;    // short swing visual, independ
 				while (reader.Read()) tables.Add(reader.GetString(0));
 				GD.Print($"[Server] DB tables: {string.Join(", ", tables)}");
 			}
+
+			var items = _db.GetAllItemsSync().Result;
+			foreach (var it in items)
+			{
+				_itemsById[it.Id] = it;
+				_itemIdsBySlug[it.Slug] = it.Id;
+			}
+			GD.Print($"[Server] Loaded {items.Count} item definition(s)");
+
 			_dummyHash = PasswordHasher.Hash("dummy-password-for-timing");
 			GD.Print($"[Server] SQLite {_db.GetSqliteVersion()} ready at {dbPath}");
 
@@ -189,6 +201,7 @@ private const int AttackAnimDurationMs = 400;    // short swing visual, independ
 			Gfs.Utils.TilesUtils.Register(_gfsFns, this);
 			Gfs.Utils.PlayerUtils.Register(_gfsFns, this);
 			Gfs.Utils.CombatUtils.Register(_gfsFns, this);
+			Gfs.Utils.ItemUtils.Register(_gfsFns, this);
 			_perTick = new Gfs.PerTickManager(_gfsFns);
 			_gfs.ScriptsChanged += OnGfsScriptsChanged;
 
@@ -431,6 +444,7 @@ private const int AttackAnimDurationMs = 400;    // short swing visual, independ
 			}
 
 			yaw = MathF.Atan2(-dx, -dz);
+			yaw = MathF.Round(yaw / (MathF.PI / 4f)) * (MathF.PI / 4f);
 
 			if (dist <= remaining)
 			{
@@ -477,6 +491,7 @@ private const int AttackAnimDurationMs = 400;    // short swing visual, independ
 			}
 
 			yaw = MathF.Atan2(-dx, -dz);
+			yaw = MathF.Round(yaw / (MathF.PI / 4f)) * (MathF.PI / 4f);
 
 			if (dist <= remaining)
 			{
@@ -597,6 +612,7 @@ private const int AttackAnimDurationMs = 400;    // short swing visual, independ
 			if (_combatByPlayer.TryGetValue(session.PlayerId, out var combatPair))
 				EndCombat(combatPair);
 			_playerCombat.Remove(session.PlayerId);
+			_inventoryByPlayer.Remove(session.PlayerId);
 			_pendingEngage.Remove(session.PlayerId);
 			_playerHealAccumTicks.Remove(session.PlayerId);
 			_peerByPlayerId.Remove(session.PlayerId);
@@ -1064,76 +1080,83 @@ private const int AttackAnimDurationMs = 400;    // short swing visual, independ
 
 private async Task CompleteLoginAsync(long peerId, PlayerRecord player)
 {
-    long loginCount = await _db.RecordLoginAsync(player.Id);
-    long totalPlayers = await _db.CountPlayersAsync();
-    if (!_connectedPeers.Contains(peerId)) return;
+	long loginCount = await _db.RecordLoginAsync(player.Id);
+	long totalPlayers = await _db.CountPlayersAsync();
+	if (!_connectedPeers.Contains(peerId)) return;
 
-    if (!await _db.EnsurePlayerStatsAsync(player.Id))
-    {
-        GD.PrintErr($"[Server] Failed to ensure stats for {player.Username} (id {player.Id}); login aborted");
-        SendError(peerId, "login_result", ErrorKeys.LoginStatsInitFailed);
-        return;
-    }
+	if (!await _db.EnsurePlayerStatsAsync(player.Id))
+	{
+		GD.PrintErr($"[Server] Failed to ensure stats for {player.Username} (id {player.Id}); login aborted");
+		SendError(peerId, "login_result", ErrorKeys.LoginStatsInitFailed);
+		return;
+	}
 
-    if (!await _db.EnsurePlayerInventoryAndBankAsync(player.Id))
-    {
-        GD.PrintErr($"[Server] Failed to ensure inventory/bank for {player.Username} (id {player.Id}); login aborted");
-        SendError(peerId, "login_result", ErrorKeys.LoginStatsInitFailed);
-        return;
-    }
+	if (!await _db.EnsurePlayerInventoryAndBankAsync(player.Id))
+	{
+		GD.PrintErr($"[Server] Failed to ensure inventory/bank for {player.Username} (id {player.Id}); login aborted");
+		SendError(peerId, "login_result", ErrorKeys.LoginStatsInitFailed);
+		return;
+	}
 
-    var combatData = await _db.GetPlayerCombatAsync(player.Id);
-    _playerCombat[player.Id] = combatData ?? new Database.PlayerCombatData(1, 1, 1, 0, 0, 10, 10, 1);
+	var combatData = await _db.GetPlayerCombatAsync(player.Id);
+	_playerCombat[player.Id] = combatData ?? new Database.PlayerCombatData(1, 1, 1, 0, 0, 10, 10, 1);
 
-    // Compute spawn position and publish it BEFORE the session. Any concurrent
-    // EnterWorld (from another player logging in) reads _positions to build
-    // world_state — the position must be set before the peer becomes visible.
-    PlayerPosition spawnPos;
-    var saved = await _db.GetPlayerTileAsync(player.Id);
-    if (saved.HasValue)
-    {
-        if (IsValidTile(saved.Value.X, saved.Value.Y))
-        {
-            var info = _tiles[(saved.Value.X, saved.Value.Y)];
-            spawnPos = new PlayerPosition(saved.Value.X, info.Z, saved.Value.Y, 0f);
-            GD.Print($"[Server] Resuming {player.Username} at tile ({saved.Value.X}, {saved.Value.Y})");
-        }
-        else
-        {
-            spawnPos = FindNearestValidTile(saved.Value.X, saved.Value.Y);
-            GD.Print($"[Server] Saved tile ({saved.Value.X}, {saved.Value.Y}) for {player.Username} is invalid; spawned at ({spawnPos.X}, {spawnPos.Z})");
-        }
-    }
-    else
-    {
-        spawnPos = ComputeSpawnPosition(player.Id);
-    }
-    _positions[player.Id] = spawnPos;
+	var inv = await _db.GetInventorySlotsAsync(player.Id);
+	if (inv == null) inv = new long[28];
+	_inventoryByPlayer[player.Id] = inv;
 
-    // Session published after position. No awaits between these lines, so the
-    // pair is atomic from the perspective of other ticks.
-    long sid = Random.Shared.NextInt64(1, long.MaxValue);
-    _ = _db.SetPlayerSidAsync(player.Id, sid);
-    var session = new PlayerSession(player.Id, player.Username, player.IsAdmin, sid);
-    _sessions[peerId] = session;
-    _peerByPlayerId[player.Id] = peerId;
 
-    GD.Print($"[Server] Login: {player.Username} (id {player.Id}, count {loginCount}{(player.IsAdmin ? ", admin" : "")})");
-    Send(peerId, new
-    {
-        type = "login_result",
-        ok = true,
-        player_id = player.Id,
-        username = player.Username,
-        is_admin = player.IsAdmin,
-        login_count = loginCount,
-        total_players = totalPlayers,
-        hitpoints = combatData?.CurrentHp ?? 10,
-        max_hitpoints = combatData?.MaxHp ?? 10,
-        spawn = new { x = spawnPos.X, y = spawnPos.Y, z = spawnPos.Z, yaw = spawnPos.Yaw }
-    });
+	// Compute spawn position and publish it BEFORE the session. Any concurrent
+	// EnterWorld (from another player logging in) reads _positions to build
+	// world_state — the position must be set before the peer becomes visible.
+	PlayerPosition spawnPos;
+	var saved = await _db.GetPlayerTileAsync(player.Id);
+	if (saved.HasValue)
+	{
+		if (IsValidTile(saved.Value.X, saved.Value.Y))
+		{
+			var info = _tiles[(saved.Value.X, saved.Value.Y)];
+			spawnPos = new PlayerPosition(saved.Value.X, info.Z, saved.Value.Y, 0f);
+			GD.Print($"[Server] Resuming {player.Username} at tile ({saved.Value.X}, {saved.Value.Y})");
+		}
+		else
+		{
+			spawnPos = FindNearestValidTile(saved.Value.X, saved.Value.Y);
+			GD.Print($"[Server] Saved tile ({saved.Value.X}, {saved.Value.Y}) for {player.Username} is invalid; spawned at ({spawnPos.X}, {spawnPos.Z})");
+		}
+	}
+	else
+	{
+		spawnPos = ComputeSpawnPosition(player.Id);
+	}
+	_positions[player.Id] = spawnPos;
 
-    EnterWorld(peerId, session, spawnPos);
+	// Session published after position. No awaits between these lines, so the
+	// pair is atomic from the perspective of other ticks.
+	long sid = Random.Shared.NextInt64(1, long.MaxValue);
+	_ = _db.SetPlayerSidAsync(player.Id, sid);
+	var session = new PlayerSession(player.Id, player.Username, player.IsAdmin, sid);
+	_sessions[peerId] = session;
+	_peerByPlayerId[player.Id] = peerId;
+
+	GD.Print($"[Server] Login: {player.Username} (id {player.Id}, count {loginCount}{(player.IsAdmin ? ", admin" : "")})");
+	Send(peerId, new
+	{
+		type = "login_result",
+		ok = true,
+		player_id = player.Id,
+		username = player.Username,
+		is_admin = player.IsAdmin,
+		login_count = loginCount,
+		total_players = totalPlayers,
+		hitpoints = combatData?.CurrentHp ?? 10,
+		max_hitpoints = combatData?.MaxHp ?? 10,
+		spawn = new { x = spawnPos.X, y = spawnPos.Y, z = spawnPos.Z, yaw = spawnPos.Yaw }
+	});
+
+	SendInventory(peerId);
+
+	EnterWorld(peerId, session, spawnPos);
 }
 	
 	private PlayerPosition ComputeSpawnPosition(long playerId)
@@ -1146,39 +1169,39 @@ private async Task CompleteLoginAsync(long peerId, PlayerRecord player)
 
 	private void EnterWorld(long peerId, PlayerSession session, PlayerPosition spawnPos)
 {
-    var others = new List<object>();
-    foreach (var (otherPeerId, other) in _sessions)
-    {
-        if (otherPeerId == peerId) continue;
-        if (!_positions.TryGetValue(other.PlayerId, out var pos)) continue;
-        others.Add(new
-        {
-            player_id = other.PlayerId,
-            username = other.Username,
-            is_admin = other.IsAdmin,
-            x = pos.X, y = pos.Y, z = pos.Z, yaw = pos.Yaw,
-            sid = other.Sid,
-        });
-    }
+	var others = new List<object>();
+	foreach (var (otherPeerId, other) in _sessions)
+	{
+		if (otherPeerId == peerId) continue;
+		if (!_positions.TryGetValue(other.PlayerId, out var pos)) continue;
+		others.Add(new
+		{
+			player_id = other.PlayerId,
+			username = other.Username,
+			is_admin = other.IsAdmin,
+			x = pos.X, y = pos.Y, z = pos.Z, yaw = pos.Yaw,
+			sid = other.Sid,
+		});
+	}
 
-    Send(peerId, new { type = "world_state", players = others });
+	Send(peerId, new { type = "world_state", players = others });
 
-    Broadcast(new
-    {
-        type = "player_joined",
-        player_id = session.PlayerId,
-        username = session.Username,
-        is_admin = session.IsAdmin,
-        x = spawnPos.X, y = spawnPos.Y, z = spawnPos.Z, yaw = spawnPos.Yaw,
-        sid = session.Sid,
-    }, exceptPeerId: peerId);
+	Broadcast(new
+	{
+		type = "player_joined",
+		player_id = session.PlayerId,
+		username = session.Username,
+		is_admin = session.IsAdmin,
+		x = spawnPos.X, y = spawnPos.Y, z = spawnPos.Z, yaw = spawnPos.Yaw,
+		sid = session.Sid,
+	}, exceptPeerId: peerId);
 
-    int tx = (int)MathF.Round(spawnPos.X);
-    int ty = (int)MathF.Round(spawnPos.Z);
-    _lastPlayerChunk[peerId] = new Vector2I(
-        ActiveNpc.FloorDiv(tx, _chunkSize),
-        ActiveNpc.FloorDiv(ty, _chunkSize));
-    RefreshNpcVisibility(peerId, tx, ty);
+	int tx = (int)MathF.Round(spawnPos.X);
+	int ty = (int)MathF.Round(spawnPos.Z);
+	_lastPlayerChunk[peerId] = new Vector2I(
+		ActiveNpc.FloorDiv(tx, _chunkSize),
+		ActiveNpc.FloorDiv(ty, _chunkSize));
+	RefreshNpcVisibility(peerId, tx, ty);
 }
 
 	// ---------- World file ----------
@@ -1860,15 +1883,12 @@ internal void EngageNpc(long playerId, long npcId, bool initiatedByPlayer = true
 
 		if (!ArePositionsAdjacent(pair.PlayerId, npc))
 		{
-			// Player-initiated pre-engage: player walks toward the NPC. NPC
-			// stays put. Only applies before the first swing lands.
 			if (pair.InitiatedByPlayer && !pair.StateAnnounced)
 			{
 				MovePlayerAdjacentToNpc(pair.PlayerId, npc);
 				continue;
 			}
 
-			// Otherwise the NPC is the one pursuing. Leash check first.
 			if (DistanceFromSpawn(npc) > NpcLeashRadiusTiles)
 			{
 				EndCombat(pair);
@@ -1879,18 +1899,16 @@ internal void EngageNpc(long playerId, long npcId, bool initiatedByPlayer = true
 				continue;
 			}
 
-			// NPC chases player, stopping adjacent.
-			if (_positions.TryGetValue(pair.PlayerId, out var ppos))
+			if (_positions.TryGetValue(pair.PlayerId, out var chasePos))
 			{
 				var playerTile = new Vector2I(
-					(int)MathF.Round(ppos.X),
-					(int)MathF.Round(ppos.Z));
+					(int)MathF.Round(chasePos.X),
+					(int)MathF.Round(chasePos.Z));
 				if (pair.LastChaseTarget != playerTile)
 				{
 					pair.LastChaseTarget = playerTile;
 					int nx = (int)MathF.Round(npc.PosX);
 					int ny = (int)MathF.Round(npc.PosZ);
-
 					if (nx == playerTile.X && ny == playerTile.Y)
 					{
 						Vector2I[] dirs = { new(1,0), new(-1,0), new(0,1), new(0,-1),
@@ -1934,6 +1952,51 @@ internal void EngageNpc(long playerId, long npcId, bool initiatedByPlayer = true
 				in_combat = true,
 				npc_id = npc.Id
 			});
+		}
+
+		// Combat facing:
+		//   - Player: only snap to face the NPC when standing still. While
+		//     walking, movement yaw drives facing (so fleeing looks correct).
+		//   - NPC:   always faces its target (it's actively engaging).
+		if (pair.StateAnnounced && _positions.TryGetValue(pair.PlayerId, out var facingPos))
+		{
+			int ptx = (int)MathF.Round(facingPos.X);
+			int pty = (int)MathF.Round(facingPos.Z);
+			int ntx = (int)MathF.Round(npc.PosX);
+			int nty = (int)MathF.Round(npc.PosZ);
+			float nYaw = MathF.Atan2(-(ptx - ntx), -(pty - nty));
+			nYaw = MathF.Round(nYaw / (MathF.PI / 4f)) * (MathF.PI / 4f);
+
+			if (!IsPlayerMoving(pair.PlayerId))
+			{
+				float pYaw = MathF.Atan2(-(ntx - ptx), -(nty - pty));
+				pYaw = MathF.Round(pYaw / (MathF.PI / 4f)) * (MathF.PI / 4f);
+				if (MathF.Abs(pYaw - facingPos.Yaw) > 0.05f)
+				{
+					_positions[pair.PlayerId] = facingPos with { Yaw = pYaw };
+					Broadcast(new
+					{
+						type = "tick_positions",
+						tick = _currentTick,
+						updates = new[] {
+							new { player_id = pair.PlayerId, x = facingPos.X, y = facingPos.Y, z = facingPos.Z, yaw = pYaw }
+						}
+					}, channel: 1, mode: MultiplayerPeer.TransferModeEnum.UnreliableOrdered);
+				}
+			}
+
+			if (MathF.Abs(nYaw - npc.Yaw) > 0.05f)
+			{
+				npc.Yaw = nYaw;
+				npc.LastSentYaw = nYaw;
+				Broadcast(new
+				{
+					type = "npc_tick_positions",
+					updates = new[] {
+						new { npc_id = npc.Id, x = npc.PosX, y = npc.PosY, z = npc.PosZ, yaw = nYaw }
+					}
+				}, channel: 1, mode: MultiplayerPeer.TransferModeEnum.UnreliableOrdered);
+			}
 		}
 
 		if (!IsPlayerMoving(pair.PlayerId)
@@ -2258,109 +2321,132 @@ private int DistanceFromSpawn(ActiveNpc npc)
 		Send(peerId, new { type = "npc_editor_open", npc_id = npcId });
 	}
 
-	private void HandleNpcEditorGet(long peerId, JsonElement root)
-	{
-		if (!_sessions.TryGetValue(peerId, out var session)) return;
-		if (!session.IsAdmin) return;
-		if (!root.TryGetProperty("npc_id", out var idEl) || !idEl.TryGetInt64(out long npcId)) return;
-		if (!_npcs.TryGetValue(npcId, out var npc)) return;
+private void HandleNpcEditorGet(long peerId, JsonElement root)
+{
+	if (!_sessions.TryGetValue(peerId, out var session)) return;
+	if (!session.IsAdmin) return;
+	if (!root.TryGetProperty("npc_id", out var idEl) || !idEl.TryGetInt64(out long npcId)) return;
+	if (!_npcs.TryGetValue(npcId, out var npc)) return;
 
-		Send(peerId, new
+	Send(peerId, new
+	{
+		type = "npc_editor_data",
+		npc = new
 		{
-			type = "npc_editor_data",
-			npc = new
-			{
-				id = npc.Id,
-				name = npc.Name,
-				display = npc.Display,
-				attackable = npc.Attackable,
-				hitpoints = npc.Hitpoints,
-				max_hitpoints = npc.MaxHitpoints,
-				accuracy = npc.Accuracy,
-				strength = npc.Strength,
-				defence = npc.Defence,
-				melee_bonus = npc.MeleeBonus,
-				melee_defense = npc.MeleeDefense,
-				spawn_timer = npc.SpawnTimerSeconds,
-				ai_package_state = npc.AiPackageState,
-				ai_action_state = npc.AiActionState,
-				loot_table_name = npc.LootTableName,
-				aggressive = npc.Aggressive,
-				aggro_range = npc.AggroRangeTiles,
-			}
-		});
+			id = npc.Id,
+			name = npc.Name,
+			display = npc.Display,
+			render_slug = npc.RenderSlug,
+			attackable = npc.Attackable,
+			aggressive = npc.Aggressive,
+			aggro_range = npc.AggroRangeTiles,
+			ai_package_state = npc.AiPackageState,
+			ai_action_state = npc.AiActionState,
+			loot_table_name = npc.LootTableName,
+			spawn_timer = npc.SpawnTimerSeconds,
+			hitpoints = npc.Hitpoints,
+			max_hitpoints = npc.MaxHitpoints,
+			accuracy = npc.Accuracy,
+			strength = npc.Strength,
+			defence = npc.Defence,
+			ether = npc.Ether,
+			max_ether = npc.MaxEther,
+			melee_bonus = npc.MeleeBonus,
+			ranged_bonus = npc.RangedBonus,
+			ether_bonus = npc.EtherBonus,
+			melee_defense = npc.MeleeDefense,
+			ranged_defense = npc.RangedDefense,
+			ether_defense = npc.EtherDefense,
+			attack_speed = npc.AttackSpeedTicks,
+			final_level = npc.FinalLevel,
+		}
+	});
+}
+
+private void HandleNpcEditorSave(long peerId, JsonElement root)
+{
+	if (!_sessions.TryGetValue(peerId, out var session)) return;
+	if (!session.IsAdmin) return;
+	if (!root.TryGetProperty("npc_id", out var idEl) || !idEl.TryGetInt64(out long npcId)) return;
+	if (!_npcs.TryGetValue(npcId, out var npc)) return;
+	if (!root.TryGetProperty("updates", out var upEl) || upEl.ValueKind != JsonValueKind.Object) return;
+
+	var u = new Dictionary<string, object>();
+	foreach (var prop in upEl.EnumerateObject())
+	{
+		u[prop.Name] = prop.Value.ValueKind switch
+		{
+			JsonValueKind.True => true,
+			JsonValueKind.False => false,
+			JsonValueKind.String => prop.Value.GetString() ?? "",
+			JsonValueKind.Number => prop.Value.TryGetInt32(out int iv) ? iv : 0,
+			_ => (object)0,
+		};
 	}
 
-	private void HandleNpcEditorSave(long peerId, JsonElement root)
+	try
 	{
-		if (!_sessions.TryGetValue(peerId, out var session)) return;
-		if (!session.IsAdmin) return;
-		if (!root.TryGetProperty("npc_id", out var idEl) || !idEl.TryGetInt64(out long npcId)) return;
-		if (!_npcs.TryGetValue(npcId, out var npc)) return;
-		if (!root.TryGetProperty("updates", out var upEl) || upEl.ValueKind != JsonValueKind.Object) return;
+		if (u.ContainsKey("display"))          npc.Display = u["display"].ToString() ?? npc.Display;
+		if (u.ContainsKey("attackable"))       npc.Attackable = (bool)u["attackable"];
+		if (u.ContainsKey("aggressive"))       npc.Aggressive = (bool)u["aggressive"];
+		if (u.ContainsKey("aggro_range"))      npc.AggroRangeTiles = Math.Max(1, Convert.ToInt32(u["aggro_range"]));
+		if (u.ContainsKey("ai_package_state")) npc.AiPackageState = u["ai_package_state"].ToString() ?? "idle";
+		if (u.ContainsKey("ai_action_state"))  npc.AiActionState = u["ai_action_state"].ToString() ?? "none";
+		if (u.ContainsKey("loot_table_name"))  npc.LootTableName = u["loot_table_name"].ToString() ?? "common_loot_1";
+		if (u.ContainsKey("spawn_timer"))      npc.SpawnTimerSeconds = Math.Max(1, Convert.ToInt32(u["spawn_timer"]));
+		if (u.ContainsKey("hitpoints"))        npc.Hitpoints = Math.Max(0, Convert.ToInt32(u["hitpoints"]));
+		if (u.ContainsKey("max_hitpoints"))    npc.MaxHitpoints = Math.Max(1, Convert.ToInt32(u["max_hitpoints"]));
+		if (npc.Hitpoints > npc.MaxHitpoints)  npc.MaxHitpoints = npc.Hitpoints;
+		if (u.ContainsKey("accuracy"))         npc.Accuracy = Math.Max(1, Convert.ToInt32(u["accuracy"]));
+		if (u.ContainsKey("strength"))         npc.Strength = Math.Max(1, Convert.ToInt32(u["strength"]));
+		if (u.ContainsKey("defence"))          npc.Defence = Math.Max(1, Convert.ToInt32(u["defence"]));
+		if (u.ContainsKey("ether"))            npc.Ether = Math.Max(1, Convert.ToInt32(u["ether"]));
+		if (u.ContainsKey("max_ether"))        npc.MaxEther = Math.Max(1, Convert.ToInt32(u["max_ether"]));
+		if (npc.Ether > npc.MaxEther)          npc.MaxEther = npc.Ether;
+		if (u.ContainsKey("melee_bonus"))      npc.MeleeBonus = Math.Max(0, Convert.ToInt32(u["melee_bonus"]));
+		if (u.ContainsKey("ranged_bonus"))     npc.RangedBonus = Math.Max(0, Convert.ToInt32(u["ranged_bonus"]));
+		if (u.ContainsKey("ether_bonus"))      npc.EtherBonus = Math.Max(0, Convert.ToInt32(u["ether_bonus"]));
+		if (u.ContainsKey("melee_defense"))    npc.MeleeDefense = Math.Max(0, Convert.ToInt32(u["melee_defense"]));
+		if (u.ContainsKey("ranged_defense"))   npc.RangedDefense = Math.Max(0, Convert.ToInt32(u["ranged_defense"]));
+		if (u.ContainsKey("ether_defense"))    npc.EtherDefense = Math.Max(0, Convert.ToInt32(u["ether_defense"]));
+		if (u.ContainsKey("attack_speed"))     npc.AttackSpeedTicks = Math.Max(1, Convert.ToInt32(u["attack_speed"]));
 
-		var u = new Dictionary<string, object>();
-		foreach (var prop in upEl.EnumerateObject())
-		{
-			u[prop.Name] = prop.Value.ValueKind switch
-			{
-				JsonValueKind.True => true,
-				JsonValueKind.False => false,
-				JsonValueKind.String => prop.Value.GetString() ?? "",
-				JsonValueKind.Number => prop.Value.TryGetInt32(out int iv) ? iv : 0,
-				_ => (object)0,
-			};
-		}
+		// Sync the save dict to final values
+		u["display"]          = npc.Display;
+		u["attackable"]       = npc.Attackable;
+		u["aggressive"]       = npc.Aggressive;
+		u["aggro_range"]      = npc.AggroRangeTiles;
+		u["ai_package_state"] = npc.AiPackageState;
+		u["ai_action_state"]  = npc.AiActionState;
+		u["loot_table_name"]  = npc.LootTableName;
+		u["spawn_timer"]      = npc.SpawnTimerSeconds;
+		u["hitpoints"]        = npc.Hitpoints;
+		u["max_hitpoints"]    = npc.MaxHitpoints;
+		u["accuracy"]         = npc.Accuracy;
+		u["strength"]         = npc.Strength;
+		u["defence"]          = npc.Defence;
+		u["ether"]            = npc.Ether;
+		u["max_ether"]        = npc.MaxEther;
+		u["melee_bonus"]      = npc.MeleeBonus;
+		u["ranged_bonus"]     = npc.RangedBonus;
+		u["ether_bonus"]      = npc.EtherBonus;
+		u["melee_defense"]    = npc.MeleeDefense;
+		u["ranged_defense"]   = npc.RangedDefense;
+		u["ether_defense"]    = npc.EtherDefense;
+		u["attack_speed"]     = npc.AttackSpeedTicks;
 
-		try
-		{
-			if (u.ContainsKey("display"))          npc.Display = u["display"].ToString() ?? npc.Display;
-			if (u.ContainsKey("attackable"))       npc.Attackable = (bool)u["attackable"];
-			if (u.ContainsKey("ai_package_state")) npc.AiPackageState = u["ai_package_state"].ToString() ?? "idle";
-			if (u.ContainsKey("ai_action_state"))  npc.AiActionState = u["ai_action_state"].ToString() ?? "none";
-			if (u.ContainsKey("loot_table_name"))  npc.LootTableName = u["loot_table_name"].ToString() ?? "common_loot_1";
-			if (u.ContainsKey("spawn_timer"))      npc.SpawnTimerSeconds = Math.Max(1, Convert.ToInt32(u["spawn_timer"]));
-			if (u.ContainsKey("hitpoints"))        npc.Hitpoints = Math.Max(0, Convert.ToInt32(u["hitpoints"]));
-			if (u.ContainsKey("max_hitpoints"))    npc.MaxHitpoints = Math.Max(1, Convert.ToInt32(u["max_hitpoints"]));
-			// HP > max: bump max to match. Admin edits shouldn't silently clamp.
-			if (npc.Hitpoints > npc.MaxHitpoints)  npc.MaxHitpoints = npc.Hitpoints;
-			if (u.ContainsKey("accuracy"))         npc.Accuracy = Math.Max(1, Convert.ToInt32(u["accuracy"]));
-			if (u.ContainsKey("strength"))         npc.Strength = Math.Max(1, Convert.ToInt32(u["strength"]));
-			if (u.ContainsKey("defence"))          npc.Defence = Math.Max(1, Convert.ToInt32(u["defence"]));
-			if (u.ContainsKey("melee_bonus"))      npc.MeleeBonus = Math.Max(0, Convert.ToInt32(u["melee_bonus"]));
-			if (u.ContainsKey("melee_defense"))    npc.MeleeDefense = Math.Max(0, Convert.ToInt32(u["melee_defense"]));
-			if (u.ContainsKey("aggressive"))  npc.Aggressive = (bool)u["aggressive"];
-			if (u.ContainsKey("aggro_range")) npc.AggroRangeTiles = Math.Max(1, Convert.ToInt32(u["aggro_range"]));
-
-			// Sync the save dict to the FINAL values so the DB matches memory.
-			u["display"]          = npc.Display;
-			u["attackable"]       = npc.Attackable;
-			u["ai_package_state"] = npc.AiPackageState;
-			u["ai_action_state"]  = npc.AiActionState;
-			u["loot_table_name"]  = npc.LootTableName;
-			u["spawn_timer"]      = npc.SpawnTimerSeconds;
-			u["hitpoints"]        = npc.Hitpoints;
-			u["max_hitpoints"]    = npc.MaxHitpoints;
-			u["accuracy"]         = npc.Accuracy;
-			u["strength"]         = npc.Strength;
-			u["defence"]          = npc.Defence;
-			u["melee_bonus"]      = npc.MeleeBonus;
-			u["melee_defense"]    = npc.MeleeDefense;
-			u["aggressive"]  = npc.Aggressive;
-			u["aggro_range"] = npc.AggroRangeTiles;
-
-			_ = _db.SaveAdminNpcEditAsync(npcId, u);
-			BroadcastNpcHp(npc);
-			Broadcast(new { type = "npc_updated", npc = NpcToPacket(npc) });
-			NotifyNpcVisibilityChanged();
-			Send(peerId, new { type = "npc_editor_saved", ok = true, npc_id = npcId });
-		}
-		catch (Exception e)
-		{
-			GD.PrintErr($"[Server] npc_editor_save: {e.Message}");
-			SendError(peerId, "npc_editor_saved", "npc.save_failed");
-		}
+		_ = _db.SaveAdminNpcEditAsync(npcId, u);
+		BroadcastNpcHp(npc);
+		Broadcast(new { type = "npc_updated", npc = NpcToPacket(npc) });
+		NotifyNpcVisibilityChanged();
+		Send(peerId, new { type = "npc_editor_saved", ok = true, npc_id = npcId });
 	}
+	catch (Exception e)
+	{
+		GD.PrintErr($"[Server] npc_editor_save: {e.Message}");
+		SendError(peerId, "npc_editor_saved", "npc.save_failed");
+	}
+}
 
 /// <summary>
 /// Each tick, check all pending pursuits. Promote to real combat when the
@@ -2451,5 +2537,115 @@ private void ProcessHostility()
 			EngageNpc(bestPlayer, npc.Id, initiatedByPlayer: false);
 		}
 	}
+}
+
+// ---------- Inventory ----------
+
+internal string? GetSlotItemSlug(long playerId, int slot)
+{
+	if (!_inventoryByPlayer.TryGetValue(playerId, out var inv)) return null;
+	if (slot < 0 || slot >= 28) return null;
+	long packed = inv[slot];
+	if (packed == 0) return null;
+	int itemId = ItemStack.ItemId(packed);
+	return _itemsById.TryGetValue(itemId, out var meta) ? meta.Slug : null;
+}
+
+internal int GetSlotQuantity(long playerId, int slot)
+{
+	if (!_inventoryByPlayer.TryGetValue(playerId, out var inv)) return 0;
+	if (slot < 0 || slot >= 28) return 0;
+	long packed = inv[slot];
+	return packed == 0 ? 0 : ItemStack.Quantity(packed);
+}
+
+internal bool ConsumeInventorySlot(long playerId, int slot, int qty)
+{
+	if (!_inventoryByPlayer.TryGetValue(playerId, out var inv)) return false;
+	if (slot < 0 || slot >= 28) return false;
+	long packed = inv[slot];
+	if (packed == 0) return false;
+	int currentQty = ItemStack.Quantity(packed);
+	if (currentQty < qty) return false;
+	int itemId = ItemStack.ItemId(packed);
+	int newQty = currentQty - qty;
+	inv[slot] = newQty > 0 ? ItemStack.Encode(itemId, newQty) : 0;
+	_ = _db.SaveInventorySlotAsync(playerId, slot, inv[slot]);
+	BroadcastInventory(playerId);
+	return true;
+}
+
+internal bool GiveItem(long playerId, string itemSlug, int qty)
+{
+	if (qty < 1) return false;
+	if (!_itemIdsBySlug.TryGetValue(itemSlug, out long itemId)) return false;
+	if (!_inventoryByPlayer.TryGetValue(playerId, out var inv)) return false;
+
+	// Stack into an existing slot first
+	for (int i = 0; i < 28; i++)
+	{
+		long packed = inv[i];
+		if (packed == 0) continue;
+		if (ItemStack.ItemId(packed) != itemId) continue;
+		int newQty = ItemStack.Quantity(packed) + qty;
+		inv[i] = ItemStack.Encode((int)itemId, newQty);
+		_ = _db.SaveInventorySlotAsync(playerId, i, inv[i]);
+		BroadcastInventory(playerId);
+		return true;
+	}
+
+	// Otherwise find an empty slot
+	for (int i = 0; i < 28; i++)
+	{
+		if (inv[i] != 0) continue;
+		inv[i] = ItemStack.Encode((int)itemId, qty);
+		_ = _db.SaveInventorySlotAsync(playerId, i, inv[i]);
+		BroadcastInventory(playerId);
+		return true;
+	}
+	return false;  // full
+}
+
+internal void HealPlayer(long playerId, int amount)
+{
+	if (!_playerCombat.TryGetValue(playerId, out var pd)) return;
+	int newHp = Math.Min(pd.MaxHp, pd.CurrentHp + amount);
+	if (newHp == pd.CurrentHp) return;
+	_playerCombat[playerId] = pd with { CurrentHp = newHp };
+	_ = _db.SetPlayerHpAsync(playerId, newHp);
+	BroadcastPlayerHp(playerId, newHp, pd.MaxHp);
+}
+
+private void BroadcastInventory(long playerId)
+{
+	if (!_peerByPlayerId.TryGetValue(playerId, out long peerId)) return;
+	SendInventory(peerId);
+}
+
+private void SendInventory(long peerId)
+{
+	if (!_sessions.TryGetValue(peerId, out var session)) return;
+	if (!_inventoryByPlayer.TryGetValue(session.PlayerId, out var inv)) return;
+
+	var slots = new List<object>();
+	for (int i = 0; i < 28; i++)
+	{
+		long packed = inv[i];
+		if (packed == 0) continue;
+		int itemId = ItemStack.ItemId(packed);
+		int qty = ItemStack.Quantity(packed);
+		if (!_itemsById.TryGetValue(itemId, out var meta)) continue;
+		slots.Add(new
+		{
+			slot = i,
+			item_id = itemId,
+			slug = meta.Slug,
+			display = meta.Display,
+			type = meta.Type,
+			type_slug = meta.TypeSlug,
+			quantity = qty,
+		});
+	}
+	Send(peerId, new { type = "inventory_data", slots });
 }
 }

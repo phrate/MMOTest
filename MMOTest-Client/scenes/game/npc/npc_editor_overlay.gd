@@ -106,21 +106,29 @@ func _build_fields() -> void:
 	_add_bool("attackable", "Attackable", bool(_data.get("attackable", true)))
 	_add_bool("aggressive", "Aggressive", bool(_data.get("aggressive", false)))
 	_add_int("aggro_range", "Aggro Range", int(_data.get("aggro_range", 8)), 1)
-
-	_add_sep()
-	_add_int("hitpoints", "Hitpoints", int(_data.get("hitpoints", 3)), 0)
-	_add_int("max_hitpoints", "Max Hitpoints", int(_data.get("max_hitpoints", 3)), 1)
-	_add_int("accuracy", "Accuracy", int(_data.get("accuracy", 1)), 1)
-	_add_int("strength", "Strength", int(_data.get("strength", 1)), 1)
-	_add_int("defence", "Defence", int(_data.get("defence", 1)), 1)
-	_add_int("melee_bonus", "Melee Bonus", int(_data.get("melee_bonus", 0)), 0)
-	_add_int("melee_defense", "Melee Defense", int(_data.get("melee_defense", 0)), 0)
-
-	_add_sep()
-	_add_int("spawn_timer", "Spawn Timer (s)", int(_data.get("spawn_timer", 3)), 1)
 	_add_string("ai_package_state", "AI Package", str(_data.get("ai_package_state", "idle")))
 	_add_string("ai_action_state", "AI Action", str(_data.get("ai_action_state", "none")))
 	_add_string("loot_table_name", "Loot Table", str(_data.get("loot_table_name", "common_loot_1")))
+	_add_int("spawn_timer", "Spawn Timer (s)", int(_data.get("spawn_timer", 3)), 1)
+
+	_add_sep()
+	_add_int("final_level", "Final Level", int(_data.get("final_level", 1)), 1)
+	_add_int("hitpoints", "Hitpoints", int(_data.get("hitpoints", 3)), 0)
+	_add_int("max_hitpoints", "Max Hitpoints", int(_data.get("max_hitpoints", 3)), 1)
+	_add_int("attack_speed", "Attack Speed (ticks)", int(_data.get("attack_speed", 10)), 1)
+	_add_int("accuracy", "Accuracy", int(_data.get("accuracy", 1)), 1)
+	_add_int("strength", "Strength", int(_data.get("strength", 1)), 1)
+	_add_int("defence", "Defence", int(_data.get("defence", 1)), 1)
+	_add_int("ether", "Ether", int(_data.get("ether", 1)), 1)
+	_add_int("max_ether", "Max Ether", int(_data.get("max_ether", 1)), 1)
+
+	_add_sep()
+	_add_int("melee_bonus", "Melee Bonus", int(_data.get("melee_bonus", 0)), 0)
+	_add_int("ranged_bonus", "Ranged Bonus", int(_data.get("ranged_bonus", 0)), 0)
+	_add_int("ether_bonus", "Ether Bonus", int(_data.get("ether_bonus", 0)), 0)
+	_add_int("melee_defense", "Melee Defense", int(_data.get("melee_defense", 0)), 0)
+	_add_int("ranged_defense", "Ranged Defense", int(_data.get("ranged_defense", 0)), 0)
+	_add_int("ether_defense", "Ether Defense", int(_data.get("ether_defense", 0)), 0)
 
 
 func _add_row(label_text: String, c: Control) -> void:

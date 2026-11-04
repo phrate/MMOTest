@@ -1,0 +1,18 @@
+[gd_resource type="AnimationLibrary" load_steps=7 format=3 uid="uid://ikegr3vqxh7n"]
+
+[ext_resource type="Animation" uid="uid://cd0tg4qiv18gn" path="res://resources/animations/sitting_chair_idle_1.res" id="1_w37mh"]
+[ext_resource type="Animation" uid="uid://0edsvjebh6x7" path="res://resources/animations/sitting_chair_idle_2.res" id="2_5qicl"]
+[ext_resource type="Animation" uid="uid://hes7m2lnhnoe" path="res://resources/animations/sitting_chair_stand.res" id="3_yyn83"]
+[ext_resource type="Animation" uid="uid://cx1ptq0w0v7w4" path="res://resources/animations/sitting_floor_idle_1.res" id="4_l2eg7"]
+[ext_resource type="Animation" uid="uid://dyfk58ipsl21h" path="res://resources/animations/sitting_floor_stand.res" id="5_t7ewt"]
+[ext_resource type="Animation" uid="uid://ss5vhq25p3md" path="res://resources/animations/sitting_lay_down.res" id="6_ja361"]
+
+[resource]
+_data = {
+&"sitting_chair_idle_1": ExtResource("1_w37mh"),
+&"sitting_chair_idle_2": ExtResource("2_5qicl"),
+&"sitting_chair_stand": ExtResource("3_yyn83"),
+&"sitting_floor_idle_1": ExtResource("4_l2eg7"),
+&"sitting_floor_stand": ExtResource("5_t7ewt"),
+&"sitting_lay_down": ExtResource("6_ja361")
+}

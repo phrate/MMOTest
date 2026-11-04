@@ -1,0 +1,10 @@
+[gd_resource type="AnimationLibrary" load_steps=3 format=3 uid="uid://clk3q64a83luk"]
+
+[ext_resource type="Animation" uid="uid://creltkbdhouo0" path="res://resources/animations/laying_sleep.res" id="1_og4ov"]
+[ext_resource type="Animation" uid="uid://cihosg6c548bs" path="res://resources/animations/laying_stand.res" id="2_qd18i"]
+
+[resource]
+_data = {
+&"laying_sleep": ExtResource("1_og4ov"),
+&"laying_stand": ExtResource("2_qd18i")
+}

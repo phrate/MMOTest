@@ -1,0 +1,8 @@
+[server]
+[generic]
+
+slot = $"slot"
+item = GetSlotItem(slot)
+qty = GetSlotQuantity(slot)
+
+chat local "This is: `item` with quantity: (x`qty`)."

@@ -25,6 +25,7 @@ Gfs="*res://autoload/gfs.gd"
 Pathfinder="*res://autoload/Pathfinder.gd"
 Tooltips="*res://autoload/Tooltips.gd"
 Npcs="*res://autoload/Npcs.gd"
+Inventory="*res://autoload/Inventory.gd"
 NpcRender="*res://autoload/Npc_Render.gd"
 Hitboxes="*res://autoload/Hitboxes.gd"
 

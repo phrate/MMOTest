@@ -373,15 +373,44 @@ public sealed class Parser
         return parts;
     }
 
-    private AstNode ParseExpr()
-    {
-        if (Peek().Kind == TokenKind.NOT)
-        {
-            var notTok = Advance();
-            return new NotNode(ParsePostfix(), notTok.Line);
-        }
-        return ParsePostfix();
-    }
+private AstNode ParseExpr()
+{
+	if (Peek().Kind == TokenKind.NOT)
+	{
+		var notTok = Advance();
+		return new NotNode(ParseComparison(), notTok.Line);
+	}
+	return ParseComparison();
+}
+
+
+/// <summary>
+/// Comparison layer above ParsePostfix: handles `==`, `!=`, `<`, `<=`, `>`, `>=`
+/// left-to-right. Postfix (IS EMPTY, infix NOT) binds tighter, so `a IS EMPTY`
+/// and `a NOT b` are parsed before any comparison wraps around them.
+/// </summary>
+private AstNode ParseComparison()
+{
+	var left = ParsePostfix();
+	while (true)
+	{
+		var t = Peek();
+		string op;
+		switch (t.Kind)
+		{
+			case TokenKind.LT:  op = "<";  break;
+			case TokenKind.LTE: op = "<="; break;
+			case TokenKind.GT:  op = ">";  break;
+			case TokenKind.GTE: op = ">="; break;
+			case TokenKind.EQ:  op = "=="; break;
+			case TokenKind.NEQ: op = "!="; break;
+			default: return left;
+		}
+		Advance();
+		var right = ParsePostfix();
+		left = new BinaryOpNode(op, left, right, t.Line);
+	}
+}
 
     private AstNode ParsePostfix()
     {

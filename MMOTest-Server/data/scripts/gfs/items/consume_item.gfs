@@ -1,0 +1,13 @@
+[server]
+[generic]
+
+slot = $"slot"
+qty = GetSlotQuantity(slot)
+
+if qty <= 0:
+    chat local "You have nothing to consume."
+    _end_script()
+
+ConsumeSlot(slot, 1)
+HealPlayer(10)
+chat local "You drink the elixir and feel refreshed."

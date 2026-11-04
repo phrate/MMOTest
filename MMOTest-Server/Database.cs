@@ -58,6 +58,7 @@ public class Database
                 max_defence     INTEGER NOT NULL DEFAULT 1  CHECK (max_defence   >= 1),
                 ether           INTEGER NOT NULL DEFAULT 1  CHECK (ether         >= 1),
                 max_ether       INTEGER NOT NULL DEFAULT 1  CHECK (max_ether     >= 1),
+                attack_speed    INTEGER NOT NULL DEFAULT 10 CHECK (attack_speed >= 1),
                 poisoned        INTEGER NOT NULL DEFAULT 0 CHECK (poisoned IN (0, 1)),
                 burning         INTEGER NOT NULL DEFAULT 0 CHECK (burning  IN (0, 1)),
                 frozen          INTEGER NOT NULL DEFAULT 0 CHECK (frozen   IN (0, 1)),
@@ -253,6 +254,7 @@ public class Database
         EnsureColumn(conn, "players", "sid", "INTEGER NOT NULL DEFAULT 0");
         EnsureColumn(conn, "npcs", "aggressive",  "INTEGER NOT NULL DEFAULT 0 CHECK (aggressive IN (0, 1))");
         EnsureColumn(conn, "npcs", "aggro_range", "INTEGER NOT NULL DEFAULT 8 CHECK (aggro_range >= 1)");
+        EnsureColumn(conn, "combat_levels", "attack_speed", "INTEGER NOT NULL DEFAULT 10 CHECK (attack_speed >= 1)");
 
         Exec(conn, "PRAGMA foreign_keys = ON;");
     }
@@ -669,6 +671,53 @@ public Task SetPlayerSidAsync(long playerId, long sid) => Task.Run(() =>
         cmd.ExecuteNonQuery();
     });
 
+public Task<long[]?> GetInventorySlotsAsync(long playerId) => Task.Run(() =>
+{
+    using var conn = Open();
+    using var cmd = conn.CreateCommand();
+    cmd.CommandText = @"
+        SELECT i.slot_1, i.slot_2, i.slot_3, i.slot_4, i.slot_5, i.slot_6, i.slot_7,
+               i.slot_8, i.slot_9, i.slot_10, i.slot_11, i.slot_12, i.slot_13, i.slot_14,
+               i.slot_15, i.slot_16, i.slot_17, i.slot_18, i.slot_19, i.slot_20, i.slot_21,
+               i.slot_22, i.slot_23, i.slot_24, i.slot_25, i.slot_26, i.slot_27, i.slot_28
+        FROM players p
+        JOIN player_inventory i ON p.inventory_id = i.id
+        WHERE p.id = $pid;";
+    cmd.Parameters.AddWithValue("$pid", playerId);
+    using var r = cmd.ExecuteReader();
+    if (!r.Read()) return null;
+    var slots = new long[28];
+    for (int i = 0; i < 28; i++) slots[i] = r.GetInt64(i);
+    return slots;
+});
+
+public Task SaveInventorySlotAsync(long playerId, int slotIndex, long packed) => Task.Run(() =>
+{
+    if (slotIndex < 0 || slotIndex >= 28) return;
+    using var conn = Open();
+    using var cmd = conn.CreateCommand();
+    cmd.CommandText = $@"
+        UPDATE player_inventory SET slot_{slotIndex + 1} = $v
+        WHERE id = (SELECT inventory_id FROM players WHERE id = $pid);";
+    cmd.Parameters.AddWithValue("$v", packed);
+    cmd.Parameters.AddWithValue("$pid", playerId);
+    cmd.ExecuteNonQuery();
+});
+
+public record ItemMeta(long Id, string Slug, string Display, string Type, string TypeSlug);
+
+public Task<List<ItemMeta>> GetAllItemsSync() => Task.Run(() =>
+{
+    using var conn = Open();
+    using var cmd = conn.CreateCommand();
+    cmd.CommandText = "SELECT id, slug_id, display_name, type, type_slug FROM items;";
+    using var r = cmd.ExecuteReader();
+    var list = new List<ItemMeta>();
+    while (r.Read())
+        list.Add(new ItemMeta(r.GetInt64(0), r.GetString(1), r.GetString(2), r.GetString(3), r.GetString(4)));
+    return list;
+});
+
     public Task SetPlayerCombatStatsAsync(long playerId, int accuracy, int strength, int defence,
         int meleeBonus, int meleeDefense) => Task.Run(() =>
     {
@@ -722,8 +771,14 @@ public List<ActiveNpc> GetAllNpcsSync()
                n.combat_levels_id, COALESCE(c.final_level, 1),
                n.render_slug, n.ai_package_state, n.spawn_timer,
                COALESCE(c.hitpoints, 3), COALESCE(c.max_hitpoints, 3),
-               COALESCE(c.accuracy, 1), COALESCE(c.defence, 1),
-               COALESCE(c.melee_bonus, 0), COALESCE(c.melee_defense, 0),
+               COALESCE(c.accuracy, 1), COALESCE(c.strength, 1),
+               COALESCE(c.defence, 1), COALESCE(c.ether, 1),
+               COALESCE(c.max_ether, 1),
+               COALESCE(c.melee_bonus, 0), COALESCE(c.ranged_bonus, 0),
+               COALESCE(c.ether_bonus, 0),
+               COALESCE(c.melee_defense, 0), COALESCE(c.ranged_defense, 0),
+               COALESCE(c.ether_defense, 0),
+               COALESCE(c.attack_speed, 10),
                n.loot_table_name, n.ai_action_state,
                n.aggressive, n.aggro_range
         FROM npcs n
@@ -751,15 +806,21 @@ public List<ActiveNpc> GetAllNpcsSync()
             Hitpoints = reader.GetInt32(14),
             MaxHitpoints = reader.GetInt32(15),
             Accuracy = reader.GetInt32(16),
-            Defence = reader.GetInt32(17),
-            MeleeBonus = reader.GetInt32(18),
-            MeleeDefense = reader.GetInt32(19),
-            LootTableName = reader.IsDBNull(20) ? "common_loot_1" : reader.GetString(20),
-            AiActionState = reader.IsDBNull(21) ? "none" : reader.GetString(21),
-            Aggressive = reader.GetInt64(22) != 0,
-            AggroRangeTiles = reader.GetInt32(23),
-            Strength = reader.GetInt32(15),
-            AttackSpeedTicks = 10,
+            Strength = reader.GetInt32(17),
+            Defence = reader.GetInt32(18),
+            Ether = reader.GetInt32(19),
+            MaxEther = reader.GetInt32(20),
+            MeleeBonus = reader.GetInt32(21),
+            RangedBonus = reader.GetInt32(22),
+            EtherBonus = reader.GetInt32(23),
+            MeleeDefense = reader.GetInt32(24),
+            RangedDefense = reader.GetInt32(25),
+            EtherDefense = reader.GetInt32(26),
+            AttackSpeedTicks = reader.GetInt32(27),
+            LootTableName = reader.IsDBNull(28) ? "common_loot_1" : reader.GetString(28),
+            AiActionState = reader.IsDBNull(29) ? "none" : reader.GetString(29),
+            Aggressive = reader.GetInt64(30) != 0,
+            AggroRangeTiles = reader.GetInt32(31),
         };
         npc.ResetPositionToHome();
         list.Add(npc);
@@ -863,64 +924,76 @@ public List<ActiveNpc> GetAllNpcsSync()
     });
 
     public Task<bool> SaveAdminNpcEditAsync(long npcId, Dictionary<string, object> u) => Task.Run(() =>
+{
+    using var conn = Open();
+    using var tx = conn.BeginTransaction();
+    try
     {
-        using var conn = Open();
-        using var tx = conn.BeginTransaction();
-        try
+        using (var cmd = conn.CreateCommand())
         {
-            using (var cmd = conn.CreateCommand())
-            {
-                cmd.Transaction = tx;
-                cmd.CommandText = @"
-                    UPDATE npcs SET
-                        attackable = $atk,
-                        ai_package_state = $pkg,
-                        ai_action_state  = $act,
-                        loot_table_name  = $loot,
-                        spawn_timer      = $stimer,
-                        display          = $display,
-                        aggressive       = $aggr,
-                        aggro_range      = $arange
-                    WHERE id = $id;";
-                cmd.Parameters.AddWithValue("$atk", (bool)u["attackable"] ? 1 : 0);
-                cmd.Parameters.AddWithValue("$pkg", (string)u["ai_package_state"]);
-                cmd.Parameters.AddWithValue("$act", (string)u["ai_action_state"]);
-                cmd.Parameters.AddWithValue("$loot", (string)u["loot_table_name"]);
-                cmd.Parameters.AddWithValue("$stimer", Convert.ToInt32(u["spawn_timer"]));
-                cmd.Parameters.AddWithValue("$display", (string)u["display"]);
-                cmd.Parameters.AddWithValue("$id", npcId);
-                cmd.ExecuteNonQuery();
-            }
-            using (var cmd = conn.CreateCommand())
-            {
-                cmd.Transaction = tx;
-                cmd.CommandText = @"
-                    UPDATE combat_levels SET
-                        hitpoints     = $hp, max_hitpoints = $mhp,
-                        accuracy      = $acc, max_accuracy  = $acc,
-                        strength      = $str, max_strength  = $str,
-                        defence       = $def, max_defence   = $def,
-                        melee_bonus   = $mb,  melee_defense = $md
-                    WHERE id = (SELECT combat_levels_id FROM npcs WHERE id = $id);";
-                cmd.Parameters.AddWithValue("$hp",  Convert.ToInt32(u["hitpoints"]));
-                cmd.Parameters.AddWithValue("$mhp", Convert.ToInt32(u["max_hitpoints"]));
-                cmd.Parameters.AddWithValue("$acc", Convert.ToInt32(u["accuracy"]));
-                cmd.Parameters.AddWithValue("$str", Convert.ToInt32(u["strength"]));
-                cmd.Parameters.AddWithValue("$def", Convert.ToInt32(u["defence"]));
-                cmd.Parameters.AddWithValue("$mb",  Convert.ToInt32(u["melee_bonus"]));
-                cmd.Parameters.AddWithValue("$md",  Convert.ToInt32(u["melee_defense"]));
-                cmd.Parameters.AddWithValue("$id", npcId);
-                cmd.Parameters.AddWithValue("$aggr",   (bool)u["aggressive"] ? 1 : 0);
-                cmd.Parameters.AddWithValue("$arange", Convert.ToInt32(u["aggro_range"]));
-                cmd.ExecuteNonQuery();
-            }
-            tx.Commit();
-            return true;
+            cmd.Transaction = tx;
+            cmd.CommandText = @"
+                UPDATE npcs SET
+                    attackable = $atk,
+                    aggressive = $aggr,
+                    aggro_range = $arange,
+                    ai_package_state = $pkg,
+                    ai_action_state  = $act,
+                    loot_table_name  = $loot,
+                    spawn_timer      = $stimer,
+                    display          = $display
+                WHERE id = $id;";
+            cmd.Parameters.AddWithValue("$atk", (bool)u["attackable"] ? 1 : 0);
+            cmd.Parameters.AddWithValue("$aggr", (bool)u["aggressive"] ? 1 : 0);
+            cmd.Parameters.AddWithValue("$arange", Convert.ToInt32(u["aggro_range"]));
+            cmd.Parameters.AddWithValue("$pkg", (string)u["ai_package_state"]);
+            cmd.Parameters.AddWithValue("$act", (string)u["ai_action_state"]);
+            cmd.Parameters.AddWithValue("$loot", (string)u["loot_table_name"]);
+            cmd.Parameters.AddWithValue("$stimer", Convert.ToInt32(u["spawn_timer"]));
+            cmd.Parameters.AddWithValue("$display", (string)u["display"]);
+            cmd.Parameters.AddWithValue("$id", npcId);
+            cmd.ExecuteNonQuery();
         }
-        catch
+        using (var cmd = conn.CreateCommand())
         {
-            try { tx.Rollback(); } catch { }
-            throw;
+            cmd.Transaction = tx;
+            cmd.CommandText = @"
+                UPDATE combat_levels SET
+                    hitpoints     = $hp, max_hitpoints = $mhp,
+                    accuracy      = $acc, max_accuracy  = $acc,
+                    strength      = $str, max_strength  = $str,
+                    defence       = $def, max_defence   = $def,
+                    ether         = $eth, max_ether     = $meth,
+                    melee_bonus   = $mb,  ranged_bonus  = $rb,
+                    ether_bonus   = $eb,
+                    melee_defense = $md,  ranged_defense = $rd,
+                    ether_defense = $ed,
+                    attack_speed  = $aspeed
+                WHERE id = (SELECT combat_levels_id FROM npcs WHERE id = $id);";
+            cmd.Parameters.AddWithValue("$hp",     Convert.ToInt32(u["hitpoints"]));
+            cmd.Parameters.AddWithValue("$mhp",    Convert.ToInt32(u["max_hitpoints"]));
+            cmd.Parameters.AddWithValue("$acc",    Convert.ToInt32(u["accuracy"]));
+            cmd.Parameters.AddWithValue("$str",    Convert.ToInt32(u["strength"]));
+            cmd.Parameters.AddWithValue("$def",    Convert.ToInt32(u["defence"]));
+            cmd.Parameters.AddWithValue("$eth",    Convert.ToInt32(u["ether"]));
+            cmd.Parameters.AddWithValue("$meth",   Convert.ToInt32(u["max_ether"]));
+            cmd.Parameters.AddWithValue("$mb",     Convert.ToInt32(u["melee_bonus"]));
+            cmd.Parameters.AddWithValue("$rb",     Convert.ToInt32(u["ranged_bonus"]));
+            cmd.Parameters.AddWithValue("$eb",     Convert.ToInt32(u["ether_bonus"]));
+            cmd.Parameters.AddWithValue("$md",     Convert.ToInt32(u["melee_defense"]));
+            cmd.Parameters.AddWithValue("$rd",     Convert.ToInt32(u["ranged_defense"]));
+            cmd.Parameters.AddWithValue("$ed",     Convert.ToInt32(u["ether_defense"]));
+            cmd.Parameters.AddWithValue("$aspeed", Convert.ToInt32(u["attack_speed"]));
+            cmd.Parameters.AddWithValue("$id", npcId);
+            cmd.ExecuteNonQuery();
         }
-    });
+        tx.Commit();
+        return true;
+    }
+    catch
+    {
+        try { tx.Rollback(); } catch { }
+        throw;
+    }
+});
 }

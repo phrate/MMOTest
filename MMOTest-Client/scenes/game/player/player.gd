@@ -1,10 +1,12 @@
 extends CharacterBody3D
-## Local player. Delegates all visual state to the EntityVisuals child.
+## Local player. Delegates visual state to EntityVisuals child.
 
 signal walk_rejected(tile: Vector2i, reason: String)
 
 const INVALID_TILE := Vector2i(0x7FFFFFFF, 0x7FFFFFFF)
 const RENDER_SLUG := "player"
+const HOVER_LINGER_MS := 200
+
 const ORB_SHADER := """
 shader_type canvas_item;
 
@@ -27,19 +29,20 @@ void fragment() {
 	COLOR = vec4(col, 1.0);
 }
 """
+const MENU_LEAVE_MARGIN := 40.0
+var _menu_tracking := false
 
 @export var move_speed := 2.0
 @export var camera: Camera3D
 
-var _game_scene: Node = null
 var _target_pos: Vector3
 var _target_yaw: float = 0.0
 var _pending_path_id := -1
 var _last_request_id := -1
 var _last_path_length := 0
-
 var _render_scene_instance: Node3D = null
 var _hitbox_is_fallback := false
+
 var _self_hp_orb: Control
 var _self_hp_orb_material: ShaderMaterial
 var _self_hp_label: Label
@@ -50,18 +53,12 @@ var _context_merged: Array = []
 var _hover_layer: CanvasLayer
 var _hover_panel: PanelContainer
 var _hover_label: Label
-const HOVER_LINGER_MS := 200
 var _hover_target: Node3D = null
 var _hover_last_hit_ms: int = 0
 
+var _game_scene: Node = null
+
 @onready var visuals: EntityVisuals = _make_visuals()
-
-
-
-func _game() -> Node:
-	if _game_scene == null or not is_instance_valid(_game_scene):
-		_game_scene = get_tree().get_first_node_in_group("game_scene")
-	return _game_scene
 
 
 func _make_visuals() -> EntityVisuals:
@@ -85,13 +82,15 @@ func _ready() -> void:
 	Session.changed.connect(_on_session_changed)
 	Network.self_position_updated.connect(_on_self_position_updated)
 	Network.player_respawned.connect(_on_player_respawned)
+	Network.anim_changed_received.connect(_on_anim_changed)
 	Pathfinder.path_found.connect(_on_path_found)
 	Pathfinder.path_failed.connect(_on_path_failed)
 	NpcRender.slug_ready.connect(_on_render_slug_ready)
+
 	_apply_render_scene()
 	_build_self_hp_orb()
-	_on_session_changed()
 	_build_hover_tooltip()
+	_on_session_changed()
 
 
 # ---------- Public API (delegates) ----------
@@ -151,6 +150,8 @@ func _apply_render_scene() -> void:
 			inst.name = "RenderScene"
 			add_child(inst)
 			_render_scene_instance = inst
+			visuals.fit_render_scene_for_slug(inst, RENDER_SLUG)
+			visuals.fit_name_label_above_node(inst)   # ← new line
 			ap = _find_anim_player(inst)
 			if ap == null:
 				ap = AnimationPlayer.new()
@@ -246,7 +247,7 @@ func _ensure_placeholder_anims(ap: AnimationPlayer) -> void:
 		ap.add_animation_library("", lib)
 
 
-# ---------- Self HP bar ----------
+# ---------- Self HP orb ----------
 
 func _build_self_hp_orb() -> void:
 	var cl := CanvasLayer.new()
@@ -305,7 +306,147 @@ func _on_session_changed() -> void:
 	visuals.update_hp(Session.current_hp, Session.max_hp)
 
 
-# ---------- Movement + input ----------
+# ---------- Hover tooltip ----------
+
+func _build_hover_tooltip() -> void:
+	_hover_layer = CanvasLayer.new()
+	_hover_layer.name = "HoverTooltipLayer"
+	_hover_layer.layer = 9
+	add_child(_hover_layer)
+
+	_hover_panel = PanelContainer.new()
+	_hover_panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_hover_panel.visible = false
+
+	var style := StyleBoxFlat.new()
+	style.bg_color = Color(0.05, 0.05, 0.05, 0.85)
+	style.border_color = Color(1, 1, 1, 0.15)
+	style.border_width_left = 1
+	style.border_width_right = 1
+	style.border_width_top = 1
+	style.border_width_bottom = 1
+	style.content_margin_left = 6
+	style.content_margin_right = 6
+	style.content_margin_top = 3
+	style.content_margin_bottom = 3
+	_hover_panel.add_theme_stylebox_override("panel", style)
+	_hover_layer.add_child(_hover_panel)
+
+	_hover_label = Label.new()
+	_hover_label.add_theme_font_size_override("font_size", 13)
+	_hover_label.add_theme_color_override("font_color", Color(1, 1, 1))
+	_hover_label.add_theme_constant_override("outline_size", 3)
+	_hover_label.add_theme_color_override("font_outline_color", Color(0, 0, 0))
+	_hover_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_hover_panel.add_child(_hover_label)
+
+
+func _update_hover_tooltip() -> void:
+	if _hover_panel == null: return
+
+	for m in get_tree().get_nodes_in_group("modal_blockers"):
+		if m is CanvasItem and (m as CanvasItem).visible:
+			_hover_target = null
+			_hover_panel.visible = false
+			return
+	if get_viewport().gui_get_hovered_control() != null:
+		_hover_target = null
+		_hover_panel.visible = false
+		return
+
+	var candidate := _resolve_hover_target()
+	var now := Time.get_ticks_msec()
+
+	if candidate != null:
+		_hover_target = candidate
+		_hover_last_hit_ms = now
+	elif _hover_target != null:
+		if now - _hover_last_hit_ms > HOVER_LINGER_MS:
+			_hover_target = null
+
+	if _hover_target == null or not is_instance_valid(_hover_target) or not _hover_target.is_inside_tree():
+		_hover_panel.visible = false
+		return
+
+	var npc_id: int = _hover_target.get_npc_id()
+	var actions: Array = Tooltips.build_actions("npc", _npc_system_vars(npc_id))
+	if actions.is_empty():
+		_hover_panel.visible = false
+		return
+
+	var primary: Dictionary = actions[0]
+	_hover_label.text = str(primary.get("display", primary.get("id", "?")))
+
+	var mp := get_viewport().get_mouse_position()
+	_hover_panel.reset_size()
+	_hover_panel.position = Vector2i(mp + Vector2(16, 0))
+	_hover_panel.visible = true
+
+
+func _resolve_hover_target() -> Node3D:
+	var cam := get_viewport().get_camera_3d()
+	if cam == null: return null
+
+	var mp := get_viewport().get_mouse_position()
+	var from := cam.project_ray_origin(mp)
+	var dir := cam.project_ray_normal(mp)
+	var space := get_world_3d().direct_space_state
+
+	var hit1 := _find_entity_under_ray_any(from, dir)
+	if hit1.node == null: return null
+	var entity1: Node3D = hit1.node
+
+	var tile := Vector2i(
+		roundi(entity1.global_position.x),
+		roundi(entity1.global_position.z))
+	var entities: Array = []
+	if _game() != null:
+		entities = _game().get_entities_on_tile(tile)
+	if entities.is_empty():
+		entities = [entity1]
+
+	var priority_npc: Node3D = null
+	for e in entities:
+		if not is_instance_valid(e): continue
+		if not e.has_method("get_entity_type"): continue
+		if e.get_entity_type() != "npc": continue
+		if priority_npc == null or e.get_npc_id() < priority_npc.get_npc_id():
+			priority_npc = e
+	if priority_npc == null: return null
+
+	var e1_type := "player"
+	if entity1.has_method("get_entity_type"):
+		e1_type = entity1.get_entity_type()
+
+	if e1_type == "npc":
+		return entity1 if entity1 == priority_npc else null
+
+	var excludes: Array[RID] = []
+	for _i in range(16):
+		var q := PhysicsRayQueryParameters3D.create(
+			from, from + dir * 300.0, Hitboxes.HITBOX_COLLISION_LAYER)
+		q.collide_with_areas = false
+		q.collide_with_bodies = true
+		q.exclude = excludes
+		var hit := space.intersect_ray(q)
+		if hit.is_empty(): return null
+		var body = hit.collider
+		if not (body is StaticBody3D): return null
+		if _body_owned_by(body, priority_npc):
+			return priority_npc
+		excludes.append(body.get_rid())
+	return null
+
+
+func _body_owned_by(body: Node, entity: Node) -> bool:
+	var n: Node = body
+	while n != null:
+		if n == entity: return true
+		n = n.get_parent()
+	return false
+
+
+# ---------- Input ----------
 
 func _unhandled_input(event: InputEvent) -> void:
 	if event is InputEventMouseButton and event.pressed:
@@ -338,7 +479,6 @@ func _try_primary_click() -> void:
 		if entities.is_empty():
 			entities = [clicked]
 
-		# Priority winner determines what left-click does. Players → click-through.
 		var winner: Node3D = clicked
 		if _game() != null:
 			winner = _game().pick_priority_winner(tile, entities)
@@ -382,10 +522,8 @@ func _try_right_click() -> void:
 	if entities.is_empty():
 		entities = [clicked]
 
-	# Sort: players (by sid) then NPCs (by id).
 	entities.sort_custom(_compare_entities_for_tooltip)
 
-	# Merge each entity's tooltip actions in order.
 	var merged: Array = []
 	for node in entities:
 		if not is_instance_valid(node): continue
@@ -435,21 +573,6 @@ func _compare_entities_for_tooltip(a: Node, b: Node) -> bool:
 		return a.get_npc_id() < b.get_npc_id()
 
 
-func _find_entity_under_ray(from: Vector3, dir: Vector3) -> Dictionary:
-	var space := get_world_3d().direct_space_state
-	var q := PhysicsRayQueryParameters3D.create(
-		from, from + dir * 300.0, Hitboxes.HITBOX_COLLISION_LAYER)
-	q.collide_with_areas = false
-	q.collide_with_bodies = true
-	var hit := space.intersect_ray(q)
-	if hit.is_empty(): return {"node": null, "t": INF}
-	var body = hit.collider
-	if not (body is StaticBody3D): return {"node": null, "t": INF}
-	var entity: Node3D = body.get_parent()
-	if entity == null or entity == self: return {"node": null, "t": INF}
-	return {"node": entity, "t": from.distance_to(hit.position)}
-
-
 func _show_merged_context_menu(items: Array, mouse_pos: Vector2) -> void:
 	if items.is_empty(): return
 	var menu := _ensure_context_menu()
@@ -461,6 +584,10 @@ func _show_merged_context_menu(items: Array, mouse_pos: Vector2) -> void:
 		id += 1
 	menu.position = Vector2i(mouse_pos)
 	menu.popup()
+
+	_menu_tracking = true
+	if not menu.popup_hide.is_connected(_on_menu_hidden):
+		menu.popup_hide.connect(_on_menu_hidden)
 
 
 func _ensure_context_menu() -> PopupMenu:
@@ -481,6 +608,8 @@ func _on_context_menu_selected(id: int) -> void:
 	var target_id: int = int(item.get("target_id", 0))
 	Network.run_action(script_path, item.get("args", {}), target_id)
 
+
+# ---------- Path ----------
 
 func _request_path_to(tile: Vector2i) -> void:
 	var cur := Vector2i(roundi(global_position.x), roundi(global_position.z))
@@ -504,7 +633,14 @@ func _on_path_failed(request_id: int, reason: String) -> void:
 	walk_rejected.emit(Vector2i.ZERO, reason)
 
 
+# ---------- Movement / session ----------
+
 func _process(delta: float) -> void:
+	if _menu_tracking:
+		_check_menu_distance()
+
+	_update_hover_tooltip()
+
 	var to_target := _target_pos - global_position
 	var horiz_sq := to_target.x * to_target.x + to_target.z * to_target.z
 	var speed := move_speed
@@ -518,7 +654,6 @@ func _process(delta: float) -> void:
 	else:
 		global_position = global_position.move_toward(_target_pos, step)
 	rotation.y = _target_yaw
-	_update_hover_tooltip()
 
 
 func _on_self_position_updated(x: float, y: float, z: float, yaw: float) -> void:
@@ -528,7 +663,6 @@ func _on_self_position_updated(x: float, y: float, z: float, yaw: float) -> void
 
 func _on_player_respawned(x: float, y: float, z: float, yaw: float, hp: int, max_hp: int) -> void:
 	visuals.reset_hp_tracking()
-	# Cancel any in-flight pathfind so a late response can't re-trigger walking.
 	_pending_path_id = -1
 	_last_path_length = 0
 	global_position = Vector3(x, y, z)
@@ -544,7 +678,36 @@ func _on_player_respawned(x: float, y: float, z: float, yaw: float, hp: int, max
 		camera.snap_now()
 
 
-# ---------- Debug / ray ----------
+func _on_anim_changed(player_id: int, anim: String, duration_ms: int) -> void:
+	if player_id != Session.player_id: return
+	play_scripted_anim(anim, duration_ms)
+
+
+# ---------- Helpers ----------
+
+func _game() -> Node:
+	if _game_scene == null or not is_instance_valid(_game_scene):
+		_game_scene = get_tree().get_first_node_in_group("game_scene")
+	return _game_scene
+
+
+func _npc_system_vars(npc_id: int) -> Dictionary:
+	var npc_data: Dictionary = Npcs.get_npc(npc_id)
+	return {
+		"SELF_ID": Session.player_id,
+		"NPC_ID": npc_id,
+		"NPC_DISPLAY_NAME": str(npc_data.get("display", "")),
+		"NPC_COMBAT_FINAL_LEVEL": int(npc_data.get("final_level", 0)),
+	}
+
+
+func _player_system_vars(player_id: int, username: String) -> Dictionary:
+	return {
+		"SELF_ID": Session.player_id,
+		"PLAYER_ID": player_id,
+		"PLAYER_NAME": username,
+	}
+
 
 func get_tile_under_mouse() -> Vector2i:
 	var cam := get_viewport().get_camera_3d()
@@ -566,6 +729,38 @@ func get_debug_info() -> Dictionary:
 		"request_id": _last_request_id,
 		"anim": visuals.get_current_anim(),
 	}
+
+
+# ---------- Ray helpers ----------
+
+func _find_entity_under_ray(from: Vector3, dir: Vector3) -> Dictionary:
+	var space := get_world_3d().direct_space_state
+	var q := PhysicsRayQueryParameters3D.create(
+		from, from + dir * 300.0, Hitboxes.HITBOX_COLLISION_LAYER)
+	q.collide_with_areas = false
+	q.collide_with_bodies = true
+	var hit := space.intersect_ray(q)
+	if hit.is_empty(): return {"node": null, "t": INF}
+	var body = hit.collider
+	if not (body is StaticBody3D): return {"node": null, "t": INF}
+	var entity: Node3D = body.get_parent()
+	if entity == null or entity == self: return {"node": null, "t": INF}
+	return {"node": entity, "t": from.distance_to(hit.position)}
+
+
+func _find_entity_under_ray_any(from: Vector3, dir: Vector3) -> Dictionary:
+	var space := get_world_3d().direct_space_state
+	var q := PhysicsRayQueryParameters3D.create(
+		from, from + dir * 300.0, Hitboxes.HITBOX_COLLISION_LAYER)
+	q.collide_with_areas = false
+	q.collide_with_bodies = true
+	var hit := space.intersect_ray(q)
+	if hit.is_empty(): return {"node": null, "t": INF}
+	var body = hit.collider
+	if not (body is StaticBody3D): return {"node": null, "t": INF}
+	var entity: Node3D = body.get_parent()
+	if entity == null: return {"node": null, "t": INF}
+	return {"node": entity, "t": from.distance_to(hit.position)}
 
 
 func _ray_to_tile(from: Vector3, dir: Vector3) -> Vector2i:
@@ -650,180 +845,23 @@ func _ray_wall_face(from: Vector3, dir: Vector3, tx: int, ty: int, d: Vector2i, 
 	return t
 
 
-func _npc_system_vars(npc_id: int) -> Dictionary:
-	var npc_data: Dictionary = Npcs.get_npc(npc_id)
-	return {
-		"SELF_ID": Session.player_id,
-		"NPC_ID": npc_id,
-		"NPC_DISPLAY_NAME": str(npc_data.get("display", "")),
-		"NPC_COMBAT_FINAL_LEVEL": int(npc_data.get("final_level", 0)),
-	}
+func _on_menu_hidden() -> void:
+	_menu_tracking = false
 
 
-func _player_system_vars(player_id: int, username: String) -> Dictionary:
-	return {
-		"SELF_ID": Session.player_id,
-		"PLAYER_ID": player_id,
-		"PLAYER_NAME": username,
-	}
-
-
-func _build_hover_tooltip() -> void:
-	_hover_layer = CanvasLayer.new()
-	_hover_layer.name = "HoverTooltipLayer"
-	_hover_layer.layer = 9
-	add_child(_hover_layer)
-
-	_hover_panel = PanelContainer.new()
-	_hover_panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	_hover_panel.visible = false
-
-	var style := StyleBoxFlat.new()
-	style.bg_color = Color(0.05, 0.05, 0.05, 0.85)
-	style.border_color = Color(1, 1, 1, 0.15)
-	style.border_width_left = 1
-	style.border_width_right = 1
-	style.border_width_top = 1
-	style.border_width_bottom = 1
-	style.content_margin_left = 6
-	style.content_margin_right = 6
-	style.content_margin_top = 3
-	style.content_margin_bottom = 3
-	_hover_panel.add_theme_stylebox_override("panel", style)
-	_hover_layer.add_child(_hover_panel)
-
-	_hover_label = Label.new()
-	_hover_label.add_theme_font_size_override("font_size", 13)
-	_hover_label.add_theme_color_override("font_color", Color(1, 1, 1))
-	_hover_label.add_theme_constant_override("outline_size", 3)
-	_hover_label.add_theme_color_override("font_outline_color", Color(0, 0, 0))
-	_hover_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	_hover_panel.add_child(_hover_label)
-
-
-func _update_hover_tooltip() -> void:
-	if _hover_panel == null: return
-
-	# Hard-hide conditions bypass linger entirely.
-	for m in get_tree().get_nodes_in_group("modal_blockers"):
-		if m is CanvasItem and (m as CanvasItem).visible:
-			_hover_target = null
-			_hover_panel.visible = false
-			return
-	if get_viewport().gui_get_hovered_control() != null:
-		_hover_target = null
-		_hover_panel.visible = false
+func _check_menu_distance() -> void:
+	if _context_menu == null or not is_instance_valid(_context_menu):
+		_menu_tracking = false
+		return
+	if _context_menu.size.x <= 0 or _context_menu.size.y <= 0:
 		return
 
-	# Resolve this frame's candidate.
-	var candidate := _resolve_hover_target()
-	var now := Time.get_ticks_msec()
+	var mouse: Vector2
+	if _context_menu.is_embedded():
+		mouse = get_viewport().get_mouse_position()
+	else:
+		mouse = Vector2(DisplayServer.mouse_get_position())
 
-	if candidate != null:
-		# Acquire or refresh the target.
-		_hover_target = candidate
-		_hover_last_hit_ms = now
-	elif _hover_target != null:
-		# No candidate this frame: linger on the previous target briefly.
-		if now - _hover_last_hit_ms > HOVER_LINGER_MS:
-			_hover_target = null
-
-	if _hover_target == null or not is_instance_valid(_hover_target) or not _hover_target.is_inside_tree():
-		_hover_panel.visible = false
-		return
-
-	var npc_id: int = _hover_target.get_npc_id()
-	var actions: Array = Tooltips.build_actions("npc", _npc_system_vars(npc_id))
-	if actions.is_empty():
-		_hover_panel.visible = false
-		return
-
-	var primary: Dictionary = actions[0]
-	_hover_label.text = str(primary.get("display", primary.get("id", "?")))
-
-	var mp := get_viewport().get_mouse_position()
-	_hover_panel.reset_size()
-	_hover_panel.position = Vector2i(mp + Vector2(16, 0))
-	_hover_panel.visible = true
-
-
-## Stateless per-frame resolution: which NPC should be shown *if* the timer
-## decides to switch? Returns null when nothing qualifies.
-func _resolve_hover_target() -> Node3D:
-	var cam := get_viewport().get_camera_3d()
-	if cam == null: return null
-
-	var mp := get_viewport().get_mouse_position()
-	var from := cam.project_ray_origin(mp)
-	var dir := cam.project_ray_normal(mp)
-	var space := get_world_3d().direct_space_state
-
-	# Identify which tile we're hovering by the nearest entity hit.
-	var hit1 := _find_entity_under_ray_any(from, dir)
-	if hit1.node == null: return null
-	var entity1: Node3D = hit1.node
-
-	var tile := Vector2i(
-		roundi(entity1.global_position.x),
-		roundi(entity1.global_position.z))
-	var entities: Array = []
-	if _game() != null:
-		entities = _game().get_entities_on_tile(tile)
-	if entities.is_empty():
-		entities = [entity1]
-
-	# The priority NPC on that tile (lowest npc_id).
-	var priority_npc: Node3D = null
-	for e in entities:
-		if not is_instance_valid(e): continue
-		if not e.has_method("get_entity_type"): continue
-		if e.get_entity_type() != "npc": continue
-		if priority_npc == null or e.get_npc_id() < priority_npc.get_npc_id():
-			priority_npc = e
-	if priority_npc == null: return null
-
-	# Walk the ray from the cursor. Skip every hitbox whose owning entity is
-	# NOT the priority NPC. The moment we hit a body owned by the priority
-	# NPC, we know its hitbox is under the cursor — return it. Anything in
-	# front (hidden NPCs, players) is transparent to this check.
-	var excludes: Array[RID] = []
-	for _i in range(16):
-		var q := PhysicsRayQueryParameters3D.create(
-			from, from + dir * 300.0, Hitboxes.HITBOX_COLLISION_LAYER)
-		q.collide_with_areas = false
-		q.collide_with_bodies = true
-		q.exclude = excludes
-		var hit := space.intersect_ray(q)
-		if hit.is_empty(): return null
-		var body = hit.collider
-		if not (body is StaticBody3D): return null
-		if _body_owned_by(body, priority_npc):
-			return priority_npc
-		excludes.append(body.get_rid())
-	return null
-
-
-## True if `body` (a StaticBody3D) is the priority NPC's hitbox — either
-## directly parented (auto/editor hitbox named "Hitbox") or nested inside
-## its render scene.
-func _body_owned_by(body: Node, entity: Node) -> bool:
-	var n: Node = body
-	while n != null:
-		if n == entity: return true
-		n = n.get_parent()
-	return false
-
-
-func _find_entity_under_ray_any(from: Vector3, dir: Vector3) -> Dictionary:
-	var space := get_world_3d().direct_space_state
-	var q := PhysicsRayQueryParameters3D.create(
-		from, from + dir * 300.0, Hitboxes.HITBOX_COLLISION_LAYER)
-	q.collide_with_areas = false
-	q.collide_with_bodies = true
-	var hit := space.intersect_ray(q)
-	if hit.is_empty(): return {"node": null, "t": INF}
-	var body = hit.collider
-	if not (body is StaticBody3D): return {"node": null, "t": INF}
-	var entity: Node3D = body.get_parent()
-	if entity == null: return {"node": null, "t": INF}
-	return {"node": entity, "t": from.distance_to(hit.position)}
+	var menu_rect := Rect2(Vector2(_context_menu.position), _context_menu.size)
+	if not menu_rect.grow(MENU_LEAVE_MARGIN).has_point(mouse):
+		_context_menu.hide()

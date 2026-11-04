@@ -1,0 +1,20 @@
+[gd_resource type="AnimationLibrary" load_steps=8 format=3 uid="uid://bsyiw35cxlo5p"]
+
+[ext_resource type="Animation" uid="uid://cya7ep3tlw0mm" path="res://resources/animations/crouching_idle_1.res" id="1_rm64t"]
+[ext_resource type="Animation" uid="uid://c8yqhn3qkuvk5" path="res://resources/animations/crouching_idle_2.res" id="2_ovsfd"]
+[ext_resource type="Animation" uid="uid://dd57bm4kidb38" path="res://resources/animations/crouching_idle_3.res" id="3_bs0m6"]
+[ext_resource type="Animation" uid="uid://b1qjkktd5r0v8" path="res://resources/animations/crouching_stand.res" id="4_cg4t4"]
+[ext_resource type="Animation" uid="uid://b3imy5av01wig" path="res://resources/animations/crouching_turn_left_90.res" id="5_jbcag"]
+[ext_resource type="Animation" uid="uid://b61qowo0jtfnk" path="res://resources/animations/crouching_turn_right_90.res" id="6_3uhx7"]
+[ext_resource type="Animation" uid="uid://duucniyqqliov" path="res://resources/animations/crouching_walk_forward.res" id="7_38ibc"]
+
+[resource]
+_data = {
+&"crouching_idle_1": ExtResource("1_rm64t"),
+&"crouching_idle_2": ExtResource("2_ovsfd"),
+&"crouching_idle_3": ExtResource("3_bs0m6"),
+&"crouching_stand": ExtResource("4_cg4t4"),
+&"crouching_turn_left_90": ExtResource("5_jbcag"),
+&"crouching_turn_right_90": ExtResource("6_3uhx7"),
+&"crouching_walk_forward": ExtResource("7_38ibc")
+}
