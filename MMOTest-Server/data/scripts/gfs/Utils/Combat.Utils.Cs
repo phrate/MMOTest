@@ -13,7 +13,7 @@ public static class CombatUtils
             long npcId;
             try { npcId = Convert.ToInt64(args[0]); } catch { return null; }
             if (npcId <= 0) return null;
-            main.KillNpc(npcId);
+            main.KillNpc(npcId, ctx.SelfPlayerId);
             return null;
         });
 

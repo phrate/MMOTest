@@ -6,7 +6,8 @@ item_name = ${ITEM_DISPLAY_NAME}
 item_slot = ${ITEM_SLOT}
 
 actions = [
-    use: "items/consume_item.gfs", "Consume `item_name`", {"slot"=item_slot}
+    consume: "items/consume_item.gfs", "Consume `item_name`", {"slot"=item_slot}
+    use: "items/use_item.gfs", "Use `item_name`", {"slot"=item_slot}
     drop: "items/drop_item.gfs", "Drop `item_name`", {"slot"=item_slot}
-    examine: "items/examine_item.gfs", "Examine `item_name`", {"slot"=item_slot}
+    examine: "items/examine_item.gfs", "Examine `item_name`", {"slot"=item_slot, "name"=item_name}
 ]

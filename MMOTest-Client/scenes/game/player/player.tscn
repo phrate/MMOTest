@@ -25,12 +25,11 @@ _data = {
 [node name="player" type="CharacterBody3D"]
 script = ExtResource("1_t5cse")
 
-[node name="Camera3D" type="Camera3D" parent="." node_paths=PackedStringArray("target")]
+[node name="Camera3D" type="Camera3D" parent="."]
 transform = Transform3D(1, 0, 0, 0, 0.771935, 0.635701, 0, -0.635701, 0.771935, 0.380983, 4.35042, 3.1242)
 current = true
 fov = 40.0
 script = ExtResource("1_4m2od")
-target = NodePath("")
 target_offset = Vector3(0, 0.35, 0)
 focus_smoothing = 30.0
 min_pitch_degrees = 25.0

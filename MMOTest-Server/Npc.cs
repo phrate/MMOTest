@@ -24,6 +24,7 @@ public sealed class ActiveNpc
     public string AiPackageState { get; set; } = "idle";
     public string AiActionState { get; set; } = "none";
     public string LootTableName { get; set; } = "common_loot_1";
+    public string CreditsTableName { get; set; } = "";
     public int SpawnTimerSeconds { get; set; } = 3;
     public int Hitpoints { get; set; } = 3;
     public int MaxHitpoints { get; set; } = 3;

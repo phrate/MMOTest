@@ -54,6 +54,11 @@ signal npc_editor_open(npc_id: int)
 signal npc_editor_data(npc: Dictionary)
 signal npc_editor_saved(ok: bool, npc_id: int)
 
+signal ground_item_dropped(item: Dictionary)
+signal ground_item_removed(id: int)
+
+signal credits_updated(credits: int)
+
 const HOST := "127.0.0.1"
 const PORT := 9999
 const SERVER_ID := 1
@@ -445,6 +450,16 @@ func _on_packet(_id: int, packet: PackedByteArray) -> void:
 				inventory_data_received.emit(inv_slots)
 			else:
 				push_warning("inventory_data missing 'slots' array")
+		"ground_item_dropped":
+			var gi: Variant = msg.get("item", {})
+			if typeof(gi) == TYPE_DICTIONARY:
+				ground_item_dropped.emit(gi)
+			else:
+				push_warning("ground_item_dropped missing 'item'")
+		"ground_item_removed":
+			ground_item_removed.emit(int(msg.get("id", 0)))
+		"credits_updated":
+			credits_updated.emit(int(msg.get("credits", 0)))
 		_:
 			push_warning("Unknown message from server: %s" % str(msg))
 
@@ -502,8 +517,17 @@ func _debug_random_username() -> String:
 	for i in randi_range(8, 12): s += CHARS[randi() % CHARS.length()]
 	return s
 
+
 func _debug_random_password() -> String:
 	const CHARS := "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 	var s := ""
 	for i in 20: s += CHARS[randi() % CHARS.length()]
 	return s
+
+
+func send_inventory_swap(slot_a: int, slot_b: int) -> void:
+	send({"type": "inventory_swap", "slot_a": slot_a, "slot_b": slot_b})
+
+
+func send_pickup_ground_item(id: int) -> void:
+	send({"type": "pickup_ground_item", "id": id})

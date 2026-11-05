@@ -7,6 +7,7 @@ const PLAYER_SCENE := preload("res://scenes/game/player/player.tscn")
 const REMOTE_SCENE := preload("res://scenes/game/remote_player/remote_player.tscn")
 const CHAT_CHUNK_RADIUS := 2
 const NPC_SCENE := preload("res://scenes/game/npc/npc.tscn")
+const GROUND_ITEM_SCENE := preload("res://scenes/game/ground_item/ground_item.tscn")
 
 @export var players_root: Node3D
 
@@ -14,6 +15,7 @@ var _local_player: CharacterBody3D
 var _remote_players: Dictionary = {}
 var _remote_by_username: Dictionary = {}
 var _npcs: Dictionary = {}   # npc_id -> Node3D
+var _ground_items: Dictionary = {}   # ground_id -> Node3D
 var _editor_overlay: Control
 # Target HP bar
 var _target_bar_panel: PanelContainer
@@ -64,6 +66,8 @@ func _ready() -> void:
 	Network.player_combat_state.connect(_on_network_player_combat_state)
 	Network.npc_editor_open.connect(_on_npc_editor_open)
 	Network.damage_number.connect(_on_damage_number)
+	Network.ground_item_dropped.connect(_on_ground_item_dropped)
+	Network.ground_item_removed.connect(_on_ground_item_removed)
 
 	_editor_overlay = preload("res://scenes/game/npc/npc_editor_overlay.gd").new()
 	_editor_overlay.visible = false
@@ -114,6 +118,10 @@ func _exit_tree() -> void:
 		Network.npc_editor_open.disconnect(_on_npc_editor_open)
 	if Network.damage_number.is_connected(_on_damage_number):
 		Network.damage_number.disconnect(_on_damage_number)
+	if Network.ground_item_dropped.is_connected(_on_ground_item_dropped):
+		Network.ground_item_dropped.disconnect(_on_ground_item_dropped)
+	if Network.ground_item_removed.is_connected(_on_ground_item_removed):
+		Network.ground_item_removed.disconnect(_on_ground_item_removed)
 
 
 func _on_player_added(player_id: int) -> void:
@@ -422,14 +430,13 @@ func _on_damage_number(target_type: String, target_id: int, amount: int) -> void
 
 
 func _update_visibility() -> void:
-	# The local player's rounded tile — treated as an automatic priority winner.
 	var local_tile := Vector2i(0x7FFFFFFF, 0x7FFFFFFF)
 	if _local_player != null and is_instance_valid(_local_player):
 		local_tile = Vector2i(
 			roundi(_local_player.global_position.x),
 			roundi(_local_player.global_position.z))
 
-	var groups: Dictionary = {}   # Vector2i -> Array[Node3D]
+	var groups: Dictionary = {}
 
 	for id in _remote_players:
 		var node: Node3D = _remote_players[id]
@@ -445,11 +452,17 @@ func _update_visibility() -> void:
 		if not groups.has(tile): groups[tile] = []
 		groups[tile].append(node)
 
+	for id in _ground_items:
+		var node: Node3D = _ground_items[id]
+		if not is_instance_valid(node): continue
+		var tile := Vector2i(roundi(node.global_position.x), roundi(node.global_position.z))
+		if not groups.has(tile): groups[tile] = []
+		groups[tile].append(node)
+
 	for tile in groups:
 		var stack: Array = groups[tile]
 
-		# Local player is on this tile — local player always wins rendering.
-		# Hide every remote entity here (transient overlap during wander/pathing).
+		# Local player's tile: hide every other entity on it.
 		if tile == local_tile:
 			for node in stack:
 				node.visible = false
@@ -472,6 +485,11 @@ func get_entities_on_tile(tile: Vector2i) -> Array:
 		if not is_instance_valid(node): continue
 		if Vector2i(roundi(node.global_position.x), roundi(node.global_position.z)) == tile:
 			out.append(node)
+	for id in _ground_items:
+		var node: Node3D = _ground_items[id]
+		if not is_instance_valid(node): continue
+		if Vector2i(roundi(node.global_position.x), roundi(node.global_position.z)) == tile:
+			out.append(node)
 	for id in _npcs:
 		var node: Node3D = _npcs[id]
 		if not is_instance_valid(node): continue
@@ -485,20 +503,21 @@ func get_entities_on_tile(tile: Vector2i) -> Array:
 ##   2. A player (lower sid wins).
 ##   3. An NPC (lower id wins).
 func pick_priority_winner(_tile: Vector2i, stack: Array) -> Node3D:
-	# Priority 1: an NPC the local player is currently in combat with.
+	# (a) Engaged NPC — the one the local player is currently fighting.
 	for node in stack:
 		if not is_instance_valid(node): continue
-		if node.has_method("get_entity_type") and node.get_entity_type() == "npc":
-			if Session.combat_target_npc_id != 0 and node.get_npc_id() == Session.combat_target_npc_id:
-				return node
+		if not node.has_method("get_entity_type"): continue
+		if node.get_entity_type() != "npc": continue
+		if Session.combat_target_npc_id != 0 and node.get_npc_id() == Session.combat_target_npc_id:
+			return node
 
-	# Priority 2: a player, lower sid wins.
+	# (b) Player — lowest sid wins.
 	var best_player: Node3D = null
 	var best_sid: int = 0x7FFFFFFF
 	for node in stack:
 		if not is_instance_valid(node): continue
-		if node.has_method("get_entity_type") and node.get_entity_type() == "npc":
-			continue
+		if not node.has_method("get_entity_type"): continue
+		if node.get_entity_type() != "player": continue
 		var pid: int = node.get_player_id()
 		var sid: int = int(Players.get_player(pid).get("sid", 0))
 		if best_player == null or sid < best_sid:
@@ -506,17 +525,74 @@ func pick_priority_winner(_tile: Vector2i, stack: Array) -> Node3D:
 			best_player = node
 	if best_player != null: return best_player
 
-	# Priority 3: an NPC, lower id wins.
+	# (c) NPC — lowest id wins.
 	var best_npc: Node3D = null
 	var best_npc_id: int = 0x7FFFFFFF
 	for node in stack:
 		if not is_instance_valid(node): continue
-		if not node.has_method("get_entity_type") or node.get_entity_type() != "npc":
-			continue
+		if not node.has_method("get_entity_type"): continue
+		if node.get_entity_type() != "npc": continue
 		var nid: int = node.get_npc_id()
 		if best_npc == null or nid < best_npc_id:
 			best_npc_id = nid
 			best_npc = node
 	if best_npc != null: return best_npc
 
+	# (d) Ground item — alphabetical display, tiebreak by id.
+	var best_gi: Node3D = null
+	var best_gi_display: String = ""
+	var best_gi_id: int = 0x7FFFFFFF
+	for node in stack:
+		if not is_instance_valid(node): continue
+		if not node.has_method("get_entity_type"): continue
+		if node.get_entity_type() != "ground_item": continue
+		var disp: String = str(node.item_display).to_lower()
+		var gid: int = node.get_ground_item_id()
+		if best_gi == null or disp < best_gi_display or (disp == best_gi_display and gid < best_gi_id):
+			best_gi_display = disp
+			best_gi_id = gid
+			best_gi = node
+	if best_gi != null: return best_gi
+
 	return stack[0]
+
+
+func _on_ground_item_dropped(item: Dictionary) -> void:
+	if not is_inside_tree(): return
+	var gid := int(item.get("id", 0))
+	if gid == 0 or _ground_items.has(gid): return
+
+	var node := GROUND_ITEM_SCENE.instantiate()
+	players_root.add_child(node)
+	node.setup(
+		gid,
+		str(item.get("slug", "")),
+		str(item.get("display", "")),
+		int(item.get("quantity", 1)),
+		bool(item.get("is_cert", false)))
+	node.global_position = Vector3(
+		float(item.get("x", 0.0)),
+		float(item.get("y", 0.0)),
+		float(item.get("z", 0.0)))
+
+	_ground_items[gid] = node
+
+
+func _on_ground_item_removed(gid: int) -> void:
+	if _ground_items.has(gid):
+		_ground_items[gid].queue_free()
+		_ground_items.erase(gid)
+
+
+func get_ground_item(id: int) -> Node3D:
+	return _ground_items.get(id, null)
+
+
+func get_ground_items_on_tile(tile: Vector2i) -> Array:
+	var out := []
+	for gid in _ground_items:
+		var n: Node3D = _ground_items[gid]
+		if not is_instance_valid(n): continue
+		var t := Vector2i(roundi(n.global_position.x), roundi(n.global_position.z))
+		if t == tile: out.append(n)
+	return out

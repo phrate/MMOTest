@@ -2,7 +2,15 @@
 [generic]
 
 slot = $"slot"
-item = GetSlotItem(slot)
+arg_name = $"name"
 qty = GetSlotQuantity(slot)
+item_slug = GetSlotItem(slot)
 
-chat local "This is: `item` with quantity: (x`qty`)."
+display = item_slug
+if arg_name is not empty:
+    display = arg_name
+
+if qty <= 1:
+    chat local "A `display`."
+else:
+    chat local "A `display` (x`qty`)."

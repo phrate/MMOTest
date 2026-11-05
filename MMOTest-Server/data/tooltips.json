@@ -1,12 +1,14 @@
 {
 	"format_version": 1,
-	"version": 8,
+	"version": 12,
 	"entries": {
 		"player": "tooltips/tooltip_player.gfs",
 		"npc": "tooltips/tooltip_npc_generic.gfs",
 		"item_consumable": "tooltips/tooltip_item_consumable.gfs",
 		"item_misc": "tooltips/tooltip_item_misc.gfs",
 		"item_weapon": "tooltips/tooltip_item_weapon.gfs",
-		"item_armor": "tooltips/tooltip_item_armor.gfs"
+		"item_armor": "tooltips/tooltip_item_armor.gfs",
+		"item_cert": "tooltips/tooltip_item_cert.gfs",
+		"ground_item": "tooltips/tooltip_ground_item.gfs"
 	}
 }

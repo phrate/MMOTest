@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Threading.Tasks;
+using Godot;
 using Microsoft.Data.Sqlite;
 
 namespace MMOTest.Server;
@@ -156,7 +157,9 @@ public class Database
                 type            TEXT    NOT NULL CHECK (type IN ('weapon', 'consumable', 'armor', 'misc')),
                 type_slug       TEXT    NOT NULL,
                 stackable       INTEGER NOT NULL DEFAULT 0 CHECK (stackable IN (0, 1)),
-                max_stack       INTEGER NOT NULL DEFAULT 1 CHECK (max_stack >= 1)
+                max_stack       INTEGER NOT NULL DEFAULT 1 CHECK (max_stack >= 1),
+                can_trade    INTEGER NOT NULL DEFAULT 1 CHECK (can_trade IN (0, 1)),
+                cert_of_slug TEXT    NOT NULL DEFAULT ''
             );");
 
         Exec(conn, @"
@@ -234,6 +237,13 @@ public class Database
         Exec(conn, "CREATE INDEX IF NOT EXISTS idx_items_type             ON items (type, type_slug);");
         Exec(conn, "CREATE INDEX IF NOT EXISTS idx_items_slug             ON items (slug_id);");
 
+        Exec(conn, @"
+        CREATE TABLE IF NOT EXISTS loot (
+            id        INTEGER PRIMARY KEY AUTOINCREMENT,
+            slug_id   TEXT    NOT NULL UNIQUE,
+            item_bag  TEXT    NOT NULL DEFAULT '{}'
+        );");
+
         // Auto-add columns for older DBs that predate newer schema fields.
         EnsureColumn(conn, "players", "is_admin",         "INTEGER NOT NULL DEFAULT 0 CHECK (is_admin IN (0, 1))");
         EnsureColumn(conn, "players", "login_count",      "INTEGER NOT NULL DEFAULT 0");
@@ -255,6 +265,12 @@ public class Database
         EnsureColumn(conn, "npcs", "aggressive",  "INTEGER NOT NULL DEFAULT 0 CHECK (aggressive IN (0, 1))");
         EnsureColumn(conn, "npcs", "aggro_range", "INTEGER NOT NULL DEFAULT 8 CHECK (aggro_range >= 1)");
         EnsureColumn(conn, "combat_levels", "attack_speed", "INTEGER NOT NULL DEFAULT 10 CHECK (attack_speed >= 1)");
+        EnsureColumn(conn, "players", "credits",            "INTEGER NOT NULL DEFAULT 0");
+        EnsureColumn(conn, "npcs",    "credits_table_name", "TEXT NOT NULL DEFAULT ''");
+        EnsureColumn(conn, "items", "can_trade",    "INTEGER NOT NULL DEFAULT 1 CHECK (can_trade IN (0, 1))");
+        EnsureColumn(conn, "items", "cert_of_slug", "TEXT NOT NULL DEFAULT ''");
+
+        EnsureCertItems(conn);
 
         Exec(conn, "PRAGMA foreign_keys = ON;");
     }
@@ -704,19 +720,91 @@ public Task SaveInventorySlotAsync(long playerId, int slotIndex, long packed) =>
     cmd.ExecuteNonQuery();
 });
 
-public record ItemMeta(long Id, string Slug, string Display, string Type, string TypeSlug);
+public record ItemMeta(
+    long Id, string Slug, string Display, string Type, string TypeSlug,
+    bool Stackable, bool CanTrade, string CertOfSlug);
 
 public Task<List<ItemMeta>> GetAllItemsSync() => Task.Run(() =>
 {
     using var conn = Open();
     using var cmd = conn.CreateCommand();
-    cmd.CommandText = "SELECT id, slug_id, display_name, type, type_slug FROM items;";
+    cmd.CommandText = @"SELECT id, slug_id, display_name, type, type_slug,
+                               stackable, can_trade, cert_of_slug FROM items;";
     using var r = cmd.ExecuteReader();
     var list = new List<ItemMeta>();
     while (r.Read())
-        list.Add(new ItemMeta(r.GetInt64(0), r.GetString(1), r.GetString(2), r.GetString(3), r.GetString(4)));
+        list.Add(new ItemMeta(
+            r.GetInt64(0), r.GetString(1), r.GetString(2),
+            r.GetString(3), r.GetString(4),
+            r.GetInt64(5) != 0, r.GetInt64(6) != 0,
+            r.IsDBNull(7) ? "" : r.GetString(7)));
     return list;
 });
+
+public Dictionary<string, Dictionary<string, int>> GetAllLootTablesSync()
+{
+    var result = new Dictionary<string, Dictionary<string, int>>();
+    using var conn = Open();
+    using var cmd = conn.CreateCommand();
+    cmd.CommandText = "SELECT slug_id, item_bag FROM loot;";
+    using var r = cmd.ExecuteReader();
+    while (r.Read())
+    {
+        string slug = r.GetString(0);
+        string json = r.GetString(1);
+        try
+        {
+            using var doc = System.Text.Json.JsonDocument.Parse(json);
+            var bag = new Dictionary<string, int>();
+            foreach (var prop in doc.RootElement.EnumerateObject())
+            {
+                if (prop.Value.ValueKind == System.Text.Json.JsonValueKind.Number &&
+                    prop.Value.TryGetInt32(out int qty) && qty > 0)
+                {
+                    bag[prop.Name] = qty;
+                }
+            }
+            result[slug] = bag;
+        }
+        catch (System.Text.Json.JsonException e)
+        {
+            GD.PrintErr($"[Database] Loot table '{slug}' parse error: {e.Message}");
+        }
+    }
+    return result;
+}
+
+public Task<int> GetPlayerCreditsAsync(long playerId) => Task.Run(() =>
+{
+    using var conn = Open();
+    using var cmd = conn.CreateCommand();
+    cmd.CommandText = "SELECT credits FROM players WHERE id = $id;";
+    cmd.Parameters.AddWithValue("$id", playerId);
+    var r = cmd.ExecuteScalar();
+    return r != null ? Convert.ToInt32(r) : 0;
+});
+
+public Task SetPlayerCreditsAsync(long playerId, int credits) => Task.Run(() =>
+{
+    using var conn = Open();
+    using var cmd = conn.CreateCommand();
+    cmd.CommandText = "UPDATE players SET credits = $c WHERE id = $id;";
+    cmd.Parameters.AddWithValue("$c", credits);
+    cmd.Parameters.AddWithValue("$id", playerId);
+    cmd.ExecuteNonQuery();
+});
+
+public Dictionary<string, (int Min, int Max)> GetAllCreditsLootSync()
+{
+    var result = new Dictionary<string, (int, int)>();
+    using var conn = Open();
+    using var cmd = conn.CreateCommand();
+    cmd.CommandText = "SELECT slug_id, min_credits, max_credits FROM credits_loot;";
+    using var r = cmd.ExecuteReader();
+    while (r.Read())
+        result[r.GetString(0)] = (r.GetInt32(1), r.GetInt32(2));
+    return result;
+}
 
     public Task SetPlayerCombatStatsAsync(long playerId, int accuracy, int strength, int defence,
         int meleeBonus, int meleeDefense) => Task.Run(() =>
@@ -780,7 +868,7 @@ public List<ActiveNpc> GetAllNpcsSync()
                COALESCE(c.ether_defense, 0),
                COALESCE(c.attack_speed, 10),
                n.loot_table_name, n.ai_action_state,
-               n.aggressive, n.aggro_range
+               n.aggressive, n.aggro_range, n.credits_table_name
         FROM npcs n
         LEFT JOIN combat_levels c ON n.combat_levels_id = c.id;";
     using var reader = cmd.ExecuteReader();
@@ -821,6 +909,8 @@ public List<ActiveNpc> GetAllNpcsSync()
             AiActionState = reader.IsDBNull(29) ? "none" : reader.GetString(29),
             Aggressive = reader.GetInt64(30) != 0,
             AggroRangeTiles = reader.GetInt32(31),
+            CreditsTableName = reader.IsDBNull(reader.GetOrdinal("credits_table_name"))
+                ? "" : reader.GetString(reader.GetOrdinal("credits_table_name")),
         };
         npc.ResetPositionToHome();
         list.Add(npc);
@@ -996,4 +1086,48 @@ public List<ActiveNpc> GetAllNpcsSync()
         throw;
     }
 });
+
+/// <summary>
+/// For every non-stackable base item with no cert twin, insert a stackable
+/// cert version. Idempotent — safe to run on every startup. Cert rows inherit
+/// the base item's type, type_slug, and can_trade.
+/// </summary>
+private static void EnsureCertItems(SqliteConnection conn)
+{
+    var toCreate = new List<(long Id, string Slug, string Display, string Type, string TypeSlug, bool CanTrade)>();
+    using (var cmd = conn.CreateCommand())
+    {
+        cmd.CommandText = @"
+            SELECT i.id, i.slug_id, i.display_name, i.type, i.type_slug, i.can_trade
+            FROM items i
+            WHERE i.stackable = 0
+              AND i.cert_of_slug = ''
+              AND NOT EXISTS (
+                SELECT 1 FROM items c WHERE c.cert_of_slug = i.slug_id
+              );";
+        using var r = cmd.ExecuteReader();
+        while (r.Read())
+            toCreate.Add((r.GetInt64(0), r.GetString(1), r.GetString(2),
+                          r.GetString(3), r.GetString(4), r.GetInt64(5) != 0));
+    }
+    foreach (var item in toCreate)
+    {
+        using var ins = conn.CreateCommand();
+        ins.CommandText = @"
+            INSERT INTO items
+                (slug_id, display_name, type, type_slug, stackable, max_stack, can_trade, cert_of_slug)
+            VALUES
+                ($slug, $disp, $type, $tslug, 1, 2147483647, $trade, $cert_of);";
+        ins.Parameters.AddWithValue("$slug",    item.Slug + "_cert");
+        ins.Parameters.AddWithValue("$disp",    item.Display);
+        ins.Parameters.AddWithValue("$type",    item.Type);
+        ins.Parameters.AddWithValue("$tslug",   item.TypeSlug);
+        ins.Parameters.AddWithValue("$trade",   item.CanTrade ? 1 : 0);
+        ins.Parameters.AddWithValue("$cert_of", item.Slug);
+        try { ins.ExecuteNonQuery(); }
+        catch (SqliteException) { /* already exists, ignore */ }
+    }
+    if (toCreate.Count > 0)
+        GD.Print($"[Server] Auto-generated {toCreate.Count} cert item(s)");
+}
 }

@@ -7,6 +7,7 @@ var player_id := 0
 var username := ""
 var login_count := 0
 var is_admin := false
+var credits: int = 0
 var current_hp: int = 10
 var max_hp: int = 10
 var in_combat: bool = false
@@ -29,6 +30,7 @@ func _ready() -> void:
 	Network.server_shutdown.connect(_on_server_shutdown)
 	Network.player_hp_updated.connect(_on_network_player_hp_updated)
 	Network.player_combat_state.connect(_on_network_player_combat_state)
+	Network.credits_updated.connect(_on_credits_updated)
 
 
 func cache_password(password: String) -> void:
@@ -47,6 +49,7 @@ func _on_login_result(ok: bool, data: Dictionary) -> void:
 	username = data["username"]
 	login_count = int(data["login_count"])
 	is_admin = data.get("is_admin", false)
+	credits = int(data.get("credits", 0))
 	current_hp = int(data.get("hitpoints", 10))
 	max_hp = int(data.get("max_hitpoints", 10))
 	if data.has("spawn"):
@@ -139,6 +142,7 @@ func _on_state_changed(state: int) -> void:
 	_hotfix_in_progress = true
 	var saved_username := username
 	var saved_password := _cached_password
+	credits = 0
 	_reset_state_for_hotfix()
 	Network.disconnect_from_server_quiet()
 	_reconnect_and_login(saved_username, saved_password, "unexpected_disconnect")
@@ -234,3 +238,8 @@ func _on_network_player_combat_state(player_id: int, in_c: bool, npc_id: int) ->
 
 func player_id_self() -> int:
 	return player_id
+
+
+func _on_credits_updated(new_credits: int) -> void:
+	credits = new_credits
+	changed.emit()

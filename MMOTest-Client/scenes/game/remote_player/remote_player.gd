@@ -171,24 +171,32 @@ func _find_anim_player(node: Node) -> AnimationPlayer:
 
 
 func _ensure_placeholder_anims(ap: AnimationPlayer) -> void:
-	var lib := AnimationLibrary.new()
-	if not ap.has_animation("idle"):
-		var idle := Animation.new()
-		idle.length = 1.0
-		idle.loop_mode = Animation.LOOP_LINEAR
-		lib.add_animation("idle", idle)
-	if not ap.has_animation("walk"):
-		var walk := Animation.new()
-		walk.length = 0.4
-		walk.loop_mode = Animation.LOOP_LINEAR
-		var track := walk.add_track(Animation.TYPE_VALUE)
-		walk.track_set_path(track, "Mesh:position")
-		walk.track_insert_key(track, 0.0, Vector3(0, 0.9, 0))
-		walk.track_insert_key(track, 0.2, Vector3(0, 1.0, 0))
-		walk.track_insert_key(track, 0.4, Vector3(0, 0.9, 0))
-		lib.add_animation("walk", walk)
-	if lib.get_animation_list().size() > 0:
+	if ap == null: return
+	# Y-bot and any real rig scene ships clips already. Only the bare-bones
+	# auto-created AnimationPlayer (no scene, no clips) needs placeholders.
+	if not ap.get_animation_list().is_empty():
+		return
+
+	var lib := ap.get_animation_library("")
+	if lib == null:
+		lib = AnimationLibrary.new()
 		ap.add_animation_library("", lib)
+
+	# "walk" placeholder bobs the Mesh child; harmless even without a Mesh.
+	var idle := Animation.new()
+	idle.length = 1.0
+	idle.loop_mode = Animation.LOOP_LINEAR
+	lib.add_animation("idle", idle)
+
+	var walk := Animation.new()
+	walk.length = 0.4
+	walk.loop_mode = Animation.LOOP_LINEAR
+	var track := walk.add_track(Animation.TYPE_VALUE)
+	walk.track_set_path(track, "Mesh:position")
+	walk.track_insert_key(track, 0.0, Vector3(0, 0.9, 0))
+	walk.track_insert_key(track, 0.2, Vector3(0, 1.0, 0))
+	walk.track_insert_key(track, 0.4, Vector3(0, 0.9, 0))
+	lib.add_animation("walk", walk)
 
 
 # ---------- Movement ----------
