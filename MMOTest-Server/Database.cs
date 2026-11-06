@@ -984,6 +984,71 @@ public Task SaveInventorySlotAsync(long playerId, int slotIndex, long packed) =>
     cmd.ExecuteNonQuery();
 });
 
+public bool SaveInventorySlotSync(long playerId, int slotIndex, long packed)
+{
+    if (slotIndex < 0 || slotIndex >= 28) return false;
+    using var conn = Open();
+    using var cmd = conn.CreateCommand();
+    cmd.CommandText = $@"
+        UPDATE player_inventory SET slot_{slotIndex + 1} = $v
+        WHERE id = (SELECT inventory_id FROM players WHERE id = $pid);";
+    cmd.Parameters.AddWithValue("$v", packed);
+    cmd.Parameters.AddWithValue("$pid", playerId);
+    return cmd.ExecuteNonQuery() == 1;
+}
+
+public bool CommitTradeSync(long playerAId, long[] inventoryA, int creditsA,
+    long playerBId, long[] inventoryB, int creditsB)
+{
+    if (playerAId == playerBId || inventoryA.Length != 28 || inventoryB.Length != 28 || creditsA < 0 || creditsB < 0)
+        return false;
+
+    using var conn = Open();
+    using var tx = conn.BeginTransaction();
+    try
+    {
+        string slotAssignments = string.Join(", ", Enumerable.Range(1, 28).Select(slot => $"slot_{slot} = $slot{slot}"));
+        if (!SaveTradeInventory(conn, tx, playerAId, inventoryA, slotAssignments)
+            || !SaveTradeInventory(conn, tx, playerBId, inventoryB, slotAssignments)
+            || !SaveTradeCredits(conn, tx, playerAId, creditsA)
+            || !SaveTradeCredits(conn, tx, playerBId, creditsB))
+        {
+            tx.Rollback();
+            return false;
+        }
+
+        tx.Commit();
+        return true;
+    }
+    catch
+    {
+        try { tx.Rollback(); } catch { }
+        throw;
+    }
+}
+
+private static bool SaveTradeInventory(SqliteConnection conn, SqliteTransaction tx,
+    long playerId, long[] inventory, string slotAssignments)
+{
+    using var cmd = conn.CreateCommand();
+    cmd.Transaction = tx;
+    cmd.CommandText = $"UPDATE player_inventory SET {slotAssignments} WHERE id = (SELECT inventory_id FROM players WHERE id = $playerId);";
+    for (int i = 0; i < inventory.Length; i++)
+        cmd.Parameters.AddWithValue($"$slot{i + 1}", inventory[i]);
+    cmd.Parameters.AddWithValue("$playerId", playerId);
+    return cmd.ExecuteNonQuery() == 1;
+}
+
+private static bool SaveTradeCredits(SqliteConnection conn, SqliteTransaction tx, long playerId, int credits)
+{
+    using var cmd = conn.CreateCommand();
+    cmd.Transaction = tx;
+    cmd.CommandText = "UPDATE players SET credits = $credits WHERE id = $playerId;";
+    cmd.Parameters.AddWithValue("$credits", credits);
+    cmd.Parameters.AddWithValue("$playerId", playerId);
+    return cmd.ExecuteNonQuery() == 1;
+}
+
 public record ItemMeta(
     long Id, string Slug, string Display, string Type, string TypeSlug,
     bool Stackable, bool CanTrade, string CertOfSlug);
@@ -1057,6 +1122,16 @@ public Task SetPlayerCreditsAsync(long playerId, int credits) => Task.Run(() =>
     cmd.Parameters.AddWithValue("$id", playerId);
     cmd.ExecuteNonQuery();
 });
+
+public bool SetPlayerCreditsSync(long playerId, int credits)
+{
+    using var conn = Open();
+    using var cmd = conn.CreateCommand();
+    cmd.CommandText = "UPDATE players SET credits = $c WHERE id = $id;";
+    cmd.Parameters.AddWithValue("$c", credits);
+    cmd.Parameters.AddWithValue("$id", playerId);
+    return cmd.ExecuteNonQuery() == 1;
+}
 
 public Dictionary<string, (int Min, int Max)> GetAllCreditsLootSync()
 {

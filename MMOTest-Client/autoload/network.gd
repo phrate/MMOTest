@@ -59,6 +59,12 @@ signal ground_item_removed(id: int)
 
 signal credits_updated(credits: int)
 signal skills_data_received(skills: Array)
+signal trade_request_incoming(invite_id: String, from_player_id: int, from_username: String)
+signal trade_request_cancelled(invite_id: String, reason: String)
+signal trade_state_received(state: Dictionary)
+signal trade_error(message: String)
+signal trade_cancelled(session_id: String, reason: String)
+signal trade_completed(session_id: String)
 
 const HOST := "127.0.0.1"
 const PORT := 9999
@@ -467,6 +473,25 @@ func _on_packet(_id: int, packet: PackedByteArray) -> void:
 				skills_data_received.emit(skills)
 			else:
 				push_warning("skills_data missing 'skills' array")
+		"trade_request_incoming":
+			trade_request_incoming.emit(
+				String(msg.get("invite_id", "")),
+				int(msg.get("from_player_id", 0)),
+				String(msg.get("from_username", "")))
+		"trade_request_cancelled":
+			trade_request_cancelled.emit(
+				String(msg.get("invite_id", "")),
+				String(msg.get("reason", "")))
+		"trade_state":
+			trade_state_received.emit(msg)
+		"trade_error":
+			trade_error.emit(String(msg.get("message", "Trade failed.")))
+		"trade_cancelled":
+			trade_cancelled.emit(
+				String(msg.get("session_id", "")),
+				String(msg.get("reason", "Trade cancelled.")))
+		"trade_completed":
+			trade_completed.emit(String(msg.get("session_id", "")))
 		_:
 			push_warning("Unknown message from server: %s" % str(msg))
 
@@ -538,3 +563,34 @@ func send_inventory_swap(slot_a: int, slot_b: int) -> void:
 
 func send_pickup_ground_item(id: int) -> void:
 	send({"type": "pickup_ground_item", "id": id})
+
+
+func respond_to_trade_invite(invite_id: String, accept: bool) -> void:
+	send({
+		"type": "trade_invite_accept" if accept else "trade_invite_decline",
+		"invite_id": invite_id,
+	})
+
+
+func send_trade_offer(session_id: String, slot: int, quantity: int) -> void:
+	send({"type": "trade_offer_set", "session_id": session_id, "slot": slot, "quantity": quantity})
+
+
+func send_trade_credits(session_id: String, amount: int) -> void:
+	send({"type": "trade_credits_set", "session_id": session_id, "amount": amount})
+
+
+func accept_trade_offer(session_id: String) -> void:
+	send({"type": "trade_offer_accept", "session_id": session_id})
+
+
+func edit_trade_offer(session_id: String) -> void:
+	send({"type": "trade_offer_edit", "session_id": session_id})
+
+
+func confirm_trade(session_id: String) -> void:
+	send({"type": "trade_confirm", "session_id": session_id})
+
+
+func cancel_trade(session_id: String) -> void:
+	send({"type": "trade_cancel", "session_id": session_id})

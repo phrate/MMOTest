@@ -74,6 +74,7 @@ func _ready() -> void:
 	add_child(_editor_overlay)
 
 	add_child(SidePanel.new())
+	add_child(preload("res://scenes/game/trade/trade_panel.gd").new())
 
 	_build_target_hp_bar()
 

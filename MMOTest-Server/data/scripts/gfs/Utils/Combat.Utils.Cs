@@ -27,6 +27,16 @@ public static class CombatUtils
             return null;
         });
 
+        reg.Register("RequestTrade", (ctx, args) =>
+        {
+            if (args.Count < 1 || args[0] == null) return null;
+            long targetId;
+            try { targetId = Convert.ToInt64(args[0]); } catch { return null; }
+            if (targetId <= 0) return null;
+            main.RequestTrade(ctx.SelfPlayerId, targetId);
+            return null;
+        });
+
         reg.Register("OpenNpcEditor", (ctx, args) =>
         {
             if (args.Count < 1 || args[0] == null) return null;

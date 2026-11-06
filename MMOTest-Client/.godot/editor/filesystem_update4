@@ -19,3 +19,4 @@ res://scenes/game/inventory/inventory_panel.gd
 res://scenes/game/game.gd
 res://scripts/ui/number_text.gd
 res://tools/zip_project.gd
+res://scenes/game/trade/trade_panel.gd
