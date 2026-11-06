@@ -1,0 +1,7 @@
+{
+	"not_connected": "Cannot sync the world: not connected to the server.",
+	"disconnected": "Lost connection while syncing the world.",
+	"format_mismatch": "This client's world format does not match the server's. Please update the game.",
+	"save_failed": "Could not save the downloaded world data.",
+	"reload_failed": "Could not load the downloaded world data."
+}

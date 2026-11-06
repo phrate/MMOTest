@@ -73,8 +73,7 @@ func _ready() -> void:
 	_editor_overlay.visible = false
 	add_child(_editor_overlay)
 
-	var inv_panel := preload("res://scenes/game/inventory/inventory_panel.tscn").instantiate()
-	add_child(inv_panel)
+	add_child(SidePanel.new())
 
 	_build_target_hp_bar()
 

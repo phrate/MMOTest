@@ -32,10 +32,11 @@ func _ready() -> void:
 
 func show_actions(items: Array, screen_pos: Vector2) -> void:
 	for c in _vbox.get_children():
+		_vbox.remove_child(c)  # remove now, not at end of frame, so stale rows can't inflate the size below
 		c.queue_free()
 
 	for i in items.size():
-		_vbox.add_child(_make_action_button(str(items[i]), i))
+		_vbox.add_child(_make_action_row(str(items[i]), i))
 
 	_panel.reset_size()
 
@@ -56,34 +57,48 @@ func _hide() -> void:
 	menu_closed.emit()
 
 
-func _make_action_button(text: String, index: int) -> Button:
+func _make_action_row(text: String, index: int) -> Control:
+	# The row is a MarginContainer so its minimum size comes from the label row.
+	# (A Button ignores non-container children when sizing itself, which made the
+	# panel collapse to a sliver.)
+	var item := MarginContainer.new()
+	item.custom_minimum_size = Vector2(0, 22)
+	item.mouse_filter = Control.MOUSE_FILTER_IGNORE
+
+	# Bottom layer: the clickable, hover-highlighted button, stretched over the whole row.
 	var btn := Button.new()
-	btn.flat = true
+	btn.flat = false  # flat buttons never draw hover/pressed styles; the empty "normal" style keeps it invisible at rest
 	btn.focus_mode = Control.FOCUS_NONE
-	btn.custom_minimum_size = Vector2(0, 22)
 	btn.add_theme_stylebox_override("normal", UIStyle.make_empty_style())
 	btn.add_theme_stylebox_override("hover", UIStyle.make_menu_hover_style())
+	btn.add_theme_stylebox_override("hover_pressed", UIStyle.make_menu_hover_style())
 	btn.add_theme_stylebox_override("pressed", UIStyle.make_menu_hover_style())
+	btn.pressed.connect(func() -> void: _on_pressed(index))
+	item.add_child(btn)
 
+	# Top layer: the text. It ignores the mouse so clicks reach the button underneath.
 	var parts := UIStyle.split_verb(text)
 	var verb: String = parts[0]
 	var rest: String = parts[1]
 
 	var row := HBoxContainer.new()
-	row.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	row.add_theme_constant_override("separation", 0)
 	row.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	# Small left padding so text isn't flush against the panel border.
-	row.offset_left = 2.0
-	row.offset_right = -2.0
-	btn.add_child(row)
-
+	row.add_child(_make_spacer(2.0))  # small padding so text isn't flush with the border
 	row.add_child(_make_label(verb, UIStyle.VERB_COLOR))
 	if not rest.is_empty():
 		row.add_child(_make_label(" " + rest, UIStyle.TEXT_COLOR))
+	row.add_child(_make_spacer(2.0))
+	item.add_child(row)
 
-	btn.pressed.connect(func() -> void: _on_pressed(index))
-	return btn
+	return item
+
+
+func _make_spacer(width: float) -> Control:
+	var spacer := Control.new()
+	spacer.custom_minimum_size = Vector2(width, 0)
+	spacer.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	return spacer
 
 
 func _make_label(text: String, color: Color) -> Label:

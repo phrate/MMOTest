@@ -13,7 +13,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("MMOTest-Server")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+8087d8fbcc155b0a3cefe91cc6e84ad10eb5fc32")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+744c8ea6e39e8b5fc5867bc78632c875b68e3238")]
 [assembly: System.Reflection.AssemblyProductAttribute("MMOTest-Server")]
 [assembly: System.Reflection.AssemblyTitleAttribute("MMOTest-Server")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]

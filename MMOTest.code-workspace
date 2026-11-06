@@ -1,0 +1,11 @@
+{
+	"folders": [
+		{
+			"path": "MMOTest-Server"
+		},
+		{
+			"path": "MMOTest-Client"
+		}
+	],
+	"settings": {}
+}

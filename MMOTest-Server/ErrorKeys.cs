@@ -20,5 +20,8 @@ public static class ErrorKeys
 
     public const string WorldNotLoggedIn = "world.error.not_logged_in";
     public const string WorldUnavailable = "world.error.unavailable";
+
+    public const string GfsScriptNotFound = "gfs.action.error.script_not_found";
+    public const string GfsRuntimeError = "gfs.action.error.runtime_error";
     
 }

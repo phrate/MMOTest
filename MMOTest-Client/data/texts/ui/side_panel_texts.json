@@ -1,0 +1,6 @@
+{
+	"tab": {
+		"inventory": { "name": "Inventory", "short": "Inv" },
+		"skills": { "name": "Skills", "short": "Skl" }
+	}
+}

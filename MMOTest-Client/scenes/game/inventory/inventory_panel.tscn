@@ -1,7 +1,0 @@
-[gd_scene load_steps=2 format=3 uid="uid://cpxx7tmc44to"]
-
-[ext_resource type="Script" uid="uid://dmi6ndors0che" path="res://scenes/game/inventory/inventory_panel.gd" id="1"]
-
-[node name="InventoryPanel" type="CanvasLayer"]
-layer = 10
-script = ExtResource("1")

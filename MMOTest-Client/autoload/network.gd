@@ -58,6 +58,7 @@ signal ground_item_dropped(item: Dictionary)
 signal ground_item_removed(id: int)
 
 signal credits_updated(credits: int)
+signal skills_data_received(skills: Array)
 
 const HOST := "127.0.0.1"
 const PORT := 9999
@@ -460,6 +461,12 @@ func _on_packet(_id: int, packet: PackedByteArray) -> void:
 			ground_item_removed.emit(int(msg.get("id", 0)))
 		"credits_updated":
 			credits_updated.emit(int(msg.get("credits", 0)))
+		"skills_data":
+			var skills: Variant = msg.get("skills", [])
+			if typeof(skills) == TYPE_ARRAY:
+				skills_data_received.emit(skills)
+			else:
+				push_warning("skills_data missing 'skills' array")
 		_:
 			push_warning("Unknown message from server: %s" % str(msg))
 

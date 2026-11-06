@@ -1,0 +1,9 @@
+{
+	"parse_failed": "The world file could not be read.",
+	"not_found": "No world data was found on this device.",
+	"missing_field": "The world file is missing required data.",
+	"bad_format_version": "The world file uses an unsupported format.",
+	"bad_chunk_size": "The world file has an invalid chunk size.",
+	"bad_z_range": "The world file has an invalid height range.",
+	"chunks_invalid": "The world file's chunk data is invalid."
+}

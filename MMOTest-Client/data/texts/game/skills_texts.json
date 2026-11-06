@@ -1,0 +1,17 @@
+{
+	"name": {
+		"hitpoints": "Hitpoints",
+		"accuracy": "Accuracy",
+		"strength": "Strength",
+		"defence": "Defence",
+		"ether": "Ether",
+		"woodcutting": "Woodcutting",
+		"mining": "Mining",
+		"fishing": "Fishing"
+	},
+	"hover": "{name}\nLevel {level} / {max}",
+	"xp": "XP: {current_xp}",
+	"xp_to_level": "XP To level {next_level}: {remaining_xp}",
+	"max_level": "Max level reached",
+	"total_level": "Total level: {total}"
+}

@@ -1,0 +1,6 @@
+{
+	"error": {
+		"script_not_found": "The script could not be found.",
+		"runtime_error": "The script failed to run."
+	}
+}

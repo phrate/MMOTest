@@ -26,6 +26,7 @@ Pathfinder="*res://autoload/Pathfinder.gd"
 Tooltips="*res://autoload/Tooltips.gd"
 Npcs="*res://autoload/Npcs.gd"
 Inventory="*res://autoload/Inventory.gd"
+Skills="*res://autoload/Skills.gd"
 NpcRender="*res://autoload/Npc_Render.gd"
 Hitboxes="*res://autoload/Hitboxes.gd"
 

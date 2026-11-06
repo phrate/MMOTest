@@ -57,23 +57,23 @@ func load_local() -> bool:
 
 		var parsed: Variant = JSON.parse_string(text)
 		if typeof(parsed) != TYPE_DICTIONARY:
-			load_failed.emit(Texts.get_text("world.parse_failed"))
+			load_failed.emit(Texts.get_text("world.load.parse_failed"))
 			return false
 		if _apply(parsed):
 			return true
-	load_failed.emit(Texts.get_text("world.not_found"))
+	load_failed.emit(Texts.get_text("world.load.not_found"))
 	return false
 
 
 func _apply(data: Dictionary) -> bool:
 	for required in ["format_version", "world_version", "chunks"]:
 		if not data.has(required):
-			load_failed.emit(Texts.get_text("world.missing_field"))
+			load_failed.emit(Texts.get_text("world.load.missing_field"))
 			return false
 
 	format_version = int(data["format_version"])
 	if format_version != FORMAT_VERSION:
-		load_failed.emit(Texts.get_text("world.bad_format_version"))
+		load_failed.emit(Texts.get_text("world.load.bad_format_version"))
 		return false
 
 	world_version = int(data["world_version"])
@@ -83,15 +83,15 @@ func _apply(data: Dictionary) -> bool:
 	z_max         = int(data.get("z_max", 200))
 
 	if chunk_size <= 0:
-		load_failed.emit(Texts.get_text("world.bad_chunk_size"))
+		load_failed.emit(Texts.get_text("world.load.bad_chunk_size"))
 		return false
 	if z_min > z_max or default_z < z_min or default_z > z_max:
-		load_failed.emit(Texts.get_text("world.bad_z_range"))
+		load_failed.emit(Texts.get_text("world.load.bad_z_range"))
 		return false
 
 	var chunks: Variant = data["chunks"]
 	if typeof(chunks) != TYPE_DICTIONARY:
-		load_failed.emit(Texts.get_text("world.chunks_invalid"))
+		load_failed.emit(Texts.get_text("world.load.chunks_invalid"))
 		return false
 
 	_tiles.clear()
@@ -260,7 +260,7 @@ func _on_network_world_info(server_version: int, server_format: int) -> void:
 	if server_format != FORMAT_VERSION:
 		_sync_in_progress = false
 		push_warning("World: server format %d != client format %d" % [server_format, FORMAT_VERSION])
-		sync_failed.emit(Texts.get_text("world.format_mismatch"))
+		sync_failed.emit(Texts.get_text("world.sync.format_mismatch"))
 		return
 	if is_loaded and world_version == server_version:
 		_sync_in_progress = false
@@ -278,13 +278,13 @@ func _on_network_world_data(data: Dictionary) -> void:
 
 	var f := FileAccess.open(USER_SAVE_PATH, FileAccess.WRITE)
 	if f == null:
-		sync_failed.emit(Texts.get_text("world.save_failed"))
+		sync_failed.emit(Texts.get_text("world.sync.save_failed"))
 		return
 	f.store_string(JSON.stringify(normalized, "\t"))
 	f.close()
 
 	if not load_local():
-		sync_failed.emit(Texts.get_text("world.reload_failed"))
+		sync_failed.emit(Texts.get_text("world.sync.reload_failed"))
 		return
 
 	sync_completed.emit()

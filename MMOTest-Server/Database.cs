@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Threading.Tasks;
+using System.Linq;
 using Godot;
 using Microsoft.Data.Sqlite;
 
@@ -11,6 +12,7 @@ public record PlayerRecord(long Id, string Username, string PasswordHash, bool I
 public class Database
 {
     private const int SqliteConstraintError = 19;
+    private const string PlayerXpTenthsMigration = "players_xp_tenths_v1";
 
     private readonly string _connectionString;
 
@@ -33,7 +35,7 @@ public class Database
 
     /// <summary>
     /// Creates every table if missing. Idempotent: safe to run on every startup.
-    /// Runs with foreign_keys=OFF so forward references (players ↔ skill_levels,
+    /// Runs with foreign_keys=OFF so forward references (players to stat tables,
     /// combat_levels self-reference) don't fail at CREATE time. Re-enabled after.
     /// </summary>
     public void Initialize()
@@ -73,6 +75,26 @@ public class Database
                 updated_at      TEXT    NOT NULL DEFAULT (datetime('now'))
             );");
 
+        // XP values are stored as tenths after PlayerXpTenthsMigration runs.
+        Exec(conn, @"
+            CREATE TABLE IF NOT EXISTS players_xp (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                hitpoints   INTEGER NOT NULL DEFAULT 0 CHECK (hitpoints   >= 0),
+                accuracy    INTEGER NOT NULL DEFAULT 0 CHECK (accuracy    >= 0),
+                strength    INTEGER NOT NULL DEFAULT 0 CHECK (strength    >= 0),
+                defence     INTEGER NOT NULL DEFAULT 0 CHECK (defence     >= 0),
+                ether       INTEGER NOT NULL DEFAULT 0 CHECK (ether       >= 0),
+                woodcutting INTEGER NOT NULL DEFAULT 0 CHECK (woodcutting >= 0),
+                mining      INTEGER NOT NULL DEFAULT 0 CHECK (mining      >= 0),
+                fishing     INTEGER NOT NULL DEFAULT 0 CHECK (fishing     >= 0)
+            );");
+
+        Exec(conn, @"
+            CREATE TABLE IF NOT EXISTS schema_migrations (
+                migration_id TEXT PRIMARY KEY,
+                applied_at   TEXT NOT NULL DEFAULT (datetime('now'))
+            );");
+
         Exec(conn, @"
             CREATE TABLE IF NOT EXISTS players (
                 id                INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -87,6 +109,7 @@ public class Database
                 tile_z            INTEGER,
                 combat_levels_id  INTEGER REFERENCES combat_levels(id) ON DELETE SET NULL,
                 skill_levels_id   INTEGER REFERENCES skill_levels(id)  ON DELETE SET NULL,
+                xp_id             INTEGER REFERENCES players_xp(id)    ON DELETE SET NULL,
                 inventory_id      INTEGER REFERENCES player_inventory(id) ON DELETE SET NULL,
                 bank_id           INTEGER REFERENCES player_bank(id)      ON DELETE SET NULL,
                 sid               INTEGER NOT NULL DEFAULT 0
@@ -253,6 +276,7 @@ public class Database
         EnsureColumn(conn, "players", "tile_z",           "INTEGER");
         EnsureColumn(conn, "players", "combat_levels_id", "INTEGER");
         EnsureColumn(conn, "players", "skill_levels_id",  "INTEGER");
+        EnsureColumn(conn, "players", "xp_id",            "INTEGER");
         EnsureColumn(conn, "players", "inventory_id",     "INTEGER");
         EnsureColumn(conn, "players", "bank_id",          "INTEGER");
         EnsureColumn(conn, "npcs",    "spawn_flags",      "TEXT NOT NULL DEFAULT '{}'");
@@ -272,6 +296,7 @@ public class Database
 
         EnsureCertItems(conn);
 
+        MigratePlayerXpToTenths(conn);
         Exec(conn, "PRAGMA foreign_keys = ON;");
     }
 
@@ -282,17 +307,132 @@ public class Database
         cmd.ExecuteNonQuery();
     }
 
+    private static void MigratePlayerXpToTenths(SqliteConnection conn)
+    {
+        using (var check = conn.CreateCommand())
+        {
+            check.CommandText = "SELECT 1 FROM schema_migrations WHERE migration_id = $id;";
+            check.Parameters.AddWithValue("$id", PlayerXpTenthsMigration);
+            if (check.ExecuteScalar() != null) return;
+        }
+
+        using var tx = conn.BeginTransaction();
+        try
+        {
+            using (var check = conn.CreateCommand())
+            {
+                check.Transaction = tx;
+                check.CommandText = "SELECT 1 FROM schema_migrations WHERE migration_id = $id;";
+                check.Parameters.AddWithValue("$id", PlayerXpTenthsMigration);
+                if (check.ExecuteScalar() != null)
+                {
+                    tx.Commit();
+                    return;
+                }
+            }
+
+            using (var scale = conn.CreateCommand())
+            {
+                scale.Transaction = tx;
+                scale.CommandText = @"
+                    UPDATE players_xp SET
+                        hitpoints = hitpoints * 10,
+                        accuracy = accuracy * 10,
+                        strength = strength * 10,
+                        defence = defence * 10,
+                        ether = ether * 10,
+                        woodcutting = woodcutting * 10,
+                        mining = mining * 10,
+                        fishing = fishing * 10;";
+                scale.ExecuteNonQuery();
+            }
+
+            var rows = new List<(long Id, long[] Xp, int[] Levels)>();
+            using (var read = conn.CreateCommand())
+            {
+                read.Transaction = tx;
+                read.CommandText = @"
+                    SELECT x.id,
+                           x.hitpoints, x.accuracy, x.strength, x.defence,
+                           x.ether, x.woodcutting, x.mining, x.fishing,
+                           COALESCE(c.max_hitpoints, 10), COALESCE(c.max_accuracy, 1),
+                           COALESCE(c.max_strength, 1), COALESCE(c.max_defence, 1),
+                           COALESCE(c.max_ether, 1), COALESCE(s.max_woodcutting, 1),
+                           COALESCE(s.max_mining, 1), COALESCE(s.max_fishing, 1)
+                    FROM players_xp x
+                    LEFT JOIN players p ON p.xp_id = x.id
+                    LEFT JOIN combat_levels c ON c.id = p.combat_levels_id
+                    LEFT JOIN skill_levels s ON s.id = p.skill_levels_id;";
+                using var reader = read.ExecuteReader();
+                while (reader.Read())
+                {
+                    var xp = new long[8];
+                    var levels = new int[8];
+                    for (int i = 0; i < xp.Length; i++)
+                    {
+                        xp[i] = reader.GetInt64(i + 1);
+                        levels[i] = reader.GetInt32(i + 9);
+                    }
+                    rows.Add((reader.GetInt64(0), xp, levels));
+                }
+            }
+
+            foreach (var row in rows)
+            {
+                for (int i = 0; i < row.Xp.Length; i++)
+                {
+                    int level = Math.Clamp(row.Levels[i], 1, SkillExperience.MaxLevel);
+                    row.Xp[i] = Math.Max(row.Xp[i], SkillExperience.GetXpForLevelTenths(level));
+                }
+
+                using var update = conn.CreateCommand();
+                update.Transaction = tx;
+                update.CommandText = @"
+                    UPDATE players_xp SET
+                        hitpoints = $hp, accuracy = $accuracy, strength = $strength,
+                        defence = $defence, ether = $ether, woodcutting = $woodcutting,
+                        mining = $mining, fishing = $fishing
+                    WHERE id = $id;";
+                update.Parameters.AddWithValue("$hp", row.Xp[0]);
+                update.Parameters.AddWithValue("$accuracy", row.Xp[1]);
+                update.Parameters.AddWithValue("$strength", row.Xp[2]);
+                update.Parameters.AddWithValue("$defence", row.Xp[3]);
+                update.Parameters.AddWithValue("$ether", row.Xp[4]);
+                update.Parameters.AddWithValue("$woodcutting", row.Xp[5]);
+                update.Parameters.AddWithValue("$mining", row.Xp[6]);
+                update.Parameters.AddWithValue("$fishing", row.Xp[7]);
+                update.Parameters.AddWithValue("$id", row.Id);
+                update.ExecuteNonQuery();
+            }
+
+            using (var mark = conn.CreateCommand())
+            {
+                mark.Transaction = tx;
+                mark.CommandText = "INSERT INTO schema_migrations (migration_id) VALUES ($id);";
+                mark.Parameters.AddWithValue("$id", PlayerXpTenthsMigration);
+                mark.ExecuteNonQuery();
+            }
+
+            tx.Commit();
+        }
+        catch
+        {
+            try { tx.Rollback(); } catch { }
+            throw;
+        }
+    }
+
 
     /// <summary>
-    /// Ensures the player has combat_levels and skill_levels rows and that players
-    /// links to them. Idempotent: safe to call on any player, any number of times.
+    /// Ensures the player has combat_levels, skill_levels, and players_xp rows and
+    /// that players links to them. Idempotent: safe to call on any player, any number of times.
     /// Missing rows are created with base stats at 1/1 (hitpoints 10/10), all
     /// bonuses/defenses at 0, status flags false.
     ///
     /// Handles the case where players.combat_levels_id points at a row that
     /// doesn't actually exist (orphan) by re-creating and relinking. Reuses any
     /// existing `player_<id>` combat row rather than duplicating.
-    /// Returns true if the player has both links after the call, false on failure.
+    /// Returns true if the player has all three links after the call, false on failure.
     /// </summary>
     public Task<bool> EnsurePlayerStatsAsync(long playerId) => Task.Run(() =>
     {
@@ -302,15 +442,17 @@ public class Database
         {
             long? currentCombatId = null;
             long? currentSkillId = null;
+            long? currentXpId = null;
             using (var check = conn.CreateCommand())
             {
                 check.Transaction = tx;
-                check.CommandText = "SELECT combat_levels_id, skill_levels_id FROM players WHERE id = $pid;";
+                check.CommandText = "SELECT combat_levels_id, skill_levels_id, xp_id FROM players WHERE id = $pid;";
                 check.Parameters.AddWithValue("$pid", playerId);
                 using var reader = check.ExecuteReader();
                 if (!reader.Read()) { tx.Rollback(); return false; }
                 currentCombatId = reader.IsDBNull(0) ? (long?)null : reader.GetInt64(0);
                 currentSkillId  = reader.IsDBNull(1) ? (long?)null : reader.GetInt64(1);
+                currentXpId     = reader.IsDBNull(2) ? (long?)null : reader.GetInt64(2);
             }
 
             // Resolve combat row
@@ -327,25 +469,29 @@ public class Database
             else
                 finalSkillId = GetOrCreateSkillRow(conn, tx, playerId);
 
-            // Link both back onto players
+            // Resolve XP row
+            long finalXpId = GetOrCreateXpRow(conn, tx, currentXpId, finalCombatId, finalSkillId);
+
+            // Link all three rows back onto players
             using (var link = conn.CreateCommand())
             {
                 link.Transaction = tx;
-                link.CommandText = "UPDATE players SET combat_levels_id = $cid, skill_levels_id = $sid WHERE id = $pid;";
+                link.CommandText = "UPDATE players SET combat_levels_id = $cid, skill_levels_id = $sid, xp_id = $xid WHERE id = $pid;";
                 link.Parameters.AddWithValue("$cid", finalCombatId);
                 link.Parameters.AddWithValue("$sid", finalSkillId);
+                link.Parameters.AddWithValue("$xid", finalXpId);
                 link.Parameters.AddWithValue("$pid", playerId);
                 link.ExecuteNonQuery();
             }
 
-            // Verify both links are populated
+            // Verify all links are populated
             using (var verify = conn.CreateCommand())
             {
                 verify.Transaction = tx;
-                verify.CommandText = "SELECT combat_levels_id, skill_levels_id FROM players WHERE id = $pid;";
+                verify.CommandText = "SELECT combat_levels_id, skill_levels_id, xp_id FROM players WHERE id = $pid;";
                 verify.Parameters.AddWithValue("$pid", playerId);
                 using var reader = verify.ExecuteReader();
-                if (!reader.Read() || reader.IsDBNull(0) || reader.IsDBNull(1))
+                if (!reader.Read() || reader.IsDBNull(0) || reader.IsDBNull(1) || reader.IsDBNull(2))
                 {
                     tx.Rollback();
                     return false;
@@ -499,6 +645,50 @@ public class Database
         return (long)cmd.ExecuteScalar();
     }
 
+    private static long GetOrCreateXpRow(
+        SqliteConnection conn, SqliteTransaction tx, long? currentXpId, long combatId, long skillId)
+    {
+        if (currentXpId.HasValue && RowExists(conn, tx, "players_xp", currentXpId.Value))
+            return currentXpId.Value;
+
+        var levels = new int[8];
+        using (var read = conn.CreateCommand())
+        {
+            read.Transaction = tx;
+            read.CommandText = @"
+                SELECT c.max_hitpoints, c.max_accuracy, c.max_strength, c.max_defence,
+                       c.max_ether, s.max_woodcutting, s.max_mining, s.max_fishing
+                FROM combat_levels c CROSS JOIN skill_levels s
+                WHERE c.id = $combatId AND s.id = $skillId;";
+            read.Parameters.AddWithValue("$combatId", combatId);
+            read.Parameters.AddWithValue("$skillId", skillId);
+            using var reader = read.ExecuteReader();
+            if (!reader.Read())
+                throw new InvalidOperationException("Cannot initialize XP for missing player stat rows.");
+            for (int i = 0; i < levels.Length; i++)
+                levels[i] = Math.Clamp(reader.GetInt32(i), 1, SkillExperience.MaxLevel);
+        }
+
+        var xp = levels.Select(SkillExperience.GetXpForLevelTenths).ToArray();
+        using var insert = conn.CreateCommand();
+        insert.Transaction = tx;
+        insert.CommandText = @"
+            INSERT INTO players_xp
+                (hitpoints, accuracy, strength, defence, ether, woodcutting, mining, fishing)
+            VALUES
+                ($hp, $accuracy, $strength, $defence, $ether, $woodcutting, $mining, $fishing)
+            RETURNING id;";
+        insert.Parameters.AddWithValue("$hp", xp[0]);
+        insert.Parameters.AddWithValue("$accuracy", xp[1]);
+        insert.Parameters.AddWithValue("$strength", xp[2]);
+        insert.Parameters.AddWithValue("$defence", xp[3]);
+        insert.Parameters.AddWithValue("$ether", xp[4]);
+        insert.Parameters.AddWithValue("$woodcutting", xp[5]);
+        insert.Parameters.AddWithValue("$mining", xp[6]);
+        insert.Parameters.AddWithValue("$fishing", xp[7]);
+        return (long)insert.ExecuteScalar();
+    }
+
     private static void EnsureColumn(SqliteConnection conn, string table, string column, string definition)
     {
         using (var info = conn.CreateCommand())
@@ -535,18 +725,47 @@ public class Database
         return (long)cmd.ExecuteScalar();
     });
 
-    public Task<(bool Created, long Id)> TryCreatePlayerAsync(string username, string passwordHash, bool isAdmin = false) => Task.Run(() =>
+    private (bool Created, long Id) TryCreatePlayer(string username, string passwordHash, bool isAdmin)
     {
         using var conn = Open();
-        using var cmd = conn.CreateCommand();
-        cmd.CommandText = isAdmin
-            ? "INSERT INTO players (username, password_hash, is_admin) VALUES ($u, $h, 1) RETURNING id;"
-            : "INSERT INTO players (username, password_hash) VALUES ($u, $h) RETURNING id;";
-        cmd.Parameters.AddWithValue("$u", username);
-        cmd.Parameters.AddWithValue("$h", passwordHash);
-        try { return (true, (long)cmd.ExecuteScalar()); }
-        catch (SqliteException e) when (e.SqliteErrorCode == SqliteConstraintError) { return (false, 0L); }
-    });
+        using var tx = conn.BeginTransaction();
+        try
+        {
+            long xpId;
+            using (var xp = conn.CreateCommand())
+            {
+                xp.Transaction = tx;
+                xp.CommandText = "INSERT INTO players_xp (hitpoints) VALUES ($hpXp) RETURNING id;";
+                xp.Parameters.AddWithValue("$hpXp", SkillExperience.GetXpForLevelTenths(10));
+                xpId = (long)xp.ExecuteScalar();
+            }
+
+            using var cmd = conn.CreateCommand();
+            cmd.Transaction = tx;
+            cmd.CommandText = isAdmin
+                ? "INSERT INTO players (username, password_hash, is_admin, xp_id) VALUES ($u, $h, 1, $xpId) RETURNING id;"
+                : "INSERT INTO players (username, password_hash, xp_id) VALUES ($u, $h, $xpId) RETURNING id;";
+            cmd.Parameters.AddWithValue("$u", username);
+            cmd.Parameters.AddWithValue("$h", passwordHash);
+            cmd.Parameters.AddWithValue("$xpId", xpId);
+            long playerId = (long)cmd.ExecuteScalar();
+            tx.Commit();
+            return (true, playerId);
+        }
+        catch (SqliteException e) when (e.SqliteErrorCode == SqliteConstraintError)
+        {
+            try { tx.Rollback(); } catch { }
+            return (false, 0L);
+        }
+        catch
+        {
+            try { tx.Rollback(); } catch { }
+            throw;
+        }
+    }
+
+    public Task<(bool Created, long Id)> TryCreatePlayerAsync(string username, string passwordHash, bool isAdmin = false)
+        => Task.Run(() => TryCreatePlayer(username, passwordHash, isAdmin));
 
     public Task<PlayerRecord> GetPlayerByUsernameAsync(string username) => Task.Run(() =>
     {
@@ -629,13 +848,7 @@ public class Database
 
     public Task<bool> TryCreateDevAdminAsync(string username, string passwordHash) => Task.Run(() =>
     {
-        using var conn = Open();
-        using var cmd = conn.CreateCommand();
-        cmd.CommandText = "INSERT INTO players (username, password_hash, is_admin) VALUES ($u, $h, 1);";
-        cmd.Parameters.AddWithValue("$u", username);
-        cmd.Parameters.AddWithValue("$h", passwordHash);
-        try { cmd.ExecuteNonQuery(); return true; }
-        catch (SqliteException e) when (e.SqliteErrorCode == SqliteConstraintError) { return false; }
+        return TryCreatePlayer(username, passwordHash, isAdmin: true).Created;
     });
 
 public long GetMaxSid()
@@ -685,6 +898,57 @@ public Task SetPlayerSidAsync(long playerId, long sid) => Task.Run(() =>
         cmd.Parameters.AddWithValue("$hp", hp);
         cmd.Parameters.AddWithValue("$id", playerId);
         cmd.ExecuteNonQuery();
+    });
+
+    public Task AwardCombatXpAsync(long playerId, int damage, int accuracyLevel, int hitpointsLevel)
+        => Task.Run(() =>
+    {
+        if (damage <= 0) return;
+
+        using var conn = Open();
+        using var tx = conn.BeginTransaction();
+        try
+        {
+            using (var xp = conn.CreateCommand())
+            {
+                xp.Transaction = tx;
+                xp.CommandText = @"
+                    UPDATE players_xp SET
+                        accuracy = accuracy + $accuracyXp,
+                        hitpoints = hitpoints + $hitpointsXp
+                    WHERE id = (SELECT xp_id FROM players WHERE id = $playerId);";
+                xp.Parameters.AddWithValue("$accuracyXp", (long)damage * SkillExperience.AccuracyXpTenthsPerDamage);
+                xp.Parameters.AddWithValue("$hitpointsXp", (long)damage * SkillExperience.HitpointsXpTenthsPerDamage);
+                xp.Parameters.AddWithValue("$playerId", playerId);
+                if (xp.ExecuteNonQuery() == 0)
+                {
+                    tx.Rollback();
+                    return;
+                }
+            }
+
+            using (var levels = conn.CreateCommand())
+            {
+                levels.Transaction = tx;
+                levels.CommandText = @"
+                    UPDATE combat_levels SET
+                        accuracy = MAX(accuracy, $accuracyLevel),
+                        max_accuracy = MAX(max_accuracy, $accuracyLevel),
+                        max_hitpoints = MAX(max_hitpoints, $hitpointsLevel)
+                    WHERE id = (SELECT combat_levels_id FROM players WHERE id = $playerId);";
+                levels.Parameters.AddWithValue("$accuracyLevel", accuracyLevel);
+                levels.Parameters.AddWithValue("$hitpointsLevel", hitpointsLevel);
+                levels.Parameters.AddWithValue("$playerId", playerId);
+                levels.ExecuteNonQuery();
+            }
+
+            tx.Commit();
+        }
+        catch
+        {
+            try { tx.Rollback(); } catch { }
+            throw;
+        }
     });
 
 public Task<long[]?> GetInventorySlotsAsync(long playerId) => Task.Run(() =>
@@ -845,6 +1109,48 @@ public Dictionary<string, (int Min, int Max)> GetAllCreditsLootSync()
             reader.GetInt32(0), reader.GetInt32(1), reader.GetInt32(2),
             reader.GetInt32(3), reader.GetInt32(4),
             reader.GetInt32(5), reader.GetInt32(6), reader.GetInt32(7));
+    });
+
+    /// <summary>Skill ids in display order, with combat skills before gathering skills.</summary>
+    public static readonly string[] SkillIds =
+        { "hitpoints", "accuracy", "strength", "defence", "ether", "woodcutting", "mining", "fishing" };
+
+    public record SkillLevel(string Id, int Level, int Max, long CurrentXpTenths);
+
+    public Task<List<SkillLevel>> GetPlayerSkillsAsync(long playerId) => Task.Run(() =>
+    {
+        using var conn = Open();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = @"
+            SELECT c.hitpoints, c.max_hitpoints, COALESCE(x.hitpoints, 0),
+                   c.accuracy, c.max_accuracy, COALESCE(x.accuracy, 0),
+                   c.strength, c.max_strength, COALESCE(x.strength, 0),
+                   c.defence, c.max_defence, COALESCE(x.defence, 0),
+                   c.ether, c.max_ether, COALESCE(x.ether, 0),
+                   s.woodcutting, s.max_woodcutting, COALESCE(x.woodcutting, 0),
+                   s.mining, s.max_mining, COALESCE(x.mining, 0),
+                   s.fishing, s.max_fishing, COALESCE(x.fishing, 0)
+            FROM players p
+            JOIN combat_levels c ON p.combat_levels_id = c.id
+            JOIN skill_levels s ON p.skill_levels_id = s.id
+            LEFT JOIN players_xp x ON p.xp_id = x.id
+            WHERE p.id = $id;";
+        cmd.Parameters.AddWithValue("$id", playerId);
+
+        var result = new List<SkillLevel>();
+        using var reader = cmd.ExecuteReader();
+        if (!reader.Read()) return result;
+
+        for (int i = 0; i < SkillIds.Length; i++)
+        {
+            int column = i * 3;
+            result.Add(new SkillLevel(
+                SkillIds[i],
+                reader.GetInt32(column),
+                reader.GetInt32(column + 1),
+                reader.GetInt64(column + 2)));
+        }
+        return result;
     });
 
     public Task<List<ActiveNpc>> GetAllNpcsAsync() => Task.Run(GetAllNpcsSync);

@@ -4,7 +4,11 @@ class_name UIStyle
 
 const BG_COLOR      := Color(0.05, 0.05, 0.05, 0.92)
 const BORDER_COLOR  := Color(1, 1, 1, 0.15)
-const HOVER_COLOR   := Color(1, 1, 1, 0.08)
+const HOVER_COLOR   := Color(1, 1, 1, 0.16)
+const TAB_COLOR          := Color(0.12, 0.12, 0.12, 0.95)
+const TAB_HOVER_COLOR    := Color(0.20, 0.20, 0.20, 0.95)
+const TAB_SELECTED_COLOR := Color(0.30, 0.26, 0.14, 0.95)
+const TAB_BORDER_COLOR   := Color(0.30, 0.30, 0.30, 1.0)
 const VERB_COLOR    := Color("#4a9eff")
 const TEXT_COLOR    := Color(1, 1, 1)
 const OUTLINE_COLOR := Color(0, 0, 0)
@@ -34,6 +38,23 @@ static func make_menu_hover_style() -> StyleBoxFlat:
 	sb.corner_radius_top_right = 2
 	sb.corner_radius_bottom_left = 2
 	sb.corner_radius_bottom_right = 2
+	return sb
+
+
+static func make_tab_style(bg: Color) -> StyleBoxFlat:
+	var sb := StyleBoxFlat.new()
+	sb.bg_color = bg
+	sb.border_color = TAB_BORDER_COLOR
+	sb.border_width_left = 1
+	sb.border_width_right = 1
+	sb.border_width_top = 1
+	sb.border_width_bottom = 1
+	sb.corner_radius_top_left = 3
+	sb.corner_radius_top_right = 3
+	sb.corner_radius_bottom_left = 3
+	sb.corner_radius_bottom_right = 3
+	sb.content_margin_left = 4
+	sb.content_margin_right = 4
 	return sb
 
 

@@ -1,5 +1,5 @@
-extends CanvasLayer
-## Inventory panel — 4 cols × 7 rows bottom-right with a credits box above.
+extends SidePanelTab
+## Inventory tab: 4 cols × 7 rows. The credits bar and tab row live in SidePanel.
 
 const COLS := 4
 const ROWS := 7
@@ -10,19 +10,16 @@ var _action_menu: ActionMenu
 var _action_menu_layer: CanvasLayer
 var _context_actions: Array = []
 
-var _credits_label: Label
+var _overlay_layer: CanvasLayer
 var _slot_hover_panel: PanelContainer
 var _slot_hover_label: RichTextLabel
 
 
 func _ready() -> void:
-	layer = 10
 	_build_ui()
 	_build_action_menu()
 	Inventory.changed.connect(_refresh)
-	Session.changed.connect(_refresh_credits)
 	_refresh()
-	_refresh_credits()
 
 
 func _process(_delta: float) -> void:
@@ -32,66 +29,11 @@ func _process(_delta: float) -> void:
 # ---------- UI construction ----------
 
 func _build_ui() -> void:
-	var panel := PanelContainer.new()
-	panel.name = "InventoryPanel"
-	panel.anchor_left = 1.0
-	panel.anchor_right = 1.0
-	panel.anchor_top = 1.0
-	panel.anchor_bottom = 1.0
-	panel.offset_left = -8.0
-	panel.offset_right = -8.0
-	panel.offset_top = -8.0
-	panel.offset_bottom = -8.0
-	panel.grow_horizontal = Control.GROW_DIRECTION_BEGIN
-	panel.grow_vertical = Control.GROW_DIRECTION_BEGIN
-
-	var sb := StyleBoxFlat.new()
-	sb.bg_color = Color(0.08, 0.08, 0.08, 0.85)
-	sb.border_color = Color(0.22, 0.22, 0.22, 1.0)
-	sb.border_width_left = 1
-	sb.border_width_right = 1
-	sb.border_width_top = 1
-	sb.border_width_bottom = 1
-	sb.content_margin_left = 4
-	sb.content_margin_right = 4
-	sb.content_margin_top = 4
-	sb.content_margin_bottom = 4
-	panel.add_theme_stylebox_override("panel", sb)
-	add_child(panel)
-
-	var vbox := VBoxContainer.new()
-	vbox.add_theme_constant_override("separation", 4)
-	panel.add_child(vbox)
-
-	var credits_box := PanelContainer.new()
-	var cb_style := StyleBoxFlat.new()
-	cb_style.bg_color = Color(0.12, 0.10, 0.05, 0.95)
-	cb_style.border_color = Color(0.35, 0.28, 0.10, 1.0)
-	cb_style.border_width_left = 1
-	cb_style.border_width_right = 1
-	cb_style.border_width_top = 1
-	cb_style.border_width_bottom = 1
-	cb_style.content_margin_left = 6
-	cb_style.content_margin_right = 6
-	cb_style.content_margin_top = 3
-	cb_style.content_margin_bottom = 3
-	credits_box.add_theme_stylebox_override("panel", cb_style)
-	vbox.add_child(credits_box)
-
-	_credits_label = Label.new()
-	_credits_label.text = "Ȼ: 0"
-	_credits_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	_credits_label.add_theme_font_size_override("font_size", 14)
-	_credits_label.modulate = Color(1.0, 0.9, 0.5)
-	_credits_label.add_theme_constant_override("outline_size", 2)
-	_credits_label.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.7))
-	credits_box.add_child(_credits_label)
-
 	_grid = GridContainer.new()
 	_grid.columns = COLS
 	_grid.add_theme_constant_override("h_separation", 4)
 	_grid.add_theme_constant_override("v_separation", 4)
-	vbox.add_child(_grid)
+	add_child(_grid)
 
 	for i in ROWS * COLS:
 		var btn := InventorySlot.new()
@@ -102,12 +44,19 @@ func _build_ui() -> void:
 		_grid.add_child(btn)
 		_buttons.append(btn)
 
+	# The hover infobox floats above everything on its own layer (it is positioned in screen
+	# coordinates, so it can't live inside the panel's layout).
+	_overlay_layer = CanvasLayer.new()
+	_overlay_layer.name = "HoverLayer"
+	_overlay_layer.layer = 14
+	add_child(_overlay_layer)
+
 	_slot_hover_panel = PanelContainer.new()
 	_slot_hover_panel.name = "SlotHoverPanel"
 	_slot_hover_panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_slot_hover_panel.visible = false
 	_slot_hover_panel.add_theme_stylebox_override("panel", UIStyle.make_panel_style())
-	add_child(_slot_hover_panel)
+	_overlay_layer.add_child(_slot_hover_panel)
 
 	_slot_hover_label = RichTextLabel.new()
 	_slot_hover_label.bbcode_enabled = true
@@ -186,15 +135,16 @@ func _refresh() -> void:
 			btn.add_child(qty_label)
 
 
-func _refresh_credits() -> void:
-	if _credits_label == null: return
-	_credits_label.text = "Ȼ: %d" % Session.credits
-
-
 # ---------- Instant hover infobox ----------
 
 func _update_slot_hover() -> void:
 	if _slot_hover_panel == null: return
+
+	# Hidden controls still report screen rects, so without this the inventory would
+	# show phantom hover boxes while the Skills tab is open.
+	if not is_visible_in_tree():
+		_slot_hover_panel.visible = false
+		return
 
 	for m in get_tree().get_nodes_in_group("modal_blockers"):
 		if m is CanvasItem and (m as CanvasItem).visible:

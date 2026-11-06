@@ -1,0 +1,5 @@
+{
+	"not_logged_in": "You must be logged in to do that.",
+	"unavailable": "World data is currently unavailable.",
+	"bad_data": "The server sent invalid world data."
+}

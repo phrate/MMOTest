@@ -107,6 +107,7 @@ public partial class Main : Node
 	private readonly Dictionary<string, long> _itemIdsBySlug = new();
 	private readonly Dictionary<string, Dictionary<string, int>> _lootTablesBySlug = new();
 	private readonly Dictionary<long, int> _creditsByPlayer = new();
+	private readonly Dictionary<long, List<Database.SkillLevel>> _skillsByPlayer = new();
 	private readonly Dictionary<string, (int Min, int Max)> _creditsLootBySlug = new();
 	private readonly Dictionary<long, int> _playerHealAccumTicks = new();
 	private readonly Random _combatRng = new();
@@ -463,8 +464,10 @@ public partial class Main : Node
 			if (playerChunkChanged) _lastPlayerChunk[peerId] = chunk;
 
 			if (playerChunkChanged || periodicNpcRefresh)
+			{
 				RefreshNpcVisibility(peerId, tx, ty);
 				RefreshGroundItemVisibility(peerId, tx, ty);
+			}
 		}
 	}
 
@@ -665,6 +668,7 @@ public partial class Main : Node
 			_lastConsumeTick.Remove(session.PlayerId);
 			_inventoryByPlayer.Remove(session.PlayerId);
 			_creditsByPlayer.Remove(session.PlayerId);
+			_skillsByPlayer.Remove(session.PlayerId);
 			_pendingEngage.Remove(session.PlayerId);
 			_playerHealAccumTicks.Remove(session.PlayerId);
 			_peerByPlayerId.Remove(session.PlayerId);
@@ -856,7 +860,7 @@ public partial class Main : Node
 		//GD.Print($"[DIAG] run_action from {peerId}: script={scriptPath} target={(root.TryGetProperty("target_id", out var t) ? t.ToString() : "none")} ast={(ast == null ? "NULL" : "ok")}");
 		if (ast == null)
 		{
-			SendError(peerId, "run_action_result", "gfs.script_not_found");
+			SendError(peerId, "run_action_result", ErrorKeys.GfsScriptNotFound);
 			return;
 		}
 
@@ -901,7 +905,7 @@ public partial class Main : Node
 		catch (Exception e)
 		{
 			Diag.Error("diag_gfs", $"run_action error: {e.Message}");
-			SendError(peerId, "run_action_result", "gfs.runtime_error");
+			SendError(peerId, "run_action_result", ErrorKeys.GfsRuntimeError);
 			return;
 		}
 		//GD.Print($"[DIAG] after run: effects={effects.Count} endReq={ctx.EndScriptRequested} tags=[{string.Join(",", ast.Tags)}]");
@@ -1094,18 +1098,17 @@ public partial class Main : Node
 			var (created, playerId) = await _db.TryCreatePlayerAsync(username, hash, makeAdmin);
 			if (!created) { SendError(peerId, "register_result", ErrorKeys.RegisterUsernameTaken); return; }
 			GD.Print($"[Server] Registered: {username} (id {playerId}{(makeAdmin ? ", dev admin" : "")})");
+			await _db.EnsurePlayerStatsAsync(playerId);
 			if (makeAdmin)
 			{
-				await _db.EnsurePlayerStatsAsync(playerId);
 				await _db.EnsurePlayerInventoryAndBankAsync(playerId);
-				await _db.SetPlayerCombatStatsAsync(playerId, 50, 50, 50, 10, 10);
 
 				// Dev auto-register: seed the account with the starter_kit loot table.
 				// forceAll=true ensures every item from the table is given (rather than
 				// the usual single-item roll).
 				await GiveLootTableAsync(playerId, "starter_kit", forceAll: true);
 
-				GD.Print($"[Server] Dev admin stats + starter kit for {username}");
+				GD.Print($"[Server] Dev admin starter kit for {username}");
 			}
 			else
 			{
@@ -1171,6 +1174,7 @@ private async Task CompleteLoginAsync(long peerId, PlayerRecord player)
 	int credits = await _db.GetPlayerCreditsAsync(player.Id);
 	_creditsByPlayer[player.Id] = credits;
 
+	_skillsByPlayer[player.Id] = await _db.GetPlayerSkillsAsync(player.Id);
 
 	// Compute spawn position and publish it BEFORE the session. Any concurrent
 	// EnterWorld (from another player logging in) reads _positions to build
@@ -1221,6 +1225,7 @@ private async Task CompleteLoginAsync(long peerId, PlayerRecord player)
 	});
 
 	SendInventory(peerId);
+	SendSkills(peerId);
 
 	EnterWorld(peerId, session, spawnPos);
 }
@@ -2258,6 +2263,7 @@ private void ProcessPlayerHealing()
 
 	if (damage > 0)
 	{
+		AwardCombatExperience(pair.PlayerId, damage);
 		npc.Hitpoints = Math.Max(0, npc.Hitpoints - damage);
 		_ = _db.SetNpcHpAsync(npc.Id, npc.Hitpoints);
 		BroadcastNpcHp(npc);
@@ -2273,6 +2279,50 @@ private void ProcessPlayerHealing()
 	}
 	if (!_combatByNpc.ContainsKey(npc.Id)) _combatByNpc[npc.Id] = pair;
 }
+
+	private void AwardCombatExperience(long playerId, int damage)
+	{
+		if (damage <= 0 || !_skillsByPlayer.TryGetValue(playerId, out var skills)) return;
+
+		int accuracyIndex = skills.FindIndex(skill => skill.Id == "accuracy");
+		int hitpointsIndex = skills.FindIndex(skill => skill.Id == "hitpoints");
+		if (accuracyIndex < 0 || hitpointsIndex < 0) return;
+
+		var accuracy = skills[accuracyIndex];
+		var hitpoints = skills[hitpointsIndex];
+		long accuracyXpTenths = accuracy.CurrentXpTenths + (long)damage * SkillExperience.AccuracyXpTenthsPerDamage;
+		long hitpointsXpTenths = hitpoints.CurrentXpTenths + (long)damage * SkillExperience.HitpointsXpTenthsPerDamage;
+		int accuracyLevel = Math.Max(accuracy.Max, SkillExperience.GetLevelForXpTenths(accuracyXpTenths));
+		int hitpointsMax = Math.Max(hitpoints.Max, SkillExperience.GetLevelForXpTenths(hitpointsXpTenths));
+
+		skills[accuracyIndex] = accuracy with
+		{
+			Level = accuracyLevel,
+			Max = accuracyLevel,
+			CurrentXpTenths = accuracyXpTenths,
+		};
+		skills[hitpointsIndex] = hitpoints with
+		{
+			Max = hitpointsMax,
+			CurrentXpTenths = hitpointsXpTenths,
+		};
+
+		if (_playerCombat.TryGetValue(playerId, out var combat))
+		{
+			int newMaxHp = Math.Max(combat.MaxHp, hitpointsMax);
+			_playerCombat[playerId] = combat with
+			{
+				Accuracy = Math.Max(combat.Accuracy, accuracyLevel),
+				MaxHp = newMaxHp,
+			};
+			if (newMaxHp != combat.MaxHp)
+				BroadcastPlayerHp(playerId, combat.CurrentHp, newMaxHp);
+		}
+
+		_ = _db.AwardCombatXpAsync(playerId, damage, accuracyLevel, hitpointsMax);
+		if (_peerByPlayerId.TryGetValue(playerId, out long peerId))
+			SendSkills(peerId);
+	}
 
 	private void ResolveNpcAttack(CombatPair pair, ActiveNpc npc)
 {
@@ -2918,6 +2968,40 @@ private void SendInventory(long peerId)
         });
     }
     Send(peerId, new { type = "inventory_data", slots });
+}
+
+private void SendSkills(long peerId)
+{
+    if (!_sessions.TryGetValue(peerId, out var session)) return;
+    if (!_skillsByPlayer.TryGetValue(session.PlayerId, out var skills)) return;
+
+	var list = skills.Select(s =>
+	{
+		int level = Math.Clamp(s.Max, 1, SkillExperience.MaxLevel);
+		int displayedLevel = s.Level;
+		int displayedMax = s.Max;
+		if (s.Id == "hitpoints" && _playerCombat.TryGetValue(session.PlayerId, out var combat))
+		{
+			displayedLevel = combat.CurrentHp;
+			displayedMax = combat.MaxHp;
+		}
+		bool maxLevelReached = level == SkillExperience.MaxLevel;
+		int nextLevel = maxLevelReached ? SkillExperience.MaxLevel : level + 1;
+		int currentXp = SkillExperience.GetDisplayedXp(s.CurrentXpTenths);
+		int remainingXp = SkillExperience.GetDisplayedXpToNextLevel(s.CurrentXpTenths, level);
+
+		return new
+		{
+			id = s.Id,
+			level = displayedLevel,
+			max = displayedMax,
+			current_xp = currentXp,
+			next_level = nextLevel,
+			remaining_xp = remainingXp,
+			max_level_reached = maxLevelReached,
+		};
+	}).ToList();
+    Send(peerId, new { type = "skills_data", skills = list });
 }
 
 private void HandleInventorySwap(long peerId, JsonElement root)
