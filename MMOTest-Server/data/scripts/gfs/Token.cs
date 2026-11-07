@@ -14,6 +14,7 @@ public enum TokenKind
     IF, ELSE, IS, NOT, EMPTY, NULL,
     TASK, RUN, SKIP, CONTINUE, CODE, ON,
     ANIM,
+    TOPIC, SAY
 }
 
 public sealed record Token(TokenKind Kind, string Text, int Line, int Col)

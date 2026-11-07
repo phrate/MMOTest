@@ -1,0 +1,10 @@
+[server]
+[generic]
+
+slot = $"slot"
+qty = GetSlotQuantity(slot)
+
+if qty <= 0:
+    _end_script()
+
+ok = ConsumeElixir(slot, 10)

@@ -69,7 +69,9 @@ public sealed class GfsManager
                     _asts[rel] = ast;
                     RegisterTask(rel, ast);
                     _mtimes[rel] = mtime;
-                    changed[rel] = Serializer.Serialize(ast);
+                    
+                    if (ast.Namespace == "client")
+                        changed[rel] = Serializer.Serialize(ast);
                     Diag.Log("diag_gfs", $"reload: {rel}");
                 }
                 catch (Exception e)
@@ -91,7 +93,11 @@ public sealed class GfsManager
     {
         LoadEntries();
         var asts = new Dictionary<string, Dictionary<string, object>>();
-        foreach (var kv in _asts) asts[kv.Key] = Serializer.Serialize(kv.Value);
+        foreach (var kv in _asts)
+        {
+            if (kv.Value.Namespace != "client") continue;
+            asts[kv.Key] = Serializer.Serialize(kv.Value);
+        }
         return new Dictionary<string, object>
         {
             ["version"] = _version,

@@ -1045,6 +1045,7 @@ func _unique_fields() -> Array:
 		{"key": "name", "label": "Name", "type": "readonly"},
 		{"key": "display", "label": "Display", "type": "string"},
 		{"key": "render_slug", "label": "Render Slug", "type": "string"},
+		{"key": "dialogue_script", "label": "Dialogue Script", "type": "string"},
 		{"key": "template_slug", "label": "Template", "type": "readonly"},
 		{"type": "separator"},
 		{"key": "tile_x", "label": "Tile X", "type": "int"},

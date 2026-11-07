@@ -233,6 +233,8 @@ public sealed class Lexer
             "code" => TokenKind.CODE,
             "on" => TokenKind.ON,
             "anim" => TokenKind.ANIM,
+            "topic" => TokenKind.TOPIC,
+            "say" => TokenKind.SAY,
             _ => TokenKind.IDENT,
         };
         _tokens.Add(new Token(kind, text, _line, _col));

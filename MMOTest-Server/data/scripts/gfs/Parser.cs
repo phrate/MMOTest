@@ -10,6 +10,7 @@ public sealed class Parser
     private int _pos;
 
     public Parser(List<Token> tokens) { _tokens = tokens; }
+    private bool _isDialogueSection;
 
     public SuiteNode Parse()
     {
@@ -19,6 +20,7 @@ public sealed class Parser
             throw Error($"Header 1 must be [client] or [server], got [{nsTok.Text}]");
         SkipNewlines();
         var secTok = Expect(TokenKind.SECTION);
+        _isDialogueSection = secTok.Text == "dialogue";
 
         SkipNewlines();
         var tags = new List<string>();
@@ -39,6 +41,7 @@ public sealed class Parser
         List<string>? taskArgs = null;
 
         var statements = new List<AstNode>();
+        var topics = new Dictionary<string, TopicNode>();
         while (Peek().Kind != TokenKind.EOF)
         {
             if (Peek().Kind == TokenKind.NEWLINE) { Advance(); continue; }
@@ -70,13 +73,22 @@ public sealed class Parser
                 continue;
             }
 
+            if (Peek().Kind == TokenKind.TOPIC)
+            {
+                if (!_isDialogueSection)
+                    throw Error($"Unexpected 'topic' outside [dialogue] section at {Peek().Line}:{Peek().Col}");
+                var topic = ParseTopic();
+                topics[topic.Name] = topic;
+                continue;
+            }
+
             statements.Add(ParseStatement());
         }
 
         if (isTaskFile && string.IsNullOrEmpty(taskName))
             throw Error($"This [task] file is missing a 'name' declaration at {secTok.Line}");
 
-        return new SuiteNode(nsTok.Text, secTok.Text, tags, statements, taskName, taskArgs);
+        return new SuiteNode(nsTok.Text, secTok.Text, tags, statements, taskName, taskArgs, topics);
     }
 
     private AstNode ParseStatement()
@@ -84,6 +96,9 @@ public sealed class Parser
         var t = Peek();
         return t.Kind switch
         {
+            TokenKind.SAY => _isDialogueSection
+                ? ParseSay()
+                : throw Error($"Unexpected 'say' outside [dialogue] section at {t.Line}:{t.Col}"),
             TokenKind.CHAT     => ParseChat(),
             TokenKind.IF       => ParseIf(),
             TokenKind.TASK     => ParseTaskStatement(),
@@ -502,7 +517,9 @@ private AstNode ParseComparison()
         {
             if (Peek().Kind == TokenKind.IF)
                 items.Add(ParseArrayIf());
-            else if (Peek().Kind == TokenKind.IDENT && Peek(1).Kind == TokenKind.COLON)
+            else if (_isDialogueSection && Peek().Kind == TokenKind.STRING && Peek(1).Kind == TokenKind.COLON)
+                items.Add(ParseDialogueOption());
+            else if (!_isDialogueSection && Peek().Kind == TokenKind.IDENT && Peek(1).Kind == TokenKind.COLON)
                 items.Add(ParseActionEntry());
             else
                 items.Add(ParseExpr());
@@ -532,12 +549,22 @@ private AstNode ParseComparison()
         ConsumeNewline();
         SkipNewlines();
         AstNode item;
-        if (Peek().Kind == TokenKind.IDENT && Peek(1).Kind == TokenKind.COLON)
-            item = ParseActionEntry();
-        else if (Peek().Kind == TokenKind.IF)
-            throw Error($"Nested `if` inside array item not supported at {ifTok.Line}:{ifTok.Col}");
+        if (_isDialogueSection)
+        {
+            if (Peek().Kind == TokenKind.STRING && Peek(1).Kind == TokenKind.COLON)
+                item = ParseDialogueOption();
+            else
+                item = ParseExpr();
+        }
         else
-            item = ParseExpr();
+        {
+            if (Peek().Kind == TokenKind.IDENT && Peek(1).Kind == TokenKind.COLON)
+                item = ParseActionEntry();
+            else if (Peek().Kind == TokenKind.IF)
+                throw Error($"Nested `if` inside array item not supported at {ifTok.Line}:{ifTok.Col}");
+            else
+                item = ParseExpr();
+        }
         return new ArrayIfNode(cond, item, ifTok.Line);
     }
 
@@ -595,4 +622,39 @@ private AstNode ParseComparison()
     private static bool IsCodeWord(TokenKind k) =>
         k == TokenKind.IDENT || k == TokenKind.NULL ||
         k == TokenKind.SKIP || k == TokenKind.CONTINUE;
+
+    private TopicNode ParseTopic()
+    {
+        var topicTok = Expect(TokenKind.TOPIC);
+        var nameTok = Expect(TokenKind.IDENT);
+        if (Peek().Kind == TokenKind.COLON) Advance();
+        ConsumeNewline();
+        if (Peek().Kind != TokenKind.INDENT)
+            throw Error($"topic '{nameTok.Text}' must be followed by an indented block at {topicTok.Line}:{topicTok.Col}");
+        Advance();
+        var body = new List<AstNode>();
+        while (Peek().Kind != TokenKind.DEDENT && Peek().Kind != TokenKind.EOF)
+        {
+            if (Peek().Kind == TokenKind.NEWLINE) { Advance(); continue; }
+            body.Add(ParseStatement());
+        }
+        if (Peek().Kind == TokenKind.DEDENT) Advance();
+        return new TopicNode(nameTok.Text, body, topicTok.Line);
+    }
+
+    private SayNode ParseSay()
+    {
+        var sayTok = Expect(TokenKind.SAY);
+        var textTok = Expect(TokenKind.STRING);
+        ConsumeNewline();
+        return new SayNode(textTok.Text, SplitInterpolation(textTok.Text), sayTok.Line);
+    }
+
+    private DialogueOptionNode ParseDialogueOption()
+    {
+        var gotoTok = Expect(TokenKind.STRING);
+        Expect(TokenKind.COLON);
+        var labelTok = Expect(TokenKind.STRING);
+        return new DialogueOptionNode(gotoTok.Text, labelTok.Text, gotoTok.Line);
+    }
 }

@@ -1,0 +1,21 @@
+[server]
+[generic]
+<once_per_tick>
+
+self_id = ${SELF_ID}
+follow_id = $"follow_id"
+if follow_id is empty:
+    follow_id = $"target_id"
+
+self_tile = GetPlayerTile(self_id)
+follow_tile = GetPlayerTile(follow_id)
+
+if IsSameTile(self_tile, follow_tile):
+    Player.MoveToNearestTile(follow_tile)
+    if ${SELF_PATHFINDING_ROUTE} is empty:
+        _end_script()
+
+if TileDistanceMoreThanOne(self_tile, follow_tile):
+    Player.MoveToNearestTile(follow_tile)
+    if ${SELF_PATHFINDING_ROUTE} is empty:
+        _end_script()

@@ -1,0 +1,6 @@
+[gd_scene load_steps=2 format=3 uid="uid://car5m7c4tnrbc"]
+
+[ext_resource type="Script" uid="uid://b84stmkdqyu5i" path="res://tools/icon_generator.gd" id="1_xt1ll"]
+
+[node name="IconGenerator" type="Node"]
+script = ExtResource("1_xt1ll")

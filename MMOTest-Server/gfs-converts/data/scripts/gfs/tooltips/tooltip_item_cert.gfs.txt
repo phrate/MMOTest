@@ -1,0 +1,18 @@
+[client]
+[tooltip]
+
+item_name = ${ITEM_DISPLAY_NAME}
+item_slot = ${ITEM_SLOT}
+item_qty = ${ITEM_QUANTITY}
+
+examine_display = "Examine `item_name`"
+drop_display = "Drop `item_name`"
+
+if item_qty > 1:
+    examine_display = "Examine `item_name` x`item_qty`"
+    drop_display = "Drop `item_name` x`item_qty`"
+
+actions = [
+    examine: "items/examine_item.gfs", examine_display, {"slot"=item_slot, "name"=item_name}
+    drop: "items/drop_item.gfs", drop_display, {"slot"=item_slot}
+]

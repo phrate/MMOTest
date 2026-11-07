@@ -10,6 +10,7 @@ extends PanelContainer
 
 const MAX_MESSAGES := 40
 const CHAT_CHUNK_RADIUS := 2
+const MAX_MESSAGE_LENGTH := 60
 
 @onready var log_label: RichTextLabel = $VBox/Log
 @onready var input: LineEdit = $VBox/Input
@@ -25,6 +26,7 @@ func _ready() -> void:
 	# LineEdit's default right-click menu has Cut / Copy / Paste / Select All / Delete.
 	# Disabling the menu removes all of them at once.
 	input.context_menu_enabled = false
+	input.max_length = MAX_MESSAGE_LENGTH
 
 	log_label.get_v_scroll_bar().value_changed.connect(_on_log_scrolled)
 
@@ -32,6 +34,7 @@ func _ready() -> void:
 	input.placeholder_text = "Type to chat"
 	Network.chat_received.connect(_on_chat_received)
 	Network.private_message_received.connect(_on_private_message)
+	Network.system_message_received.connect(_on_system_message)
 
 
 func _input(event: InputEvent) -> void:
@@ -56,6 +59,14 @@ func _input(event: InputEvent) -> void:
 
 	if event is InputEventKey and event.pressed and not event.echo:
 		if input.has_focus():
+			if event.keycode == KEY_SPACE:
+				var caret := input.caret_column
+				var text := input.text
+				if caret > 0 and caret <= text.length() and text[caret - 1] == " ":
+					get_viewport().set_input_as_handled()
+					return
+			return  # other keys flow through to LineEdit normally
+			
 			if event.keycode == KEY_ESCAPE:
 				_cancel_input()
 				get_viewport().set_input_as_handled()
@@ -83,6 +94,9 @@ func _input(event: InputEvent) -> void:
 				get_viewport().set_input_as_handled()
 			return
 		if event.unicode >= 32 and event.unicode != 127:
+			if event.unicode == 32 and not input.text.is_empty() and input.text[-1] == " ":
+				get_viewport().set_input_as_handled()
+				return
 			input.grab_focus()
 			var combined := input.text + char(event.unicode)
 			input.text = combined
@@ -111,9 +125,12 @@ func _cancel_input() -> void:
 
 func _on_submit(text: String) -> void:
 	text = text.strip_edges()
+	text = _collapse_spaces(text)
 	input.clear()
 	input.release_focus()
 	if text.is_empty(): return
+	if text.length() > MAX_MESSAGE_LENGTH:
+		text = text.substr(0, MAX_MESSAGE_LENGTH)
 	Network.send_chat(text)
 
 
@@ -131,6 +148,10 @@ func _on_chat_received(username: String, message: String, from_chunk: Vector2i) 
 
 
 func _on_private_message(text: String) -> void:
+	_append_line(text)
+
+
+func _on_system_message(text: String) -> void:
 	_append_line(text)
 
 
@@ -160,3 +181,16 @@ func _is_modal_open() -> bool:
 		if m is CanvasItem and (m as CanvasItem).visible:
 			return true
 	return false
+
+
+func _collapse_spaces(text: String) -> String:
+	var out := ""
+	var prev_space := false
+	for c in text:
+		if c == " ":
+			if prev_space: continue
+			prev_space = true
+		else:
+			prev_space = false
+		out += c
+	return out

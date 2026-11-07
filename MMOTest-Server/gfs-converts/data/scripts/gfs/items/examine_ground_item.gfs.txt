@@ -1,0 +1,6 @@
+[server]
+[generic]
+
+name = $"name"
+qty = $"qty"
+chat local "A `name` (x`qty`) on the ground."

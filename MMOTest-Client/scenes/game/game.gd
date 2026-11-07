@@ -75,6 +75,8 @@ func _ready() -> void:
 
 	add_child(SidePanel.new())
 	add_child(preload("res://scenes/game/trade/trade_panel.gd").new())
+	add_child(preload("res://scenes/game/dialogue/dialogue_panel.gd").new())
+	add_child(preload("res://scenes/game/bank/bank_panel.gd").new())
 
 	_build_target_hp_bar()
 
@@ -167,6 +169,7 @@ func _spawn_remote(data: Dictionary) -> void:
 	pos.y = float(World.get_z(roundi(pos.x), roundi(pos.z)))
 	node.teleport(pos, data["yaw"])
 	_remote_players[player_id] = node
+	_remote_by_username[data["username"]] = node
 
 
 func _on_chat_received(from_username: String, message: String, from_chunk: Vector2i) -> void:

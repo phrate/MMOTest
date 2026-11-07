@@ -12,6 +12,9 @@ public record PlayerRecord(long Id, string Username, string PasswordHash, bool I
 public class Database
 {
     private const int SqliteConstraintError = 19;
+
+    // Migration ID is intentionally kept from the pre-rename era. Renaming the
+    // key would cause re-migration of existing DBs (XP × 10 again).
     private const string PlayerXpTenthsMigration = "players_xp_tenths_v1";
 
     private readonly string _connectionString;
@@ -41,6 +44,12 @@ public class Database
     public void Initialize()
     {
         using var conn = Open();
+
+        
+        MigrateLootToLootLists(conn);
+        MigratePlayersXpToPlayerXp(conn);
+        MigratePlayerBankToJson(conn);
+
 
         Exec(conn, "PRAGMA journal_mode = WAL;");
         Exec(conn, "PRAGMA foreign_keys = OFF;");
@@ -77,7 +86,7 @@ public class Database
 
         // XP values are stored as tenths after PlayerXpTenthsMigration runs.
         Exec(conn, @"
-            CREATE TABLE IF NOT EXISTS players_xp (
+            CREATE TABLE IF NOT EXISTS player_xp (
                 id          INTEGER PRIMARY KEY AUTOINCREMENT,
                 hitpoints   INTEGER NOT NULL DEFAULT 0 CHECK (hitpoints   >= 0),
                 accuracy    INTEGER NOT NULL DEFAULT 0 CHECK (accuracy    >= 0),
@@ -109,10 +118,11 @@ public class Database
                 tile_z            INTEGER,
                 combat_levels_id  INTEGER REFERENCES combat_levels(id) ON DELETE SET NULL,
                 skill_levels_id   INTEGER REFERENCES skill_levels(id)  ON DELETE SET NULL,
-                xp_id             INTEGER REFERENCES players_xp(id)    ON DELETE SET NULL,
+                xp_id             INTEGER REFERENCES player_xp(id)    ON DELETE SET NULL,
                 inventory_id      INTEGER REFERENCES player_inventory(id) ON DELETE SET NULL,
-                bank_id           INTEGER REFERENCES player_bank(id)      ON DELETE SET NULL,
-                sid               INTEGER NOT NULL DEFAULT 0
+                sid               INTEGER NOT NULL DEFAULT 0,
+                bank_data         TEXT    NOT NULL DEFAULT '[]',
+                bank_capacity     INTEGER NOT NULL DEFAULT 100
             );");
 
         Exec(conn, @"
@@ -149,9 +159,11 @@ public class Database
                 attackable        INTEGER NOT NULL DEFAULT 1 CHECK (attackable IN (0, 1)),
                 combat_levels_id  INTEGER REFERENCES combat_levels(id) ON DELETE SET NULL,
                 render_slug       TEXT    NOT NULL DEFAULT '',
+                dialogue_script   TEXT    NOT NULL DEFAULT '',
                 created_at        TEXT    NOT NULL DEFAULT (datetime('now')),
                 aggressive        INTEGER NOT NULL DEFAULT 0 CHECK (aggressive IN (0, 1)),
-                aggro_range       INTEGER NOT NULL DEFAULT 8 CHECK (aggro_range >= 1)
+                aggro_range       INTEGER NOT NULL DEFAULT 8 CHECK (aggro_range >= 1),
+                is_banker         INTEGER NOT NULL DEFAULT 0 CHECK (is_banker IN (0, 1))
             );");
 
         Exec(conn, @"
@@ -182,7 +194,9 @@ public class Database
                 stackable       INTEGER NOT NULL DEFAULT 0 CHECK (stackable IN (0, 1)),
                 max_stack       INTEGER NOT NULL DEFAULT 1 CHECK (max_stack >= 1),
                 can_trade    INTEGER NOT NULL DEFAULT 1 CHECK (can_trade IN (0, 1)),
-                cert_of_slug TEXT    NOT NULL DEFAULT ''
+                cert_of_slug TEXT    NOT NULL DEFAULT '',
+                non_certable  INTEGER NOT NULL DEFAULT 0 CHECK (non_certable IN (0, 1)),
+                non_bankable  INTEGER NOT NULL DEFAULT 0 CHECK (non_bankable IN (0, 1))
             );");
 
         Exec(conn, @"
@@ -261,7 +275,7 @@ public class Database
         Exec(conn, "CREATE INDEX IF NOT EXISTS idx_items_slug             ON items (slug_id);");
 
         Exec(conn, @"
-        CREATE TABLE IF NOT EXISTS loot (
+        CREATE TABLE IF NOT EXISTS loot_lists (
             id        INTEGER PRIMARY KEY AUTOINCREMENT,
             slug_id   TEXT    NOT NULL UNIQUE,
             item_bag  TEXT    NOT NULL DEFAULT '{}'
@@ -291,8 +305,14 @@ public class Database
         EnsureColumn(conn, "combat_levels", "attack_speed", "INTEGER NOT NULL DEFAULT 10 CHECK (attack_speed >= 1)");
         EnsureColumn(conn, "players", "credits",            "INTEGER NOT NULL DEFAULT 0");
         EnsureColumn(conn, "npcs",    "credits_table_name", "TEXT NOT NULL DEFAULT ''");
+        EnsureColumn(conn, "npcs", "dialogue_script", "TEXT NOT NULL DEFAULT ''");
         EnsureColumn(conn, "items", "can_trade",    "INTEGER NOT NULL DEFAULT 1 CHECK (can_trade IN (0, 1))");
         EnsureColumn(conn, "items", "cert_of_slug", "TEXT NOT NULL DEFAULT ''");
+        EnsureColumn(conn, "players", "bank_data",     "TEXT NOT NULL DEFAULT '[]'");
+        EnsureColumn(conn, "players", "bank_capacity", "INTEGER NOT NULL DEFAULT 100");
+        EnsureColumn(conn, "items",   "non_certable",  "INTEGER NOT NULL DEFAULT 0 CHECK (non_certable IN (0, 1))");
+        EnsureColumn(conn, "items",   "non_bankable",  "INTEGER NOT NULL DEFAULT 0 CHECK (non_bankable IN (0, 1))");
+        EnsureColumn(conn, "npcs",    "is_banker",     "INTEGER NOT NULL DEFAULT 0 CHECK (is_banker IN (0, 1))");
 
         EnsureCertItems(conn);
 
@@ -508,60 +528,54 @@ public class Database
         }
     });
 
-    public Task<bool> EnsurePlayerInventoryAndBankAsync(long playerId) => Task.Run(() =>
+    public Task<bool> EnsurePlayerInventoryAsync(long playerId) => Task.Run(() =>
+{
+    using var conn = Open();
+    using var tx = conn.BeginTransaction();
+    try
     {
-        using var conn = Open();
-        using var tx = conn.BeginTransaction();
-        try
+        long? invId = null;
+        using (var check = conn.CreateCommand())
         {
-            long? invId = null, bankId = null;
-            using (var check = conn.CreateCommand())
-            {
-                check.Transaction = tx;
-                check.CommandText = "SELECT inventory_id, bank_id FROM players WHERE id = $pid;";
-                check.Parameters.AddWithValue("$pid", playerId);
-                using var r = check.ExecuteReader();
-                if (!r.Read()) { tx.Rollback(); return false; }
-                invId = r.IsDBNull(0) ? null : r.GetInt64(0);
-                bankId = r.IsDBNull(1) ? null : r.GetInt64(1);
-            }
-
-            long finalInv = invId.HasValue && RowExists(conn, tx, "player_inventory", invId.Value)
-                ? invId.Value
-                : InsertEmptyRow(conn, tx, "player_inventory");
-            long finalBank = bankId.HasValue && RowExists(conn, tx, "player_bank", bankId.Value)
-                ? bankId.Value
-                : InsertEmptyRow(conn, tx, "player_bank");
-
-            using (var link = conn.CreateCommand())
-            {
-                link.Transaction = tx;
-                link.CommandText = "UPDATE players SET inventory_id = $i, bank_id = $b WHERE id = $pid;";
-                link.Parameters.AddWithValue("$i", finalInv);
-                link.Parameters.AddWithValue("$b", finalBank);
-                link.Parameters.AddWithValue("$pid", playerId);
-                link.ExecuteNonQuery();
-            }
-
-            using (var verify = conn.CreateCommand())
-            {
-                verify.Transaction = tx;
-                verify.CommandText = "SELECT inventory_id, bank_id FROM players WHERE id = $pid;";
-                verify.Parameters.AddWithValue("$pid", playerId);
-                using var r = verify.ExecuteReader();
-                if (!r.Read() || r.IsDBNull(0) || r.IsDBNull(1))
-                { tx.Rollback(); return false; }
-            }
-
-            tx.Commit();
-            return true;
+            check.Transaction = tx;
+            check.CommandText = "SELECT inventory_id FROM players WHERE id = $pid;";
+            check.Parameters.AddWithValue("$pid", playerId);
+            using var r = check.ExecuteReader();
+            if (!r.Read()) { tx.Rollback(); return false; }
+            invId = r.IsDBNull(0) ? null : r.GetInt64(0);
         }
-        catch
+
+        long finalInv = invId.HasValue && RowExists(conn, tx, "player_inventory", invId.Value)
+            ? invId.Value
+            : InsertEmptyRow(conn, tx, "player_inventory");
+
+        using (var link = conn.CreateCommand())
         {
-            try { tx.Rollback(); } catch { }
-            throw;
+            link.Transaction = tx;
+            link.CommandText = "UPDATE players SET inventory_id = $i WHERE id = $pid;";
+            link.Parameters.AddWithValue("$i", finalInv);
+            link.Parameters.AddWithValue("$pid", playerId);
+            link.ExecuteNonQuery();
         }
-    });
+
+        using (var verify = conn.CreateCommand())
+        {
+            verify.Transaction = tx;
+            verify.CommandText = "SELECT inventory_id FROM players WHERE id = $pid;";
+            verify.Parameters.AddWithValue("$pid", playerId);
+            using var r = verify.ExecuteReader();
+            if (!r.Read() || r.IsDBNull(0)) { tx.Rollback(); return false; }
+        }
+
+        tx.Commit();
+        return true;
+    }
+    catch
+    {
+        try { tx.Rollback(); } catch { }
+        throw;
+    }
+});
 
     private static long InsertEmptyRow(SqliteConnection conn, SqliteTransaction tx, string table)
     {
@@ -648,7 +662,7 @@ public class Database
     private static long GetOrCreateXpRow(
         SqliteConnection conn, SqliteTransaction tx, long? currentXpId, long combatId, long skillId)
     {
-        if (currentXpId.HasValue && RowExists(conn, tx, "players_xp", currentXpId.Value))
+        if (currentXpId.HasValue && RowExists(conn, tx, "player_xp", currentXpId.Value))
             return currentXpId.Value;
 
         var levels = new int[8];
@@ -673,7 +687,7 @@ public class Database
         using var insert = conn.CreateCommand();
         insert.Transaction = tx;
         insert.CommandText = @"
-            INSERT INTO players_xp
+            INSERT INTO player_xp
                 (hitpoints, accuracy, strength, defence, ether, woodcutting, mining, fishing)
             VALUES
                 ($hp, $accuracy, $strength, $defence, $ether, $woodcutting, $mining, $fishing)
@@ -707,6 +721,39 @@ public class Database
         alter.ExecuteNonQuery();
     }
 
+        /// <summary>
+    /// One-shot rename: loot -> loot_lists. No-op if loot is already gone or
+    /// loot_lists already exists. Runs with FKs enabled so any future REFERENCES
+    /// clauses get updated automatically.
+    /// </summary>
+    private static void MigrateLootToLootLists(SqliteConnection conn)
+    {
+        if (!TableExists(conn, "loot") || TableExists(conn, "loot_lists")) return;
+        Exec(conn, "ALTER TABLE loot RENAME TO loot_lists;");
+        GD.Print("[Server] Renamed table: loot -> loot_lists");
+    }
+
+    /// <summary>
+    /// One-shot rename: players_xp -> player_xp. Runs with FKs enabled so
+    /// SQLite rewrites players.xp_id REFERENCES players_xp(id) to point at
+    /// player_xp(id). Without FKs on, that reference would be stale and any
+    /// INSERT to players with a non-NULL xp_id would fail FK checks.
+    /// </summary>
+    private static void MigratePlayersXpToPlayerXp(SqliteConnection conn)
+    {
+        if (!TableExists(conn, "players_xp") || TableExists(conn, "player_xp")) return;
+        Exec(conn, "ALTER TABLE players_xp RENAME TO player_xp;");
+        GD.Print("[Server] Renamed table: players_xp -> player_xp");
+    }
+
+    private static bool TableExists(SqliteConnection conn, string tableName)
+    {
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = "SELECT 1 FROM sqlite_master WHERE type='table' AND name=$name;";
+        cmd.Parameters.AddWithValue("$name", tableName);
+        return cmd.ExecuteScalar() != null;
+    }
+
     public string GetSqliteVersion()
     {
         using var conn = Open();
@@ -735,7 +782,7 @@ public class Database
             using (var xp = conn.CreateCommand())
             {
                 xp.Transaction = tx;
-                xp.CommandText = "INSERT INTO players_xp (hitpoints) VALUES ($hpXp) RETURNING id;";
+                xp.CommandText = "INSERT INTO player_xp (hitpoints) VALUES ($hpXp) RETURNING id;";
                 xp.Parameters.AddWithValue("$hpXp", SkillExperience.GetXpForLevelTenths(10));
                 xpId = (long)xp.ExecuteScalar();
             }
@@ -913,7 +960,7 @@ public Task SetPlayerSidAsync(long playerId, long sid) => Task.Run(() =>
             {
                 xp.Transaction = tx;
                 xp.CommandText = @"
-                    UPDATE players_xp SET
+                    UPDATE player_xp SET
                         accuracy = accuracy + $accuracyXp,
                         hitpoints = hitpoints + $hitpointsXp
                     WHERE id = (SELECT xp_id FROM players WHERE id = $playerId);";
@@ -1051,14 +1098,16 @@ private static bool SaveTradeCredits(SqliteConnection conn, SqliteTransaction tx
 
 public record ItemMeta(
     long Id, string Slug, string Display, string Type, string TypeSlug,
-    bool Stackable, bool CanTrade, string CertOfSlug);
+    bool Stackable, bool CanTrade, string CertOfSlug,
+    bool NonCertable, bool NonBankable);
 
 public Task<List<ItemMeta>> GetAllItemsSync() => Task.Run(() =>
 {
     using var conn = Open();
     using var cmd = conn.CreateCommand();
     cmd.CommandText = @"SELECT id, slug_id, display_name, type, type_slug,
-                               stackable, can_trade, cert_of_slug FROM items;";
+                            stackable, can_trade, cert_of_slug,
+                            non_certable, non_bankable FROM items;";
     using var r = cmd.ExecuteReader();
     var list = new List<ItemMeta>();
     while (r.Read())
@@ -1066,16 +1115,17 @@ public Task<List<ItemMeta>> GetAllItemsSync() => Task.Run(() =>
             r.GetInt64(0), r.GetString(1), r.GetString(2),
             r.GetString(3), r.GetString(4),
             r.GetInt64(5) != 0, r.GetInt64(6) != 0,
-            r.IsDBNull(7) ? "" : r.GetString(7)));
+            r.IsDBNull(7) ? "" : r.GetString(7),
+            r.GetInt64(8) != 0, r.GetInt64(9) != 0));
     return list;
 });
 
-public Dictionary<string, Dictionary<string, int>> GetAllLootTablesSync()
+public Dictionary<string, Dictionary<string, (int Min, int Max)>> GetAllLootTablesSync()
 {
-    var result = new Dictionary<string, Dictionary<string, int>>();
+    var result = new Dictionary<string, Dictionary<string, (int Min, int Max)>>();
     using var conn = Open();
     using var cmd = conn.CreateCommand();
-    cmd.CommandText = "SELECT slug_id, item_bag FROM loot;";
+    cmd.CommandText = "SELECT slug_id, item_bag FROM loot_lists;";
     using var r = cmd.ExecuteReader();
     while (r.Read())
     {
@@ -1084,13 +1134,26 @@ public Dictionary<string, Dictionary<string, int>> GetAllLootTablesSync()
         try
         {
             using var doc = System.Text.Json.JsonDocument.Parse(json);
-            var bag = new Dictionary<string, int>();
+            var bag = new Dictionary<string, (int Min, int Max)>();
             foreach (var prop in doc.RootElement.EnumerateObject())
             {
-                if (prop.Value.ValueKind == System.Text.Json.JsonValueKind.Number &&
-                    prop.Value.TryGetInt32(out int qty) && qty > 0)
+                if (prop.Value.ValueKind == System.Text.Json.JsonValueKind.Number
+                    && prop.Value.TryGetInt32(out int fixedQty)
+                    && fixedQty > 0)
                 {
-                    bag[prop.Name] = qty;
+                    bag[prop.Name] = (fixedQty, fixedQty);
+                }
+                else if (prop.Value.ValueKind == System.Text.Json.JsonValueKind.Array
+                    && prop.Value.GetArrayLength() == 2
+                    && prop.Value[0].TryGetInt32(out int min)
+                    && prop.Value[1].TryGetInt32(out int max)
+                    && min >= 0 && max >= min)
+                {
+                    bag[prop.Name] = (min, max);
+                }
+                else
+                {
+                    GD.PrintErr($"[Database] Loot table '{slug}': invalid entry '{prop.Name}', skipping");
                 }
             }
             result[slug] = bag;
@@ -1208,7 +1271,7 @@ public Dictionary<string, (int Min, int Max)> GetAllCreditsLootSync()
             FROM players p
             JOIN combat_levels c ON p.combat_levels_id = c.id
             JOIN skill_levels s ON p.skill_levels_id = s.id
-            LEFT JOIN players_xp x ON p.xp_id = x.id
+            LEFT JOIN player_xp x ON p.xp_id = x.id
             WHERE p.id = $id;";
         cmd.Parameters.AddWithValue("$id", playerId);
 
@@ -1237,19 +1300,24 @@ public List<ActiveNpc> GetAllNpcsSync()
     cmd.CommandText = @"
         SELECT n.id, n.name, n.display, n.tile_x, n.tile_y, n.tile_z,
                n.playing_animation, n.is_dead, n.attackable,
-               n.combat_levels_id, COALESCE(c.final_level, 1),
-               n.render_slug, n.ai_package_state, n.spawn_timer,
-               COALESCE(c.hitpoints, 3), COALESCE(c.max_hitpoints, 3),
-               COALESCE(c.accuracy, 1), COALESCE(c.strength, 1),
-               COALESCE(c.defence, 1), COALESCE(c.ether, 1),
-               COALESCE(c.max_ether, 1),
-               COALESCE(c.melee_bonus, 0), COALESCE(c.ranged_bonus, 0),
-               COALESCE(c.ether_bonus, 0),
-               COALESCE(c.melee_defense, 0), COALESCE(c.ranged_defense, 0),
-               COALESCE(c.ether_defense, 0),
-               COALESCE(c.attack_speed, 10),
+               n.combat_levels_id, COALESCE(c.final_level, 1) AS final_level,
+               n.render_slug, n.dialogue_script, n.ai_package_state, n.spawn_timer,
+               COALESCE(c.hitpoints, 3) AS hitpoints,
+               COALESCE(c.max_hitpoints, 3) AS max_hitpoints,
+               COALESCE(c.accuracy, 1) AS accuracy,
+               COALESCE(c.strength, 1) AS strength,
+               COALESCE(c.defence, 1) AS defence,
+               COALESCE(c.ether, 1) AS ether,
+               COALESCE(c.max_ether, 1) AS max_ether,
+               COALESCE(c.melee_bonus, 0) AS melee_bonus,
+               COALESCE(c.ranged_bonus, 0) AS ranged_bonus,
+               COALESCE(c.ether_bonus, 0) AS ether_bonus,
+               COALESCE(c.melee_defense, 0) AS melee_defense,
+               COALESCE(c.ranged_defense, 0) AS ranged_defense,
+               COALESCE(c.ether_defense, 0) AS ether_defense,
+               COALESCE(c.attack_speed, 10) AS attack_speed,
                n.loot_table_name, n.ai_action_state,
-               n.aggressive, n.aggro_range, n.credits_table_name
+               n.aggressive, n.aggro_range, n.is_banker AS is_banker, n.credits_table_name
         FROM npcs n
         LEFT JOIN combat_levels c ON n.combat_levels_id = c.id;";
     using var reader = cmd.ExecuteReader();
@@ -1258,40 +1326,48 @@ public List<ActiveNpc> GetAllNpcsSync()
     {
         var npc = new ActiveNpc
         {
-            Id = reader.GetInt64(0),
-            Name = reader.GetString(1),
-            Display = reader.GetString(2),
-            TileX = (int)reader.GetInt64(3),
-            TileY = (int)reader.GetInt64(4),
-            TileZ = (int)reader.GetInt64(5),
-            PlayingAnimation = reader.GetString(6),
-            IsDead = reader.GetInt64(7) != 0,
-            Attackable = reader.GetInt64(8) != 0,
-            CombatLevelsId = reader.IsDBNull(9) ? null : reader.GetInt64(9),
-            FinalLevel = reader.GetInt32(10),
-            RenderSlug = reader.IsDBNull(11) ? "" : reader.GetString(11),
-            AiPackageState = reader.IsDBNull(12) ? "idle" : reader.GetString(12),
-            SpawnTimerSeconds = (int)reader.GetInt64(13),
-            Hitpoints = reader.GetInt32(14),
-            MaxHitpoints = reader.GetInt32(15),
-            Accuracy = reader.GetInt32(16),
-            Strength = reader.GetInt32(17),
-            Defence = reader.GetInt32(18),
-            Ether = reader.GetInt32(19),
-            MaxEther = reader.GetInt32(20),
-            MeleeBonus = reader.GetInt32(21),
-            RangedBonus = reader.GetInt32(22),
-            EtherBonus = reader.GetInt32(23),
-            MeleeDefense = reader.GetInt32(24),
-            RangedDefense = reader.GetInt32(25),
-            EtherDefense = reader.GetInt32(26),
-            AttackSpeedTicks = reader.GetInt32(27),
-            LootTableName = reader.IsDBNull(28) ? "common_loot_1" : reader.GetString(28),
-            AiActionState = reader.IsDBNull(29) ? "none" : reader.GetString(29),
-            Aggressive = reader.GetInt64(30) != 0,
-            AggroRangeTiles = reader.GetInt32(31),
+            Id = reader.GetInt64(reader.GetOrdinal("id")),
+            Name = reader.GetString(reader.GetOrdinal("name")),
+            Display = reader.GetString(reader.GetOrdinal("display")),
+            TileX = (int)reader.GetInt64(reader.GetOrdinal("tile_x")),
+            TileY = (int)reader.GetInt64(reader.GetOrdinal("tile_y")),
+            TileZ = (int)reader.GetInt64(reader.GetOrdinal("tile_z")),
+            PlayingAnimation = reader.GetString(reader.GetOrdinal("playing_animation")),
+            IsDead = reader.GetInt64(reader.GetOrdinal("is_dead")) != 0,
+            Attackable = reader.GetInt64(reader.GetOrdinal("attackable")) != 0,
+            CombatLevelsId = reader.IsDBNull(reader.GetOrdinal("combat_levels_id"))
+                ? null : reader.GetInt64(reader.GetOrdinal("combat_levels_id")),
+            FinalLevel = reader.GetInt32(reader.GetOrdinal("final_level")),
+            RenderSlug = reader.IsDBNull(reader.GetOrdinal("render_slug"))
+                ? "" : reader.GetString(reader.GetOrdinal("render_slug")),
+            DialogueScript = reader.IsDBNull(reader.GetOrdinal("dialogue_script"))
+                ? "" : reader.GetString(reader.GetOrdinal("dialogue_script")),
+            AiPackageState = reader.IsDBNull(reader.GetOrdinal("ai_package_state"))
+                ? "idle" : reader.GetString(reader.GetOrdinal("ai_package_state")),
+            SpawnTimerSeconds = (int)reader.GetInt64(reader.GetOrdinal("spawn_timer")),
+            Hitpoints = reader.GetInt32(reader.GetOrdinal("hitpoints")),
+            MaxHitpoints = reader.GetInt32(reader.GetOrdinal("max_hitpoints")),
+            Accuracy = reader.GetInt32(reader.GetOrdinal("accuracy")),
+            Strength = reader.GetInt32(reader.GetOrdinal("strength")),
+            Defence = reader.GetInt32(reader.GetOrdinal("defence")),
+            Ether = reader.GetInt32(reader.GetOrdinal("ether")),
+            MaxEther = reader.GetInt32(reader.GetOrdinal("max_ether")),
+            MeleeBonus = reader.GetInt32(reader.GetOrdinal("melee_bonus")),
+            RangedBonus = reader.GetInt32(reader.GetOrdinal("ranged_bonus")),
+            EtherBonus = reader.GetInt32(reader.GetOrdinal("ether_bonus")),
+            MeleeDefense = reader.GetInt32(reader.GetOrdinal("melee_defense")),
+            RangedDefense = reader.GetInt32(reader.GetOrdinal("ranged_defense")),
+            EtherDefense = reader.GetInt32(reader.GetOrdinal("ether_defense")),
+            AttackSpeedTicks = reader.GetInt32(reader.GetOrdinal("attack_speed")),
+            LootTableName = reader.IsDBNull(reader.GetOrdinal("loot_table_name"))
+                ? "common_loot_1" : reader.GetString(reader.GetOrdinal("loot_table_name")),
+            AiActionState = reader.IsDBNull(reader.GetOrdinal("ai_action_state"))
+                ? "none" : reader.GetString(reader.GetOrdinal("ai_action_state")),
+            Aggressive = reader.GetInt64(reader.GetOrdinal("aggressive")) != 0,
+            AggroRangeTiles = reader.GetInt32(reader.GetOrdinal("aggro_range")),
+            IsBanker = reader.GetInt64(reader.GetOrdinal("is_banker")) != 0,
             CreditsTableName = reader.IsDBNull(reader.GetOrdinal("credits_table_name"))
-                ? "" : reader.GetString(reader.GetOrdinal("credits_table_name")),
+                ? "" : reader.GetString(reader.GetOrdinal("credits_table_name"))
         };
         npc.ResetPositionToHome();
         list.Add(npc);
@@ -1412,7 +1488,9 @@ public List<ActiveNpc> GetAllNpcsSync()
                     ai_action_state  = $act,
                     loot_table_name  = $loot,
                     spawn_timer      = $stimer,
-                    display          = $display
+                    display          = $display,
+                    dialogue_script  = $dialogue_script,
+                    is_banker        = $is_banker
                 WHERE id = $id;";
             cmd.Parameters.AddWithValue("$atk", (bool)u["attackable"] ? 1 : 0);
             cmd.Parameters.AddWithValue("$aggr", (bool)u["aggressive"] ? 1 : 0);
@@ -1422,6 +1500,8 @@ public List<ActiveNpc> GetAllNpcsSync()
             cmd.Parameters.AddWithValue("$loot", (string)u["loot_table_name"]);
             cmd.Parameters.AddWithValue("$stimer", Convert.ToInt32(u["spawn_timer"]));
             cmd.Parameters.AddWithValue("$display", (string)u["display"]);
+            cmd.Parameters.AddWithValue("$dialogue_script", (string)u["dialogue_script"]);
+            cmd.Parameters.AddWithValue("$is_banker", (bool)u["is_banker"] ? 1 : 0);
             cmd.Parameters.AddWithValue("$id", npcId);
             cmd.ExecuteNonQuery();
         }
@@ -1483,6 +1563,7 @@ private static void EnsureCertItems(SqliteConnection conn)
             FROM items i
             WHERE i.stackable = 0
               AND i.cert_of_slug = ''
+              AND i.non_certable = 0
               AND NOT EXISTS (
                 SELECT 1 FROM items c WHERE c.cert_of_slug = i.slug_id
               );";
@@ -1511,4 +1592,65 @@ private static void EnsureCertItems(SqliteConnection conn)
     if (toCreate.Count > 0)
         GD.Print($"[Server] Auto-generated {toCreate.Count} cert item(s)");
 }
+
+private static void MigratePlayerBankToJson(SqliteConnection conn)
+{
+    if (TableExists(conn, "player_bank"))
+    {
+        Exec(conn, "DROP TABLE player_bank;");
+        GD.Print("[Server] Dropped table: player_bank (superseded by players.bank_data)");
+    }
+    if (ColumnExists(conn, "players", "bank_id"))
+    {
+        try
+        {
+            Exec(conn, "ALTER TABLE players DROP COLUMN bank_id;");
+            GD.Print("[Server] Dropped column: players.bank_id");
+        }
+        catch (SqliteException) { /* older SQLite, leave the dead column */ }
+    }
+}
+
+private static bool ColumnExists(SqliteConnection conn, string table, string column)
+{
+    using var cmd = conn.CreateCommand();
+    cmd.CommandText = $"PRAGMA table_info({table});";
+    using var reader = cmd.ExecuteReader();
+    while (reader.Read())
+        if (reader.GetString(1) == column) return true;
+    return false;
+}
+
+public Task<(string Json, int Capacity)?> GetBankAsync(long playerId) => Task.Run(() =>
+{
+    using var conn = Open();
+    using var cmd = conn.CreateCommand();
+    cmd.CommandText = "SELECT bank_data, bank_capacity FROM players WHERE id = $id;";
+    cmd.Parameters.AddWithValue("$id", playerId);
+    using var r = cmd.ExecuteReader();
+    if (!r.Read()) return ((string, int)?)null;
+    string json = r.IsDBNull(0) ? "[]" : r.GetString(0);
+    int capacity = r.GetInt32(1);
+    return (json, capacity);
+});
+
+public Task SaveBankAsync(long playerId, string bankJson) => Task.Run(() =>
+{
+    using var conn = Open();
+    using var cmd = conn.CreateCommand();
+    cmd.CommandText = "UPDATE players SET bank_data = $j WHERE id = $id;";
+    cmd.Parameters.AddWithValue("$j", bankJson);
+    cmd.Parameters.AddWithValue("$id", playerId);
+    cmd.ExecuteNonQuery();
+});
+
+public Task SetBankCapacityAsync(long playerId, int capacity) => Task.Run(() =>
+{
+    using var conn = Open();
+    using var cmd = conn.CreateCommand();
+    cmd.CommandText = "UPDATE players SET bank_capacity = $c WHERE id = $id;";
+    cmd.Parameters.AddWithValue("$c", capacity);
+    cmd.Parameters.AddWithValue("$id", playerId);
+    cmd.ExecuteNonQuery();
+});
 }

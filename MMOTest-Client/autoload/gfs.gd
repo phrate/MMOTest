@@ -223,6 +223,12 @@ func _evaluate(node: Dictionary, locals: Dictionary, args: Dictionary, system: D
 		"call":
 			var fname: String = str(node.get("name", ""))
 			match fname:
+				"NpcIsBanker":
+					var npc_id := int(system.get("NPC_ID", 0))
+					if npc_id == 0: return false
+					var npc_entry: Dictionary = Npcs.get_npc(npc_id)
+					if npc_entry.is_empty(): return false
+					return bool(npc_entry.get("is_banker", false))
 				"NpcIsAttackable":
 					var npc_id := int(system.get("NPC_ID", 0))
 					if npc_id == 0:
@@ -231,6 +237,14 @@ func _evaluate(node: Dictionary, locals: Dictionary, args: Dictionary, system: D
 					if npc_entry.is_empty():
 						return false
 					return bool(npc_entry.get("attackable", true))
+				"NpcHasDialogue":
+					var npc_id := int(system.get("NPC_ID", 0))
+					if npc_id == 0:
+						return false
+					var npc_entry: Dictionary = Npcs.get_npc(npc_id)
+					if npc_entry.is_empty():
+						return false
+					return bool(npc_entry.get("has_dialogue", false))
 				"PlayerIsAdmin":
 					return bool(Session.is_admin)
 				_:

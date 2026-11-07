@@ -1,0 +1,5 @@
+[server]
+[generic]
+
+id = $"id"
+PickupGroundItem(id)

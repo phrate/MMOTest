@@ -1,0 +1,18 @@
+[client]
+[tooltip]
+
+item_name = ${ITEM_DISPLAY_NAME}
+item_qty = ${ITEM_QUANTITY}
+ground_id = ${GROUND_ITEM_ID}
+
+examine_display = "Examine `item_name`"
+if item_qty > 1:
+    examine_display = "Examine `item_name` x`item_qty`"
+
+actions = [
+    if item_qty > 1:
+        pickup: "items/pickup_ground_item.gfs", "Pickup `item_name` x`item_qty`", {"id"=ground_id}
+    if item_qty <= 1:
+        pickup: "items/pickup_ground_item.gfs", "Pickup `item_name`", {"id"=ground_id}
+    examine: "items/examine_ground_item.gfs", examine_display, {"id"=ground_id, "name"=item_name, "qty"=item_qty}
+]

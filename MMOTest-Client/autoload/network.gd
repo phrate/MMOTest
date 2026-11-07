@@ -13,7 +13,7 @@ signal world_state_received(players: Array)
 signal player_joined(player_id: int, username: String, is_admin: bool, x: float, y: float, z: float, yaw: float, sid: int)
 signal player_left(player_id: int)
 signal player_moved(player_id: int, x: float, y: float, z: float, yaw: float)
-signal self_position_updated(x: float, y: float, z: float, yaw: float)
+signal self_position_updated(x: float, y: float, z: float, yaw: float, wx: float, wy: float, wz: float, wyaw: float)
 signal player_hp_updated(player_id: int, hitpoints: int, max_hitpoints: int)
 signal player_combat_state(player_id: int, in_combat: bool, npc_id: int)
 signal player_respawned(x: float, y: float, z: float, yaw: float, hitpoints: int, max_hitpoints: int)
@@ -60,11 +60,17 @@ signal ground_item_removed(id: int)
 signal credits_updated(credits: int)
 signal skills_data_received(skills: Array)
 signal trade_request_incoming(invite_id: String, from_player_id: int, from_username: String)
-signal trade_request_cancelled(invite_id: String, reason: String)
+signal trade_request_cancelled(invite_id: String, error_key: String, error_params: Dictionary)
 signal trade_state_received(state: Dictionary)
-signal trade_error(message: String)
-signal trade_cancelled(session_id: String, reason: String)
+signal trade_error(error_key: String, error_params: Dictionary)
+signal trade_cancelled(session_id: String, error_key: String, error_params: Dictionary)
 signal trade_completed(session_id: String)
+signal system_message_received(text: String)
+signal dialogue_state_received(state: Dictionary)
+signal dialogue_closed(session_id: String, error_key: String, error_params: Dictionary)
+signal bank_state_received(state: Dictionary)
+signal bank_closed(session_id: String, error_key: String, error_params: Dictionary)
+signal bank_notice(error_key: String, error_params: Dictionary)
 
 const HOST := "127.0.0.1"
 const PORT := 9999
@@ -193,6 +199,14 @@ func send_ping() -> void:
 	send({"type": "ping", "t": Time.get_ticks_msec()})
 
 
+## Emits a local system message into the chat log. Not networked — purely a
+## client-side pipe so any panel can push a message into chat without
+## involving the server.
+func emit_system_message(text: String) -> void:
+	if text.is_empty(): return
+	system_message_received.emit(text)
+
+
 func send(data: Dictionary, channel: int = 0,
 		mode: MultiplayerPeer.TransferMode = MultiplayerPeer.TRANSFER_MODE_RELIABLE) -> void:
 	if state != State.CONNECTED:
@@ -311,8 +325,12 @@ func _on_packet(_id: int, packet: PackedByteArray) -> void:
 				var uy := float(u.get("y", 0.0))
 				var uz := float(u.get("z", 0.0))
 				var uyaw := float(u.get("yaw", 0.0))
+				var uwx: float = float(u["wx"]) if u.get("wx") != null else NAN
+				var uwy: float = float(u["wy"]) if u.get("wy") != null else NAN
+				var uwz: float = float(u["wz"]) if u.get("wz") != null else NAN
+				var uwyaw: float = float(u["wyaw"]) if u.get("wyaw") != null else NAN
 				if pid == Session.player_id:
-					self_position_updated.emit(ux, uy, uz, uyaw)
+					self_position_updated.emit(ux, uy, uz, uyaw, uwx, uwy, uwz, uwyaw)
 				else:
 					player_moved.emit(pid, ux, uy, uz, uyaw)
 		"pong":
@@ -481,17 +499,39 @@ func _on_packet(_id: int, packet: PackedByteArray) -> void:
 		"trade_request_cancelled":
 			trade_request_cancelled.emit(
 				String(msg.get("invite_id", "")),
-				String(msg.get("reason", "")))
+				String(msg.get("error_key", "")),
+				msg.get("error_params", {}))
 		"trade_state":
 			trade_state_received.emit(msg)
 		"trade_error":
-			trade_error.emit(String(msg.get("message", "Trade failed.")))
+			trade_error.emit(
+				String(msg.get("error_key", "")),
+				msg.get("error_params", {}))
 		"trade_cancelled":
 			trade_cancelled.emit(
 				String(msg.get("session_id", "")),
-				String(msg.get("reason", "Trade cancelled.")))
+				String(msg.get("error_key", "")),
+				msg.get("error_params", {}))
 		"trade_completed":
 			trade_completed.emit(String(msg.get("session_id", "")))
+		"dialogue_open", "dialogue_state":
+			dialogue_state_received.emit(msg)
+		"dialogue_close":
+			dialogue_closed.emit(
+				String(msg.get("session_id", "")),
+				String(msg.get("error_key", "")),
+				msg.get("error_params", {}))
+		"bank_open", "bank_state":
+			bank_state_received.emit(msg)
+		"bank_close":
+			bank_closed.emit(
+				String(msg.get("session_id", "")),
+				String(msg.get("error_key", "")),
+				msg.get("error_params", {}))
+		"bank_notice":
+			bank_notice.emit(
+				String(msg.get("error_key", "")),
+				msg.get("error_params", {}))
 		_:
 			push_warning("Unknown message from server: %s" % str(msg))
 
@@ -572,8 +612,14 @@ func respond_to_trade_invite(invite_id: String, accept: bool) -> void:
 	})
 
 
-func send_trade_offer(session_id: String, slot: int, quantity: int) -> void:
-	send({"type": "trade_offer_set", "session_id": session_id, "slot": slot, "quantity": quantity})
+func send_trade_offer_add(session_id: String, item_id: int, quantity: int) -> void:
+	send({"type": "trade_offer_add", "session_id": session_id,
+		  "item_id": item_id, "requested_quantity": quantity})
+
+
+func send_trade_offer_withdraw(session_id: String, item_id: int, quantity: int) -> void:
+	send({"type": "trade_offer_withdraw", "session_id": session_id,
+		  "item_id": item_id, "requested_quantity": quantity})
 
 
 func send_trade_credits(session_id: String, amount: int) -> void:
@@ -584,13 +630,32 @@ func accept_trade_offer(session_id: String) -> void:
 	send({"type": "trade_offer_accept", "session_id": session_id})
 
 
-func edit_trade_offer(session_id: String) -> void:
-	send({"type": "trade_offer_edit", "session_id": session_id})
-
-
 func confirm_trade(session_id: String) -> void:
 	send({"type": "trade_confirm", "session_id": session_id})
 
 
 func cancel_trade(session_id: String) -> void:
 	send({"type": "trade_cancel", "session_id": session_id})
+
+
+func send_dialogue_choose(session_id: String, goto_: String) -> void:
+	send({"type": "dialogue_choose", "session_id": session_id, "goto": goto_})
+
+
+func send_bank_deposit(session_id: String, item_id: int, quantity: int) -> void:
+	send({"type": "bank_deposit", "session_id": session_id, "item_id": item_id, "quantity": quantity})
+
+
+func send_bank_withdraw(session_id: String, item_id: int, quantity: int) -> void:
+	send({"type": "bank_withdraw", "session_id": session_id, "item_id": item_id, "quantity": quantity})
+
+
+func send_bank_move(session_id: String, from: int, to: int, insert: bool) -> void:
+	send({"type": "bank_move", "session_id": session_id, "from": from, "to": to, "insert": insert})
+
+func send_bank_close(session_id: String) -> void:
+	send({"type": "bank_close", "session_id": session_id})
+
+
+func send_bank_cert_mode(session_id: String, enabled: bool) -> void:
+	send({"type": "bank_cert_mode", "session_id": session_id, "enabled": enabled})

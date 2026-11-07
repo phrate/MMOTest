@@ -1,0 +1,16 @@
+[server]
+[generic]
+
+slot = $"slot"
+arg_name = $"name"
+qty = GetSlotQuantity(slot)
+item_slug = GetSlotItem(slot)
+
+display = item_slug
+if arg_name is not empty:
+    display = arg_name
+
+if qty <= 1:
+    chat local "A `display`."
+else:
+    chat local "A `display` (x`qty`)."

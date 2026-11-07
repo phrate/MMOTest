@@ -17,6 +17,7 @@ func _ready() -> void:
 
 
 func _get_drag_data(_pos):
+	if Trade.is_active(): return null
 	if slot_index < 0: return null
 	var data: Dictionary = Inventory.get_slot(slot_index)
 	if data.is_empty(): return null

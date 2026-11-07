@@ -1,0 +1,45 @@
+[gd_scene load_steps=6 format=3 uid="uid://clk87bkvdf2xm"]
+
+[ext_resource type="Script" uid="uid://b08mpc5jfi6m3" path="res://scenes/game/remote_player/remote_player.gd" id="1_ph20q"]
+
+[sub_resource type="Animation" id="Animation_abehh"]
+length = 0.001
+
+[sub_resource type="Animation" id="Animation_t5cse"]
+resource_name = "idle"
+
+[sub_resource type="Animation" id="Animation_bkoau"]
+resource_name = "walk"
+length = 0.5
+loop_mode = 1
+
+[sub_resource type="AnimationLibrary" id="AnimationLibrary_prej5"]
+_data = {
+&"RESET": SubResource("Animation_abehh"),
+&"idle": SubResource("Animation_t5cse"),
+&"walk": SubResource("Animation_bkoau")
+}
+
+[node name="RemotePlayer" type="Node3D"]
+script = ExtResource("1_ph20q")
+
+[node name="NameLabel" type="Label3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 2.75, 0)
+billboard = 1
+no_depth_test = true
+text = "{username}"
+
+[node name="ChatLabel" type="Label3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 2.5, 0)
+billboard = 1
+no_depth_test = true
+modulate = Color(1, 0.88, 0.1, 1)
+text = "{text}"
+font_size = 40
+outline_size = 15
+autowrap_mode = 3
+
+[node name="AnimationPlayer" type="AnimationPlayer" parent="."]
+libraries = {
+&"": SubResource("AnimationLibrary_prej5")
+}

@@ -1,8 +1,7 @@
 res://editor/NpcEditorBridge.cs
 res://Main.cs
 res://editor/WorldEditor.cs
-res://tools/icon_generator.gd
-res://tools/icon_generator.tscn
+res://editor/npc_editor_panel.gd
 res://Main.tscn
 res://editor/npc_editor_panel.tscn
 res://editor/npc_editor.tscn

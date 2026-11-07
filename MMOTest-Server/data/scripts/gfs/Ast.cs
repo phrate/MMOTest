@@ -6,10 +6,13 @@ public abstract record AstNode(int Line);
 
 public sealed record SuiteNode(
     string Namespace, string Section, List<string> Tags, List<AstNode> Statements,
-    string? TaskName = null, List<string>? TaskArgs = null) : AstNode(0);
+    string? TaskName = null, List<string>? TaskArgs = null,
+    Dictionary<string, TopicNode>? Topics = null) : AstNode(0);
 
 public sealed record AssignNode(string Name, AstNode Value, int LineNum) : AstNode(LineNum);
-
+public sealed record TopicNode(string Name, List<AstNode> Body, int LineNum) : AstNode(LineNum);
+public sealed record SayNode(string RawText, List<PrintPart> Parts, int LineNum) : AstNode(LineNum);
+public sealed record DialogueOptionNode(string Goto, string Label, int LineNum) : AstNode(LineNum);
 public sealed record PrintPart(bool IsRef, string Literal, string RefName);
 
 public enum ChatKind { Local, Public, Overhead, Private, PrivateLocal }

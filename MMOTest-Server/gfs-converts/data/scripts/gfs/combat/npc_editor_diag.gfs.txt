@@ -1,0 +1,5 @@
+[server]
+[generic]
+
+npc_id = $"npc_id"
+OpenNpcEditor(npc_id)

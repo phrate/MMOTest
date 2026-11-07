@@ -40,4 +40,4 @@ scroll_following = true
 layout_mode = 2
 theme_override_font_sizes/font_size = 12
 placeholder_text = "Press Enter to chat"
-max_length = 200
+max_length = 60

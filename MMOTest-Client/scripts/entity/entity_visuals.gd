@@ -9,6 +9,9 @@ extends Node3D
 const CHAT_BUBBLE_SECONDS := 5.0
 const HP_BAR_DISPLAY_MS    := 5000
 const HP_BAR_Y             := 2.0
+const CHAT_FONT_SIZE := 12
+const CHAT_OUTLINE_SIZE := 9
+const SHOW_NAME_LABELS := false
 
 ## Radians to rotate a render scene so its visual front matches Godot's -Z
 ## forward. Mixamo/Blender rigs face +Z → PI. Godot-native rigs → 0.0.
@@ -18,6 +21,8 @@ const FACING_OFFSET_BY_SLUG := {}   # e.g. {"knight": 0.0}
 
 const NAME_LABEL_Y         := 2.2
 const CHAT_LABEL_Y         := 1.9
+const NAME_LABEL_OFFSET    := 0.3
+const CHAT_LABEL_OFFSET    := 0.35
 const DAMAGE_BASE_Y        := 1.5
 const DAMAGE_HIDE_MS       := 2500
 const MOVING_THRESHOLD     := 0.5
@@ -93,12 +98,14 @@ func _build_name_label() -> void:
 		_name_label = existing
 		_name_label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
 		_name_label.no_depth_test = true
+		_name_label.visible = SHOW_NAME_LABELS
 		return
 	_name_label = Label3D.new()
 	_name_label.name = "NameLabel"
 	_name_label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
 	_name_label.no_depth_test = true
 	_name_label.position = Vector3(0, NAME_LABEL_Y, 0)
+	_name_label.visible = SHOW_NAME_LABELS
 	add_child(_name_label)
 
 
@@ -109,15 +116,21 @@ func _build_chat_label() -> void:
 		_chat_label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
 		_chat_label.no_depth_test = true
 		_chat_label.visible = false
+		_chat_label.font_size = CHAT_FONT_SIZE
+		_chat_label.fixed_size = true
+		_chat_label.pixel_size = 0.001
+		_chat_label.outline_size = CHAT_OUTLINE_SIZE
+		_chat_label.outline_modulate = Color(0, 0, 0, 1)
 		return
 	_chat_label = Label3D.new()
 	_chat_label.name = "ChatLabel"
 	_chat_label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
 	_chat_label.no_depth_test = true
-	_chat_label.font_size = 24
-	_chat_label.pixel_size = 0.005
+	_chat_label.font_size = CHAT_FONT_SIZE
+	_chat_label.fixed_size = true
+	_chat_label.pixel_size = 0.001
+	_chat_label.outline_size = CHAT_OUTLINE_SIZE
 	_chat_label.outline_modulate = Color(0, 0, 0, 1)
-	_chat_label.outline_size = 4
 	_chat_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	_chat_label.width = 500
 	_chat_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
@@ -420,6 +433,6 @@ func fit_name_label_above_node(render_root: Node3D) -> void:
 	var local_top := world_top - (parent as Node3D).global_position.y
 
 	# 0.3 above the mesh top; chat bubble sits higher so it doesn't overlap.
-	_name_label.position.y = local_top + 0.3
+	_name_label.position.y = local_top + NAME_LABEL_OFFSET
 	if _chat_label != null:
-		_chat_label.position.y = local_top + 0.9
+		_chat_label.position.y = local_top + CHAT_LABEL_OFFSET

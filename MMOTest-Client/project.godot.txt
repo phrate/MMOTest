@@ -1,0 +1,50 @@
+; Engine configuration file.
+; It's best edited using the editor UI and not directly,
+; since the parameters that go here are not all obvious.
+;
+; Format:
+;   [section] ; section goes between []
+;   param=value ; assign values to parameters
+
+config_version=5
+
+[application]
+
+config/name="MMOTest Client"
+run/main_scene="res://scenes/login/login.tscn"
+config/features=PackedStringArray("4.4")
+
+[autoload]
+
+Texts="*res://autoload/Texts.gd"
+Network="*res://autoload/Network.gd"
+Session="*res://autoload/Session.gd"
+Players="*res://autoload/Players.gd"
+World="*res://autoload/World.gd"
+Gfs="*res://autoload/gfs.gd"
+Pathfinder="*res://autoload/Pathfinder.gd"
+Tooltips="*res://autoload/Tooltips.gd"
+Npcs="*res://autoload/Npcs.gd"
+Inventory="*res://autoload/Inventory.gd"
+Skills="*res://autoload/Skills.gd"
+NpcRender="*res://autoload/Npc_Render.gd"
+Hitboxes="*res://autoload/Hitboxes.gd"
+
+[debug]
+
+gdscript/warnings/unused_variable=0
+gdscript/warnings/unused_parameter=0
+gdscript/warnings/unused_signal=0
+gdscript/warnings/shadowed_variable=0
+gdscript/warnings/shadowed_variable_base_class=0
+gdscript/warnings/shadowed_global_identifier=0
+gdscript/warnings/inference_on_variant=0
+
+[display]
+
+window/size/viewport_width=1280
+window/size/viewport_height=768
+
+[dotnet]
+
+project/assembly_name="MMOTest Client"

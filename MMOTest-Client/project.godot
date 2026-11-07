@@ -29,6 +29,8 @@ Inventory="*res://autoload/Inventory.gd"
 Skills="*res://autoload/Skills.gd"
 NpcRender="*res://autoload/Npc_Render.gd"
 Hitboxes="*res://autoload/Hitboxes.gd"
+Trade="*res://autoload/Trade.gd"
+Bank="*res://autoload/Bank.gd"
 
 [debug]
 

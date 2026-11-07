@@ -1,0 +1,8 @@
+[gd_scene load_steps=2 format=3 uid="uid://8x3narb7wycy"]
+
+[ext_resource type="Script" uid="uid://4tbg5mth51do" path="res://Main.cs" id="1_main"]
+
+[node name="Main" type="Node"]
+script = ExtResource("1_main")
+NpcViewChunkRadius = 7
+DiagNpcWander = true

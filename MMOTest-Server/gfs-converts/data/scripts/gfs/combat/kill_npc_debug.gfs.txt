@@ -1,0 +1,7 @@
+[server]
+[generic]
+
+npc_id = $"npc_id"
+
+KillNpc(npc_id)
+chat local "[Admin] Killed NPC `npc_id`."

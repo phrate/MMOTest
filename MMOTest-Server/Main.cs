@@ -18,6 +18,7 @@ public partial class Main : Node
 	private const int MaxUsernameLength = 20;
 	private const int MinPasswordLength = 8;
 	private const int MaxPasswordLength = 128;
+	private const int MaxChatLength = 60;
 
 	private const double TickIntervalSeconds = 0.3;
 	private const float WalkSpeed = 2.0f;
@@ -45,6 +46,8 @@ public partial class Main : Node
 	private readonly HashSet<long> _authInProgress = new();
 	private readonly Dictionary<long, PlayerSession> _sessions = new();
 	private readonly Dictionary<long, long> _peerByPlayerId = new();
+	private readonly Dictionary<long, List<BankEntry?>> _bankByPlayer = new();
+	private readonly Dictionary<long, int> _bankCapacityByPlayer = new();
 	private readonly Dictionary<long, PlayerPosition> _positions = new();
 
 	private double _npcVisRefreshAccum;
@@ -105,7 +108,7 @@ public partial class Main : Node
 	private const long GroundItemDespawnMs = 90 * 1000;  // 90s — player/npc drops only
 	private readonly Dictionary<long, Database.ItemMeta> _itemsById = new();
 	private readonly Dictionary<string, long> _itemIdsBySlug = new();
-	private readonly Dictionary<string, Dictionary<string, int>> _lootTablesBySlug = new();
+	private readonly Dictionary<string, Dictionary<string, (int Min, int Max)>> _lootTablesBySlug = new();
 	private readonly Dictionary<long, int> _creditsByPlayer = new();
 	private readonly Dictionary<long, List<Database.SkillLevel>> _skillsByPlayer = new();
 	private readonly Dictionary<string, (int Min, int Max)> _creditsLootBySlug = new();
@@ -249,6 +252,8 @@ public partial class Main : Node
 			Gfs.Utils.PlayerUtils.Register(_gfsFns, this);
 			Gfs.Utils.CombatUtils.Register(_gfsFns, this);
 			Gfs.Utils.ItemUtils.Register(_gfsFns, this);
+			Gfs.Utils.DialogueUtils.Register(_gfsFns, this);
+			Gfs.Utils.BankUtils.Register(_gfsFns, this);
 			_perTick = new Gfs.PerTickManager(_gfsFns);
 			_gfs.ScriptsChanged += OnGfsScriptsChanged;
 
@@ -353,9 +358,16 @@ public partial class Main : Node
 				var path = _intents[peerId];
 				if (path.Count == 0) { donePeers.Add(peerId); continue; }
 
-				var (next, finished) = StepTowardPath(current, path);
+				var (next, finished, waypoint, waypointYaw) = StepTowardPath(current, path);
 				_positions[session.PlayerId] = next;
-				updates.Add(new { player_id = session.PlayerId, x = next.X, y = next.Y, z = next.Z, yaw = next.Yaw });
+				updates.Add(new {
+					player_id = session.PlayerId,
+					x = next.X, y = next.Y, z = next.Z, yaw = next.Yaw,
+					wx = waypoint.HasValue ? (float?)waypoint.Value.X : null,
+					wy = waypoint.HasValue ? (float?)waypoint.Value.Y : null,
+					wz = waypoint.HasValue ? (float?)waypoint.Value.Z : null,
+					wyaw = waypoint.HasValue ? (float?)waypointYaw : null,
+				});
 
 				if (finished) donePeers.Add(peerId);
 			}
@@ -416,10 +428,15 @@ public partial class Main : Node
 		ProcessGroundItemDespawn();
 		ProcessPendingPickup();
 		ProcessTradeQueues();
+		ProcessTradeIntents();
+		ProcessBankIntents();
 
 		// 2c. Combat
 		ProcessHostility();
 		ProcessPendingEngage();
+		ProcessNpcLookAt();
+		ProcessPendingTalk();
+		ProcessPendingBank();
 		ProcessCombat();
 
 		// 2d. Healing
@@ -472,57 +489,73 @@ public partial class Main : Node
 		}
 	}
 
-	/// <summary>
-	/// Advances up to WalkSpeed*Tick seconds of distance along the path, consuming waypoints
-	/// as they're reached and carrying leftover distance into the next segment. The result
-	/// is a constant-velocity trajectory with no stops at intermediate tiles.
-	/// </summary>
-	private (PlayerPosition, bool) StepTowardPath(PlayerPosition current, List<Vector2I> path)
-	{
-		float remaining = WalkSpeed * (float)TickIntervalSeconds;
-		float x = current.X;
-		float z = current.Z;
-		float yaw = current.Yaw;
 
-		while (remaining > 0.0001f && path.Count > 0)
-		{
-			var target = path[0];
-			float dx = target.X - x;
-			float dz = target.Y - z;
-			float dist = MathF.Sqrt(dx * dx + dz * dz);
+	private (PlayerPosition Endpoint, bool Finished, Vector3? Waypoint, float WaypointYaw)
+    StepTowardPath(PlayerPosition current, List<Vector2I> path)
+{
+    float remaining = WalkSpeed * (float)TickIntervalSeconds;
+    float x = current.X;
+    float z = current.Z;
+    float yaw = current.Yaw;
 
-			if (dist < 0.0001f)
-			{
-				path.RemoveAt(0);
-				continue;
-			}
+    Vector3? lastWaypoint = null;
+    float lastWaypointYaw = 0f;
+    bool pastFirstIteration = false;
 
-			yaw = MathF.Atan2(-dx, -dz);
-			yaw = MathF.Round(yaw / (MathF.PI / 4f)) * (MathF.PI / 4f);
+    while (remaining > 0.0001f && path.Count > 0)
+    {
+        var target = path[0];
+        float dx = target.X - x;
+        float dz = target.Y - z;
+        float dist = MathF.Sqrt(dx * dx + dz * dz);
 
-			if (dist <= remaining)
-			{
-				// Reach the waypoint and continue with whatever distance is left.
-				x = target.X;
-				z = target.Y;
-				remaining -= dist;
-				path.RemoveAt(0);
-			}
-			else
-			{
-				// Partial step; we're mid-segment at the end of this tick.
-				float ratio = remaining / dist;
-				x += dx * ratio;
-				z += dz * ratio;
-				remaining = 0;
-			}
-		}
+        if (dist < 0.0001f)
+        {
+            path.RemoveAt(0);
+            continue;
+        }
 
-		int tileX = (int)MathF.Round(x);
-		int tileY = (int)MathF.Round(z);
-		var tinfo = GetTileInfo(tileX, tileY);
-		return (new PlayerPosition(x, tinfo.Z, z, yaw), path.Count == 0);
-	}
+        float newYaw = MathF.Atan2(-dx, -dz);
+        newYaw = MathF.Round(newYaw / (MathF.PI / 4f)) * (MathF.PI / 4f);
+
+        if (pastFirstIteration && MathF.Abs(yaw - newYaw) > 0.001f)
+        {
+            // The corner is the tile the character just reached, which is the
+            // current x/z — not `target`, which is the next tile to head for.
+            // Sending the next tile as the waypoint aims the client at a point
+            // past the tick endpoint and produces a wide slide.
+            int cx = (int)MathF.Round(x);
+            int cz = (int)MathF.Round(z);
+            var wInfo = GetTileInfo(cx, cz);
+            lastWaypoint = new Vector3(cx, wInfo.Z, cz);
+            lastWaypointYaw = yaw;
+        }
+
+        if (dist <= remaining)
+        {
+            x = target.X;
+            z = target.Y;
+            remaining -= dist;
+            path.RemoveAt(0);
+        }
+        else
+        {
+            float ratio = remaining / dist;
+            x += dx * ratio;
+            z += dz * ratio;
+            remaining = 0;
+        }
+        yaw = newYaw;
+        pastFirstIteration = true;
+    }
+
+    int tileX = (int)MathF.Round(x);
+    int tileY = (int)MathF.Round(z);
+    var tinfo = GetTileInfo(tileX, tileY);
+    var endpoint = new PlayerPosition(x, tinfo.Z, z, yaw);
+    bool finished = path.Count == 0;
+    return (endpoint, finished, lastWaypoint, lastWaypointYaw);
+}
 
 	private void StepNpcMovement(ActiveNpc npc)
 	{
@@ -658,8 +691,8 @@ public partial class Main : Node
 	{
 		if (_sessions.TryGetValue(peerId, out var departingSession))
 		{
-			CancelTradeForPlayer(departingSession.PlayerId, "The other player disconnected.");
-			CancelTradeQueuesForPlayer(departingSession.PlayerId, "The other player disconnected.");
+			CancelTradeForPlayer(departingSession.PlayerId, ErrorKeys.TradeCancelDisconnected);
+			CancelTradeQueuesForPlayer(departingSession.PlayerId, ErrorKeys.TradeCancelDisconnected);
 		}
 		_connectedPeers.Remove(peerId);
 		_authInProgress.Remove(peerId);
@@ -679,7 +712,14 @@ public partial class Main : Node
 			_playerHealAccumTicks.Remove(session.PlayerId);
 			_peerByPlayerId.Remove(session.PlayerId);
 			_pendingPickup.Remove(session.PlayerId);
+			_pendingTradeIntents.Remove(session.PlayerId);
 			_visibleGroundItems.Remove(peerId);
+			_dialogueByPlayer.Remove(session.PlayerId);
+			_pendingTalk.Remove(session.PlayerId);
+			_bankByPlayer.Remove(session.PlayerId);
+			_bankCapacityByPlayer.Remove(session.PlayerId);
+			_pendingBank.Remove(session.PlayerId);
+			_pendingBankIntents.Remove(session.PlayerId);
 
 			if (_positions.TryGetValue(session.PlayerId, out PlayerPosition pos))
 			{
@@ -740,12 +780,18 @@ public partial class Main : Node
 				case "pickup_ground_item": HandlePickupGroundItem(peerId, root); break;
 				case "trade_invite_accept": HandleTradeInviteResponse(peerId, root, accept: true); break;
 				case "trade_invite_decline": HandleTradeInviteResponse(peerId, root, accept: false); break;
-				case "trade_offer_set": HandleTradeOfferSet(peerId, root); break;
+				case "trade_offer_add": HandleTradeOfferAdd(peerId, root); break;
+				case "trade_offer_withdraw": HandleTradeOfferWithdraw(peerId, root); break;
 				case "trade_credits_set": HandleTradeCreditsSet(peerId, root); break;
 				case "trade_offer_accept": HandleTradeAcceptOffer(peerId, root); break;
-				case "trade_offer_edit": HandleTradeEditOffer(peerId, root); break;
 				case "trade_confirm": HandleTradeConfirm(peerId, root); break;
 				case "trade_cancel": HandleTradeCancel(peerId, root); break;
+				case "dialogue_choose": HandleDialogueChoose(peerId, root); break;
+				case "bank_deposit": HandleBankDeposit(peerId, root); break;
+				case "bank_withdraw": HandleBankWithdraw(peerId, root); break;
+				case "bank_move": HandleBankMove(peerId, root); break;
+				case "bank_close": HandleBankClose(peerId, root); break;
+				case "bank_cert_mode": HandleBankCertMode(peerId, root); break;
 				default:
 					GD.PrintErr($"[Server] Unknown message type '{type}' from {peerId}");
 					break;
@@ -932,7 +978,16 @@ public partial class Main : Node
 		}
 
 		if (ast.Tags.Contains(Gfs.GfsTags.OncePerTick) && !ctx.EndScriptRequested)
+		{
+			if (scriptPath.EndsWith("follow_player.gfs"))
+			{
+				CancelDialogueForPlayer(session.PlayerId, ErrorKeys.DialogueCancelInterrupted);
+				CancelPendingTalkFor(session.PlayerId);
+				CancelBankForPlayer(session.PlayerId, ErrorKeys.BankCancelInterrupted);
+				CancelPendingBankFor(session.PlayerId);
+			}
 			_perTick.Start(session.PlayerId, scriptPath, ast, ctx);
+		}
 
 		Send(peerId, new { type = "run_action_result", ok = true, effects });
 	}
@@ -1018,65 +1073,69 @@ public partial class Main : Node
 	/// </summary>
 	private void HandlePlayerWalkBuffered(long peerId, JsonElement root)
 {
-    if (!_sessions.TryGetValue(peerId, out PlayerSession session)) return;
+	if (!_sessions.TryGetValue(peerId, out PlayerSession session)) return;
 
-    // Manual click-to-walk cancels all script-driven movement and pending
-    // queues. Without clearing pickup, a queued pickup abandoned by walking
-    // elsewhere would fire the next time the player stepped on the item.
-    _perTick?.EndByStem(session.PlayerId, "follow_player");
-	CancelTradeForPlayer(session.PlayerId, "Trade cancelled because you moved.");
-	CancelTradeQueuesForPlayer(session.PlayerId, "Trade request cancelled because a player moved.");
-    _pendingEngage.Remove(session.PlayerId);
-    _pendingPickup.Remove(session.PlayerId);
+	// Manual click-to-walk cancels all script-driven movement and pending
+	// queues. Without clearing pickup, a queued pickup abandoned by walking
+	// elsewhere would fire the next time the player stepped on the item.
+	_perTick?.EndByStem(session.PlayerId, "follow_player");
+	CancelTradeForPlayer(session.PlayerId, ErrorKeys.TradeCancelMoved);
+	CancelTradeQueuesForPlayer(session.PlayerId, ErrorKeys.TradeCancelMoved);
+	CancelDialogueForPlayer(session.PlayerId, "");
+	CancelPendingTalkFor(session.PlayerId);
+	CancelBankForPlayer(session.PlayerId, "");        // silent
+    CancelPendingBankFor(session.PlayerId);
+	_pendingEngage.Remove(session.PlayerId);
+	_pendingPickup.Remove(session.PlayerId);
 
-    if (_combatByPlayer.TryGetValue(session.PlayerId, out var combatPair) && !combatPair.StateAnnounced)
-    {
-        EndCombat(combatPair);
-    }
+	if (_combatByPlayer.TryGetValue(session.PlayerId, out var combatPair) && !combatPair.StateAnnounced)
+	{
+		EndCombat(combatPair);
+	}
 
-    if (!_positions.TryGetValue(session.PlayerId, out PlayerPosition current)) return;
+	if (!_positions.TryGetValue(session.PlayerId, out PlayerPosition current)) return;
 
-    if (!root.TryGetProperty("path", out JsonElement pathEl) || pathEl.ValueKind != JsonValueKind.Array)
-        return;
+	if (!root.TryGetProperty("path", out JsonElement pathEl) || pathEl.ValueKind != JsonValueKind.Array)
+		return;
 
-    var path = new List<Vector2I>();
-    Vector2I? prev = null;
-    foreach (JsonElement t in pathEl.EnumerateArray())
-    {
-        if (t.ValueKind != JsonValueKind.Array || t.GetArrayLength() != 2) return;
-        if (!t[0].TryGetInt32(out int x) || !t[1].TryGetInt32(out int y)) return;
-        if (Math.Abs(x) > 1_000_000 || Math.Abs(y) > 1_000_000) return;
-        if (!IsWalkableTile(x, y)) return;
+	var path = new List<Vector2I>();
+	Vector2I? prev = null;
+	foreach (JsonElement t in pathEl.EnumerateArray())
+	{
+		if (t.ValueKind != JsonValueKind.Array || t.GetArrayLength() != 2) return;
+		if (!t[0].TryGetInt32(out int x) || !t[1].TryGetInt32(out int y)) return;
+		if (Math.Abs(x) > 1_000_000 || Math.Abs(y) > 1_000_000) return;
+		if (!IsWalkableTile(x, y)) return;
 
-        if (prev.HasValue)
-        {
-            int ddx = Math.Abs(x - prev.Value.X);
-            int ddy = Math.Abs(y - prev.Value.Y);
-            if (ddx > 1 || ddy > 1 || (ddx == 0 && ddy == 0)) return;
-            if (ddx == 1 && ddy == 1)
-            {
-                if (!IsWalkableTile(prev.Value.X, y)) return;
-                if (!IsWalkableTile(x, prev.Value.Y)) return;
-            }
-        }
-        path.Add(new Vector2I(x, y));
-        prev = new Vector2I(x, y);
-    }
+		if (prev.HasValue)
+		{
+			int ddx = Math.Abs(x - prev.Value.X);
+			int ddy = Math.Abs(y - prev.Value.Y);
+			if (ddx > 1 || ddy > 1 || (ddx == 0 && ddy == 0)) return;
+			if (ddx == 1 && ddy == 1)
+			{
+				if (!IsWalkableTile(prev.Value.X, y)) return;
+				if (!IsWalkableTile(x, prev.Value.Y)) return;
+			}
+		}
+		path.Add(new Vector2I(x, y));
+		prev = new Vector2I(x, y);
+	}
 
-    if (path.Count == 0 || path.Count > MaxPathLength) return;
+	if (path.Count == 0 || path.Count > MaxPathLength) return;
 
-    int curX = (int)MathF.Round(current.X);
-    int curY = (int)MathF.Round(current.Z);
-    int ddx0 = Math.Abs(path[0].X - curX);
-    int ddy0 = Math.Abs(path[0].Y - curY);
-    if (ddx0 > 1 || ddy0 > 1) return;
-    if (ddx0 == 1 && ddy0 == 1)
-    {
-        if (!IsWalkableTile(curX, path[0].Y)) return;
-        if (!IsWalkableTile(path[0].X, curY)) return;
-    }
+	int curX = (int)MathF.Round(current.X);
+	int curY = (int)MathF.Round(current.Z);
+	int ddx0 = Math.Abs(path[0].X - curX);
+	int ddy0 = Math.Abs(path[0].Y - curY);
+	if (ddx0 > 1 || ddy0 > 1) return;
+	if (ddx0 == 1 && ddy0 == 1)
+	{
+		if (!IsWalkableTile(curX, path[0].Y)) return;
+		if (!IsWalkableTile(path[0].X, curY)) return;
+	}
 
-    _intents[peerId] = path;
+	_intents[peerId] = path;
 }
 
 	/// <summary>
@@ -1114,21 +1173,32 @@ public partial class Main : Node
 			if (!created) { SendError(peerId, "register_result", ErrorKeys.RegisterUsernameTaken); return; }
 			GD.Print($"[Server] Registered: {username} (id {playerId}{(makeAdmin ? ", dev admin" : "")})");
 			await _db.EnsurePlayerStatsAsync(playerId);
+			await _db.EnsurePlayerInventoryAsync(playerId);
+
 			if (makeAdmin)
 			{
-				await _db.EnsurePlayerInventoryAndBankAsync(playerId);
+				// Dev trade-testing kit. forceAll=true means every loot entry is
+				// given (with its rolled quantity), not a single random pick.
+				await GiveLootTableAsync(playerId, "trade_testing", forceAll: true);
 
-				// Dev auto-register: seed the account with the starter_kit loot table.
-				// forceAll=true ensures every item from the table is given (rather than
-				// the usual single-item roll).
-				await GiveLootTableAsync(playerId, "starter_kit", forceAll: true);
+				// Roll starting credits. Written straight to the DB; the player
+				// is not yet in _creditsByPlayer (that cache is populated on
+				// login in CompleteLoginAsync), so we can't route through
+				// GivePlayerCredits here.
+				if (_creditsLootBySlug.TryGetValue("trade_testing_credits", out var creditRange))
+				{
+					int amount = _combatRng.Next(creditRange.Min, creditRange.Max + 1);
+					if (amount > 0) await _db.SetPlayerCreditsAsync(playerId, amount);
+					GD.Print($"[Server] Dev trade-testing kit: rolled {amount} credits for {username}");
+				}
+				else
+				{
+					GD.PrintErr($"[Server] Dev trade-testing kit: credits_loot 'trade_testing_credits' missing");
+				}
 
-				GD.Print($"[Server] Dev admin starter kit for {username}");
+				GD.Print($"[Server] Dev trade-testing kit for {username}");
 			}
-			else
-			{
-				await _db.EnsurePlayerInventoryAndBankAsync(playerId);
-			}
+
 			Send(peerId, new { type = "register_result", ok = true, username });
 		}
 		finally { _authInProgress.Remove(peerId); }
@@ -1172,7 +1242,7 @@ private async Task CompleteLoginAsync(long peerId, PlayerRecord player)
 		return;
 	}
 
-	if (!await _db.EnsurePlayerInventoryAndBankAsync(player.Id))
+	if (!await _db.EnsurePlayerInventoryAsync(player.Id))
 	{
 		GD.PrintErr($"[Server] Failed to ensure inventory/bank for {player.Username} (id {player.Id}); login aborted");
 		SendError(peerId, "login_result", ErrorKeys.LoginStatsInitFailed);
@@ -1186,8 +1256,11 @@ private async Task CompleteLoginAsync(long peerId, PlayerRecord player)
 	if (inv == null) inv = new long[28];
 	_inventoryByPlayer[player.Id] = inv;
 
+	LoadBankForPlayer(player.Id);
+
 	int credits = await _db.GetPlayerCreditsAsync(player.Id);
 	_creditsByPlayer[player.Id] = credits;
+
 
 	_skillsByPlayer[player.Id] = await _db.GetPlayerSkillsAsync(player.Id);
 
@@ -1234,6 +1307,7 @@ private async Task CompleteLoginAsync(long peerId, PlayerRecord player)
 		is_admin = player.IsAdmin,
 		login_count = loginCount,
 		total_players = totalPlayers,
+		credits = credits,
 		hitpoints = combatData?.CurrentHp ?? 10,
 		max_hitpoints = combatData?.MaxHp ?? 10,
 		spawn = new { x = spawnPos.X, y = spawnPos.Y, z = spawnPos.Z, yaw = spawnPos.Yaw }
@@ -1445,29 +1519,31 @@ private async Task CompleteLoginAsync(long peerId, PlayerRecord player)
 		_mp.SendBytes(bytes, (int)peerId, mode, channel);
 	}
 	private void HandleChatSend(long peerId, JsonElement root)
+	{
+		if (!_sessions.TryGetValue(peerId, out PlayerSession session)) return;
+		if (!_positions.TryGetValue(session.PlayerId, out PlayerPosition pos)) return;
+		if (!root.TryGetProperty("message", out JsonElement msgEl)) return;
+
+		string text = (msgEl.GetString() ?? "").Trim();
+		if (text.Length == 0) return;
+		text = CollapseSpaces(text);
+		if (text.Length > MaxChatLength) text = text.Substring(0, MaxChatLength);
+
+		int tileX = (int)MathF.Round(pos.X);
+		int tileY = (int)MathF.Round(pos.Z);
+		int cx = (int)MathF.Floor((float)tileX / _chunkSize);
+		int cy = (int)MathF.Floor((float)tileY / _chunkSize);
+
+		Broadcast(new
 		{
-			if (!_sessions.TryGetValue(peerId, out PlayerSession session)) return;
-			if (!_positions.TryGetValue(session.PlayerId, out PlayerPosition pos)) return;
-			if (!root.TryGetProperty("message", out JsonElement msgEl)) return;
+			type = "chat_message",
+			username = session.Username,
+			message = text,
+			from_chunk = new[] { cx, cy }
+		});
 
-			string text = (msgEl.GetString() ?? "").Trim();
-			if (text.Length == 0 || text.Length > 200) return;
-
-			int tileX = (int)MathF.Round(pos.X);
-			int tileY = (int)MathF.Round(pos.Z);
-			int cx = (int)MathF.Floor((float)tileX / _chunkSize);
-			int cy = (int)MathF.Floor((float)tileY / _chunkSize);
-
-			Broadcast(new
-			{
-				type = "chat_message",
-				username = session.Username,
-				message = text,
-				from_chunk = new[] { cx, cy }
-			});
-
-			GD.Print($"[Chat] {session.Username}: {text}");
-		}
+		GD.Print($"[Chat] {session.Username}: {text}");
+	}
 	
 
 	internal bool TryGetPosition(long playerId, out PlayerPosition pos) =>
@@ -1541,6 +1617,13 @@ private async Task CompleteLoginAsync(long peerId, PlayerRecord player)
 
 	private void RunScriptFromGfs(long playerId, string stem, Dictionary<string, object> args, Gfs.CallContext parentCtx)
 	{
+		if (stem == "follow_player")
+		{
+			CancelDialogueForPlayer(playerId, ErrorKeys.DialogueCancelInterrupted);
+			CancelPendingTalkFor(playerId);
+			CancelBankForPlayer(playerId, ErrorKeys.BankCancelInterrupted);
+			CancelPendingBankFor(playerId);
+		}
 		var (path, ast) = _gfs.ResolveByStem(stem);
 		if (ast == null) { GD.PrintErr($"[Server] RUN: script not found: {stem}"); return; }
 		var newCtx = new Gfs.CallContext
@@ -1664,6 +1747,9 @@ internal List<Vector2I> FindAdjacentWalkablePath(int x, int y)
 		render_slug = npc.RenderSlug,
 		hitpoints = npc.Hitpoints,
 		max_hitpoints = npc.MaxHitpoints,
+		has_dialogue = HasDialogueScript(npc),
+		dialogue_script = npc.DialogueScript,
+		is_banker = npc.IsBanker
 	};
 
 	/// <summary>
@@ -1797,25 +1883,25 @@ internal List<Vector2I> FindAdjacentWalkablePath(int x, int y)
 	// ---------- NPC death / respawn ----------
 	internal void KillNpc(long npcId, long killerPlayerId = 0)
 {
-    if (!_npcs.TryGetValue(npcId, out var npc)) return;
-    if (npc.IsDead) return;
+	if (!_npcs.TryGetValue(npcId, out var npc)) return;
+	if (npc.IsDead) return;
 
-    // Resolve the killer if not explicitly passed. Combat pairs set it to the
-    // attacking player; admin-kill scripts pass it directly.
-    if (killerPlayerId == 0 && _combatByNpc.TryGetValue(npcId, out var killerPair))
-        killerPlayerId = killerPair.PlayerId;
+	// Resolve the killer if not explicitly passed. Combat pairs set it to the
+	// attacking player; admin-kill scripts pass it directly.
+	if (killerPlayerId == 0 && _combatByNpc.TryGetValue(npcId, out var killerPair))
+		killerPlayerId = killerPair.PlayerId;
 
-    RollNpcDeathLoot(npc, killerPlayerId);
+	RollNpcDeathLoot(npc, killerPlayerId);
 
-    npc.IsDead = true;
-    npc.DiedAtMs = (long)Time.GetTicksMsec();
-    npc.Path.Clear();
-    npc.Hitpoints = 0;
-    _ = _db.MarkNpcDeadAsync(npc.Id);
+	npc.IsDead = true;
+	npc.DiedAtMs = (long)Time.GetTicksMsec();
+	npc.Path.Clear();
+	npc.Hitpoints = 0;
+	_ = _db.MarkNpcDeadAsync(npc.Id);
 
-    if (_combatByNpc.TryGetValue(npcId, out var owner)) EndCombat(owner);
-    Diag.Log("diag_npc", $"NPC {npc.Name} (id {npc.Id}) killed; respawns in {npc.SpawnTimerSeconds}s");
-    NotifyNpcVisibilityChanged();
+	if (_combatByNpc.TryGetValue(npcId, out var owner)) EndCombat(owner);
+	Diag.Log("diag_npc", $"NPC {npc.Name} (id {npc.Id}) killed; respawns in {npc.SpawnTimerSeconds}s");
+	NotifyNpcVisibilityChanged();
 }
 
 	private void ReviveNpc(ActiveNpc npc)
@@ -1851,74 +1937,77 @@ internal List<Vector2I> FindAdjacentWalkablePath(int x, int y)
 
 private void RollNpcDeathLoot(ActiveNpc npc, long killerPlayerId)
 {
-    int deathX = (int)MathF.Round(npc.PosX);
-    int deathY = (int)MathF.Round(npc.PosZ);
-    var tileInfo = GetTileInfo(deathX, deathY);
-    int deathZ = tileInfo.Z;
+	int deathX = (int)MathF.Round(npc.PosX);
+	int deathY = (int)MathF.Round(npc.PosZ);
+	var tileInfo = GetTileInfo(deathX, deathY);
+	int deathZ = tileInfo.Z;
 
-    // Item drop
-    if (!string.IsNullOrEmpty(npc.LootTableName)
-        && _lootTablesBySlug.TryGetValue(npc.LootTableName, out var bag)
-        && bag.Count > 0)
-    {
-        var keys = new List<string>(bag.Keys);
-        string itemSlug = keys[_combatRng.Next(keys.Count)];
-        int qty = bag[itemSlug];
-        SpawnGroundItemAt(itemSlug, qty, deathX, deathY, deathZ);
-        Diag.Log("diag_item", $"NPC {npc.Name} dropped {itemSlug} x{qty} at ({deathX},{deathY})");
-    }
+	// Item drop
+	if (!string.IsNullOrEmpty(npc.LootTableName)
+		&& _lootTablesBySlug.TryGetValue(npc.LootTableName, out var bag)
+		&& bag.Count > 0)
+	{
+		var keys = new List<string>(bag.Keys);
+		string itemSlug = keys[_combatRng.Next(keys.Count)];
+		int qty = RollQuantity(bag[itemSlug]);
+		if (qty > 0)
+		{
+			SpawnGroundItemAt(itemSlug, qty, deathX, deathY, deathZ);
+			Diag.Log("diag_item", $"NPC {npc.Name} dropped {itemSlug} x{qty} at ({deathX},{deathY})");
+		}
+	}
 
-    // Credits
-    if (killerPlayerId > 0
-        && !string.IsNullOrEmpty(npc.CreditsTableName)
-        && _creditsLootBySlug.TryGetValue(npc.CreditsTableName, out var range)
-        && _positions.ContainsKey(killerPlayerId))
-    {
-        int amount = _combatRng.Next(range.Min, range.Max + 1);
-        if (amount > 0)
-        {
-            GivePlayerCredits(killerPlayerId, amount);
-            Diag.Log("diag_item", $"NPC {npc.Name} awarded {amount} credits to player {killerPlayerId}");
-        }
-    }
+	// Credits
+	if (killerPlayerId > 0
+		&& !string.IsNullOrEmpty(npc.CreditsTableName)
+		&& _creditsLootBySlug.TryGetValue(npc.CreditsTableName, out var range)
+		&& _positions.ContainsKey(killerPlayerId))
+	{
+		int amount = _combatRng.Next(range.Min, range.Max + 1);
+		if (amount > 0)
+		{
+			GivePlayerCredits(killerPlayerId, amount);
+			Diag.Log("diag_item", $"NPC {npc.Name} awarded {amount} credits to player {killerPlayerId}");
+		}
+	}
 }
 
 internal bool SpawnGroundItemAt(string itemSlug, int quantity, int tileX, int tileY, int tileZ)
 {
-    if (quantity < 1) return false;
-    if (!_itemIdsBySlug.ContainsKey(itemSlug)) return false;
+	if (quantity < 1) return false;
+	if (!_itemIdsBySlug.ContainsKey(itemSlug)) return false;
 
-    var item = new GroundItem
-    {
-        Id = _nextGroundItemId++,
-        ItemSlug = itemSlug,
-        Quantity = quantity,
-        TileX = tileX,
-        TileY = tileY,
-        TileZ = tileZ,
-        SpawnedAtMs = (long)Time.GetTicksMsec(),
-    };
-    _groundItems[item.Id] = item;
-    BroadcastGroundItemToNearby(item);
-    return true;
+	var item = new GroundItem
+	{
+		Id = _nextGroundItemId++,
+		ItemSlug = itemSlug,
+		Quantity = quantity,
+		TileX = tileX,
+		TileY = tileY,
+		TileZ = tileZ,
+		SpawnedAtMs = (long)Time.GetTicksMsec(),
+	};
+	_groundItems[item.Id] = item;
+	BroadcastGroundItemToNearby(item);
+	return true;
 }
 
 internal void GivePlayerCredits(long playerId, int amount)
 {
 	if (IsTradeInventoryLocked(playerId)) return;
-    if (amount <= 0) return;
-    if (!_creditsByPlayer.TryGetValue(playerId, out int current)) return;
-    int newTotal = current + amount;
-    _creditsByPlayer[playerId] = newTotal;
+	if (amount <= 0) return;
+	if (!_creditsByPlayer.TryGetValue(playerId, out int current)) return;
+	int newTotal = current + amount;
+	_creditsByPlayer[playerId] = newTotal;
 	_db.SetPlayerCreditsSync(playerId, newTotal);
-    BroadcastCredits(playerId);
+	BroadcastCredits(playerId);
 }
 
 private void BroadcastCredits(long playerId)
 {
-    if (!_peerByPlayerId.TryGetValue(playerId, out long peerId)) return;
-    if (!_creditsByPlayer.TryGetValue(playerId, out int c)) return;
-    Send(peerId, new { type = "credits_updated", credits = c });
+	if (!_peerByPlayerId.TryGetValue(playerId, out long peerId)) return;
+	if (!_creditsByPlayer.TryGetValue(playerId, out int c)) return;
+	Send(peerId, new { type = "credits_updated", credits = c });
 }
 
 	// ---------- Combat orchestration ----------
@@ -1953,8 +2042,12 @@ internal void RequestEngage(long playerId, long npcId)
 		return;
 	}
 
-	CancelTradeForPlayer(playerId, "Trade cancelled because you entered combat.");
-	CancelTradeQueuesForPlayer(playerId, "Trade request cancelled because a player entered combat.");
+	CancelTradeForPlayer(playerId, ErrorKeys.TradeCancelCombat);
+	CancelTradeQueuesForPlayer(playerId, ErrorKeys.TradeCancelCombat);
+	CancelDialogueForPlayer(playerId, ErrorKeys.DialogueCancelInterrupted);
+	CancelPendingTalkFor(playerId);
+	CancelBankForPlayer(playerId, ErrorKeys.BankCancelInterrupted);
+    CancelPendingBankFor(playerId);
 
 	if (ArePositionsAdjacent(playerId, npc))
 	{
@@ -2002,8 +2095,12 @@ internal void EngageNpc(long playerId, long npcId, bool initiatedByPlayer = true
 		return;
 	}
 
-	CancelTradeForPlayer(playerId, "Trade cancelled because you entered combat.");
-	CancelTradeQueuesForPlayer(playerId, "Trade request cancelled because a player entered combat.");
+	CancelTradeForPlayer(playerId, ErrorKeys.TradeCancelCombat);
+	CancelTradeQueuesForPlayer(playerId, ErrorKeys.TradeCancelCombat);
+	CancelDialogueForPlayer(playerId, ErrorKeys.DialogueCancelInterrupted);
+	CancelPendingTalkFor(playerId);
+	CancelBankForPlayer(playerId, ErrorKeys.BankCancelInterrupted);
+    CancelPendingBankFor(playerId);
 
 	var pair = new CombatPair
 	{
@@ -2367,41 +2464,46 @@ private void ProcessPlayerHealing()
 }
 
 	private void HandlePlayerDeath(long playerId)
-{
-		CancelTradeForPlayer(playerId, "Trade cancelled because a player died.");
-		CancelTradeQueuesForPlayer(playerId, "Trade request cancelled because a player died.");
-	long peerId = -1;
-	foreach (var kv in _sessions) if (kv.Value.PlayerId == playerId) { peerId = kv.Key; break; }
-	if (peerId < 0) return;
-
-	if (_combatByPlayer.TryGetValue(playerId, out var pair)) EndCombat(pair);
-
-	// Clear all movement state so the player doesn't resume walking toward
-	// their last destination (or re-route to an NPC) from spawn position.
-	_intents.Remove(peerId);
-	_pendingEngage.Remove(playerId);
-
-	var spawnPos = ComputeSpawnPosition(playerId);
-	_positions[playerId] = spawnPos;
-
-	int hp = 10;
-	if (_playerCombat.TryGetValue(playerId, out var pd))
 	{
-		_playerCombat[playerId] = pd with { CurrentHp = pd.MaxHp };
-		_ = _db.SetPlayerHpAsync(playerId, pd.MaxHp);
-		hp = pd.MaxHp;
+		CancelTradeForPlayer(playerId, ErrorKeys.TradeCancelDeath);
+		CancelTradeQueuesForPlayer(playerId, ErrorKeys.TradeCancelDeath);
+		CancelDialogueForPlayer(playerId, ErrorKeys.DialogueCancelInterrupted);
+		CancelPendingTalkFor(playerId);
+		CancelBankForPlayer(playerId, ErrorKeys.BankCancelInterrupted);
+		CancelPendingBankFor(playerId);
+
+		long peerId = -1;
+		foreach (var kv in _sessions) if (kv.Value.PlayerId == playerId) { peerId = kv.Key; break; }
+		if (peerId < 0) return;
+
+		if (_combatByPlayer.TryGetValue(playerId, out var pair)) EndCombat(pair);
+
+		// Clear all movement state so the player doesn't resume walking toward
+		// their last destination (or re-route to an NPC) from spawn position.
+		_intents.Remove(peerId);
+		_pendingEngage.Remove(playerId);
+
+		var spawnPos = ComputeSpawnPosition(playerId);
+		_positions[playerId] = spawnPos;
+
+		int hp = 10;
+		if (_playerCombat.TryGetValue(playerId, out var pd))
+		{
+			_playerCombat[playerId] = pd with { CurrentHp = pd.MaxHp };
+			_ = _db.SetPlayerHpAsync(playerId, pd.MaxHp);
+			hp = pd.MaxHp;
+		}
+		_playerHealAccumTicks[playerId] = 0;
+
+		Send(peerId, new
+		{
+			type = "player_respawned",
+			x = spawnPos.X, y = spawnPos.Y, z = spawnPos.Z, yaw = 0f,
+			hitpoints = hp, max_hitpoints = hp
+		});
+		BroadcastPlayerAnim(playerId, "death", 1000);
+		Diag.Log("diag_combat", $"Player {playerId} died and respawned at ({spawnPos.X}, {spawnPos.Z})");
 	}
-	_playerHealAccumTicks[playerId] = 0;
-
-	Send(peerId, new
-	{
-		type = "player_respawned",
-		x = spawnPos.X, y = spawnPos.Y, z = spawnPos.Z, yaw = 0f,
-		hitpoints = hp, max_hitpoints = hp
-	});
-	BroadcastPlayerAnim(playerId, "death", 1000);
-	Diag.Log("diag_combat", $"Player {playerId} died and respawned at ({spawnPos.X}, {spawnPos.Z})");
-}
 
 	private bool ArePositionsAdjacent(long playerId, ActiveNpc npc)
 	{
@@ -2446,23 +2548,20 @@ private int DistanceFromSpawn(ActiveNpc npc)
 	return Math.Max(Math.Abs(dx), Math.Abs(dy));
 }
 
-	private void MovePlayerAdjacentToNpc(long playerId, ActiveNpc npc)
+	private bool MovePlayerAdjacentToNpc(long playerId, ActiveNpc npc)
 {
 	long peerId = -1;
 	foreach (var kv in _sessions) if (kv.Value.PlayerId == playerId) { peerId = kv.Key; break; }
-	if (peerId < 0) return;
-	if (_intents.ContainsKey(peerId)) return;
+	if (peerId < 0) return false;
+	if (_intents.ContainsKey(peerId)) return true;   // already walking — progress possible
 
-	if (!_positions.TryGetValue(playerId, out var ppos)) return;
+	if (!_positions.TryGetValue(playerId, out var ppos)) return false;
 	int px = (int)MathF.Round(ppos.X);
 	int py = (int)MathF.Round(ppos.Z);
 	int nx = (int)MathF.Round(npc.PosX);
 	int ny = (int)MathF.Round(npc.PosZ);
 
-	// Same tile as the target NPC: PathfindToNearest would return an empty path
-	// (start == goal), so the pending-engage would never promote. Step off to
-	// an adjacent walkable tile instead, then the normal adjacency check on the
-	// next tick can succeed.
+	// Same tile as the target NPC: step off to an adjacent walkable tile.
 	if (px == nx && py == ny)
 	{
 		Vector2I[] dirs = { new(1,0), new(-1,0), new(0,1), new(0,-1),
@@ -2473,18 +2572,19 @@ private int DistanceFromSpawn(ActiveNpc npc)
 			if (IsValidTile(cand.X, cand.Y))
 			{
 				_intents[peerId] = new List<Vector2I> { cand };
-				return;
+				return true;
 			}
 		}
-		return;
+		return false;
 	}
 
 	var route = PathfindToNearest(playerId, nx, ny);
-	if (route.Count == 0) return;
+	if (route.Count == 0) return false;
 	var goal = new Vector2I(nx, ny);
 	if (route[^1] == goal) route.RemoveAt(route.Count - 1);
-	if (route.Count == 0) return;
+	if (route.Count == 0) return false;
 	SetIntent(playerId, route);
+	return true;
 }
 
 	private bool RollHit(int accuracy, int accuracyBonus, int defence, int defenceBonus)
@@ -2505,6 +2605,13 @@ private int DistanceFromSpawn(ActiveNpc npc)
 		if (maxHit < 1) maxHit = 1;
 		return _combatRng.Next(0, maxHit + 1);
 	}
+
+private int RollQuantity((int Min, int Max) range)
+{
+	if (range.Min <= 0 && range.Max <= 0) return 0;
+	if (range.Min == range.Max) return range.Min;
+	return _combatRng.Next(range.Min, range.Max + 1);
+}
 
 	private void ChatToPlayer(long playerId, string message)
 	{
@@ -2737,8 +2844,12 @@ private void ProcessPendingEngage()
 			toEngage.Add((playerId, npcId));
 			continue;
 		}
-		// Keep pursuing. MovePlayerAdjacentToNpc no-ops if player already routing.
-		MovePlayerAdjacentToNpc(playerId, npc);
+		// Keep pursuing. If no progress is possible, cancel and notify.
+		if (!MovePlayerAdjacentToNpc(playerId, npc))
+		{
+			toRemove.Add(playerId);
+			ChatToPlayer(playerId, "I can't seem to reach that.");
+		}
 	}
 
 	foreach (var p in toRemove) _pendingEngage.Remove(p);
@@ -2858,56 +2969,66 @@ internal bool GiveItem(long playerId, string itemSlug, int qty)
 internal async Task<bool> GiveItemAsync(long playerId, string itemSlug, int qty)
 {
 	if (IsTradeInventoryLocked(playerId)) return false;
-    if (qty < 1) return false;
-    if (!_itemIdsBySlug.TryGetValue(itemSlug, out long itemId)) return false;
-    if (!_itemsById.TryGetValue(itemId, out var meta)) return false;
+	if (qty < 1) return false;
+	if (!_itemIdsBySlug.TryGetValue(itemSlug, out long itemId))
+	{
+		GD.PrintErr($"[GiveItem] Unknown slug '{itemSlug}' (player {playerId})");
+		return false;
+	}
+	if (!_itemsById.TryGetValue(itemId, out var meta))
+	{
+		GD.PrintErr($"[GiveItem] Item id {itemId} ('{itemSlug}') missing from _itemsById");
+		return false;
+	}
 
-    if (!_inventoryByPlayer.TryGetValue(playerId, out var inv))
-    {
-        inv = await _db.GetInventorySlotsAsync(playerId);
-        if (inv == null) inv = new long[28];
-        _inventoryByPlayer[playerId] = inv;
-    }
+	// `out var inv` here is the single declaration of `inv` for the whole
+	// function. Every use below relies on it.
+	if (!_inventoryByPlayer.TryGetValue(playerId, out var inv))
+	{
+		inv = await _db.GetInventorySlotsAsync(playerId);
+		if (inv == null) inv = new long[28];
+		_inventoryByPlayer[playerId] = inv;
+	}
 
-    if (meta.Stackable)
-    {
-        // Stackable: merge into an existing slot first.
-        for (int i = 0; i < 28; i++)
-        {
-            long packed = inv[i];
-            if (packed == 0) continue;
-            if (ItemStack.ItemId(packed) != itemId) continue;
-            int newQty = ItemStack.Quantity(packed) + qty;
-            inv[i] = ItemStack.Encode((int)itemId, newQty);
+	if (meta.Stackable)
+	{
+		// Stackable: merge into an existing slot first.
+		for (int i = 0; i < 28; i++)
+		{
+			long packed = inv[i];
+			if (packed == 0) continue;
+			if (ItemStack.ItemId(packed) != itemId) continue;
+			int newQty = ItemStack.Quantity(packed) + qty;
+			inv[i] = ItemStack.Encode((int)itemId, newQty);
 			_db.SaveInventorySlotSync(playerId, i, inv[i]);
-            BroadcastInventory(playerId);
-            return true;
-        }
-        // Otherwise the first empty slot.
-        for (int i = 0; i < 28; i++)
-        {
-            if (inv[i] != 0) continue;
-            inv[i] = ItemStack.Encode((int)itemId, qty);
+			BroadcastInventory(playerId);
+			return true;
+		}
+		// Otherwise the first empty slot.
+		for (int i = 0; i < 28; i++)
+		{
+			if (inv[i] != 0) continue;
+			inv[i] = ItemStack.Encode((int)itemId, qty);
 			_db.SaveInventorySlotSync(playerId, i, inv[i]);
-            BroadcastInventory(playerId);
-            return true;
-        }
-        return false;
-    }
-    else
-    {
-        // Non-stackable: every unit gets its own slot, quantity 1.
-        int placed = 0;
-        for (int i = 0; i < 28 && placed < qty; i++)
-        {
-            if (inv[i] != 0) continue;
-            inv[i] = ItemStack.Encode((int)itemId, 1);
+			BroadcastInventory(playerId);
+			return true;
+		}
+		return false;
+	}
+	else
+	{
+		// Non-stackable: every unit gets its own slot, quantity 1.
+		int placed = 0;
+		for (int i = 0; i < 28 && placed < qty; i++)
+		{
+			if (inv[i] != 0) continue;
+			inv[i] = ItemStack.Encode((int)itemId, 1);
 			_db.SaveInventorySlotSync(playerId, i, inv[i]);
-            placed++;
-        }
-        if (placed > 0) BroadcastInventory(playerId);
-        return placed == qty;
-    }
+			placed++;
+		}
+		if (placed > 0) BroadcastInventory(playerId);
+		return placed == qty;
+	}
 }
 
 /// <summary>
@@ -2916,21 +3037,35 @@ internal async Task<bool> GiveItemAsync(long playerId, string itemSlug, int qty)
 /// </summary>
 internal async Task GiveLootTableAsync(long playerId, string lootSlug, bool forceAll = false)
 {
-	if (!_lootTablesBySlug.TryGetValue(lootSlug, out var table)) return;
-	if (table.Count == 0) return;
+	if (!_lootTablesBySlug.TryGetValue(lootSlug, out var table))
+	{
+		GD.PrintErr($"[GiveLootTable] Loot table '{lootSlug}' not loaded (was the server restarted after DB insert?)");
+		return;
+	}
+	if (table.Count == 0)
+	{
+		GD.PrintErr($"[GiveLootTable] Loot table '{lootSlug}' is empty");
+		return;
+	}
 
 	if (forceAll)
 	{
 		foreach (var kv in table)
-			await GiveItemAsync(playerId, kv.Key, kv.Value);
+		{
+			int qty = RollQuantity(kv.Value);
+			if (qty <= 0) continue;
+			bool ok = await GiveItemAsync(playerId, kv.Key, qty);
+			if (!ok) GD.PrintErr($"[GiveLootTable] Failed to give '{kv.Key}' x{qty} from '{lootSlug}'");
+		}
 		Diag.Log("diag_login", $"Gave full loot table '{lootSlug}' to player {playerId}");
 	}
 	else
 	{
 		var keys = new List<string>(table.Keys);
 		string pick = keys[_combatRng.Next(keys.Count)];
-		await GiveItemAsync(playerId, pick, table[pick]);
-		Diag.Log("diag_login", $"Rolled '{pick}' from loot table '{lootSlug}' for player {playerId}");
+		int qty = RollQuantity(table[pick]);
+		if (qty > 0) await GiveItemAsync(playerId, pick, qty);
+		Diag.Log("diag_login", $"Rolled '{pick}' x{qty} from loot table '{lootSlug}' for player {playerId}");
 	}
 }
 
@@ -2970,37 +3105,38 @@ private void BroadcastInventory(long playerId)
 
 private void SendInventory(long peerId)
 {
-    if (!_sessions.TryGetValue(peerId, out var session)) return;
-    if (!_inventoryByPlayer.TryGetValue(session.PlayerId, out var inv)) return;
+	if (!_sessions.TryGetValue(peerId, out var session)) return;
+	if (!_inventoryByPlayer.TryGetValue(session.PlayerId, out var inv)) return;
 
-    var slots = new List<object>();
-    for (int i = 0; i < 28; i++)
-    {
-        long packed = inv[i];
-        if (packed == 0) continue;
-        int itemId = ItemStack.ItemId(packed);
-        int qty = ItemStack.Quantity(packed);
-        if (!_itemsById.TryGetValue(itemId, out var meta)) continue;
-        slots.Add(new
-        {
-            slot = i,
-            item_id = itemId,
-            slug = meta.Slug,
-            display = meta.Display,
-            type = meta.Type,
-            type_slug = meta.TypeSlug,
-            quantity = qty,
-            cert_of_slug = meta.CertOfSlug,
-            can_trade = meta.CanTrade,
-        });
-    }
-    Send(peerId, new { type = "inventory_data", slots });
+	var slots = new List<object>();
+	for (int i = 0; i < 28; i++)
+	{
+		long packed = inv[i];
+		if (packed == 0) continue;
+		int itemId = ItemStack.ItemId(packed);
+		int qty = ItemStack.Quantity(packed);
+		if (!_itemsById.TryGetValue(itemId, out var meta)) continue;
+		slots.Add(new
+		{
+			slot = i,
+			item_id = itemId,
+			slug = meta.Slug,
+			display = meta.Display,
+			type = meta.Type,
+			type_slug = meta.TypeSlug,
+			quantity = qty,
+			cert_of_slug = meta.CertOfSlug,
+			can_trade = meta.CanTrade,
+			can_bank = !meta.NonBankable,
+		});
+	}
+	Send(peerId, new { type = "inventory_data", slots });
 }
 
 private void SendSkills(long peerId)
 {
-    if (!_sessions.TryGetValue(peerId, out var session)) return;
-    if (!_skillsByPlayer.TryGetValue(session.PlayerId, out var skills)) return;
+	if (!_sessions.TryGetValue(peerId, out var session)) return;
+	if (!_skillsByPlayer.TryGetValue(session.PlayerId, out var skills)) return;
 
 	var list = skills.Select(s =>
 	{
@@ -3028,7 +3164,7 @@ private void SendSkills(long peerId)
 			max_level_reached = maxLevelReached,
 		};
 	}).ToList();
-    Send(peerId, new { type = "skills_data", skills = list });
+	Send(peerId, new { type = "skills_data", skills = list });
 }
 
 private void HandleInventorySwap(long peerId, JsonElement root)
@@ -3055,24 +3191,24 @@ private void HandleInventorySwap(long peerId, JsonElement root)
 
 private object GroundItemToPacket(GroundItem item)
 {
-    string display = "";
-    bool isCert = false;
-    if (_itemIdsBySlug.TryGetValue(item.ItemSlug, out long iid) && _itemsById.TryGetValue(iid, out var meta))
-    {
-        display = meta.Display;
-        isCert = !string.IsNullOrEmpty(meta.CertOfSlug);
-    }
-    return new
-    {
-        id = item.Id,
-        slug = item.ItemSlug,
-        display = display,
-        is_cert = isCert,
-        quantity = item.Quantity,
-        x = item.TileX,
-        y = item.TileZ,
-        z = item.TileY,
-    };
+	string display = "";
+	bool isCert = false;
+	if (_itemIdsBySlug.TryGetValue(item.ItemSlug, out long iid) && _itemsById.TryGetValue(iid, out var meta))
+	{
+		display = meta.Display;
+		isCert = !string.IsNullOrEmpty(meta.CertOfSlug);
+	}
+	return new
+	{
+		id = item.Id,
+		slug = item.ItemSlug,
+		display = display,
+		is_cert = isCert,
+		quantity = item.Quantity,
+		x = item.TileX,
+		y = item.TileZ,
+		z = item.TileY,
+	};
 }
 
 internal bool DropGroundItem(long playerId, string itemSlug, int quantity)
@@ -3104,41 +3240,41 @@ internal bool DropGroundItem(long playerId, string itemSlug, int quantity)
 internal void RequestPickup(long playerId, long groundItemId)
 {
 	if (IsTradeInventoryLocked(playerId)) return;
-    if (!_groundItems.TryGetValue(groundItemId, out var item)) return;
-    if (!_positions.TryGetValue(playerId, out var pos)) return;
+	if (!_groundItems.TryGetValue(groundItemId, out var item)) return;
+	if (!_positions.TryGetValue(playerId, out var pos)) return;
 
-    int px = (int)MathF.Round(pos.X);
-    int py = (int)MathF.Round(pos.Z);
-    if (px == item.TileX && py == item.TileY)
-    {
-        ExecutePickup(playerId, item);
-        return;
-    }
+	int px = (int)MathF.Round(pos.X);
+	int py = (int)MathF.Round(pos.Z);
+	if (px == item.TileX && py == item.TileY)
+	{
+		ExecutePickup(playerId, item);
+		return;
+	}
 
-    _pendingPickup[playerId] = groundItemId;
-    MovePlayerToTile(playerId, item.TileX, item.TileY);
-    Diag.Log("diag_item", $"Player {playerId} approaching ground item {groundItemId}");
+	_pendingPickup[playerId] = groundItemId;
+	MovePlayerToTile(playerId, item.TileX, item.TileY);
+	Diag.Log("diag_item", $"Player {playerId} approaching ground item {groundItemId}");
 }
 
 private void ProcessPendingPickup()
 {
-    if (_pendingPickup.Count == 0) return;
-    var toRemove = new List<long>();
-    foreach (var kv in _pendingPickup)
-    {
-        long playerId = kv.Key;
-        long itemId = kv.Value;
-        if (!_groundItems.TryGetValue(itemId, out var item)) { toRemove.Add(playerId); continue; }
-        if (!_positions.TryGetValue(playerId, out var pos)) { toRemove.Add(playerId); continue; }
-        int px = (int)MathF.Round(pos.X);
-        int py = (int)MathF.Round(pos.Z);
-        if (px == item.TileX && py == item.TileY)
-        {
-            ExecutePickup(playerId, item);
-            toRemove.Add(playerId);
-        }
-    }
-    foreach (var p in toRemove) _pendingPickup.Remove(p);
+	if (_pendingPickup.Count == 0) return;
+	var toRemove = new List<long>();
+	foreach (var kv in _pendingPickup)
+	{
+		long playerId = kv.Key;
+		long itemId = kv.Value;
+		if (!_groundItems.TryGetValue(itemId, out var item)) { toRemove.Add(playerId); continue; }
+		if (!_positions.TryGetValue(playerId, out var pos)) { toRemove.Add(playerId); continue; }
+		int px = (int)MathF.Round(pos.X);
+		int py = (int)MathF.Round(pos.Z);
+		if (px == item.TileX && py == item.TileY)
+		{
+			ExecutePickup(playerId, item);
+			toRemove.Add(playerId);
+		}
+	}
+	foreach (var p in toRemove) _pendingPickup.Remove(p);
 }
 
 private void MovePlayerAdjacentToTile(long playerId, int tx, int ty)
@@ -3192,21 +3328,21 @@ private void ExecutePickup(long playerId, GroundItem item)
 
 private void ProcessGroundItemDespawn()
 {
-    long now = (long)Time.GetTicksMsec();
-    var toRemove = new List<long>();
-    foreach (var kv in _groundItems)
-    {
-        if (kv.Value.IsStatic) continue;
-        if (now - kv.Value.SpawnedAtMs >= GroundItemDespawnMs)
-            toRemove.Add(kv.Key);
-    }
-    foreach (var id in toRemove)
-    {
-        _groundItems.Remove(id);
-        foreach (var vis in _visibleGroundItems)
-            if (vis.Value.Remove(id))
-                Send(vis.Key, new { type = "ground_item_removed", id = id });
-    }
+	long now = (long)Time.GetTicksMsec();
+	var toRemove = new List<long>();
+	foreach (var kv in _groundItems)
+	{
+		if (kv.Value.IsStatic) continue;
+		if (now - kv.Value.SpawnedAtMs >= GroundItemDespawnMs)
+			toRemove.Add(kv.Key);
+	}
+	foreach (var id in toRemove)
+	{
+		_groundItems.Remove(id);
+		foreach (var vis in _visibleGroundItems)
+			if (vis.Value.Remove(id))
+				Send(vis.Key, new { type = "ground_item_removed", id = id });
+	}
 }
 
 private void BroadcastGroundItemToNearby(GroundItem item)
@@ -3292,19 +3428,36 @@ internal bool TryDropFromSlot(long playerId, int slot, int qty)
 
 private void MovePlayerToTile(long playerId, int tx, int ty)
 {
-    long peerId = -1;
-    foreach (var kv in _sessions) if (kv.Value.PlayerId == playerId) { peerId = kv.Key; break; }
-    if (peerId < 0) return;
-    if (_intents.ContainsKey(peerId)) return;
-    if (!_positions.TryGetValue(playerId, out var pos)) return;
+	long peerId = -1;
+	foreach (var kv in _sessions) if (kv.Value.PlayerId == playerId) { peerId = kv.Key; break; }
+	if (peerId < 0) return;
+	if (_intents.ContainsKey(peerId)) return;
+	if (!_positions.TryGetValue(playerId, out var pos)) return;
 
-    int px = (int)MathF.Round(pos.X);
-    int py = (int)MathF.Round(pos.Z);
-    if (px == tx && py == ty) return;
+	int px = (int)MathF.Round(pos.X);
+	int py = (int)MathF.Round(pos.Z);
+	if (px == tx && py == ty) return;
 
-    var route = PathfindToNearest(playerId, tx, ty);
-    if (route.Count == 0) return;
-    // Keep the goal tile in the route — pickup requires standing on it.
-    SetIntent(playerId, route);
+	var route = PathfindToNearest(playerId, tx, ty);
+	if (route.Count == 0) return;
+	// Keep the goal tile in the route — pickup requires standing on it.
+	SetIntent(playerId, route);
+}
+
+private static string CollapseSpaces(string text)
+{
+	var sb = new System.Text.StringBuilder(text.Length);
+	bool prevSpace = false;
+	foreach (char c in text)
+	{
+		if (c == ' ')
+		{
+			if (prevSpace) continue;
+			prevSpace = true;
+		}
+		else prevSpace = false;
+		sb.Append(c);
+	}
+	return sb.ToString();
 }
 }

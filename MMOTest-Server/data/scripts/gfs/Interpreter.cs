@@ -87,8 +87,13 @@ public static class Interpreter
             case ExprStmtNode e:
                 Evaluate(e.Expr, ctx, functions);
                 return ExecResult.Normal;
+
             case AnimNode an:
                 HandleAnim(an, ctx, functions);
+                return ExecResult.Normal;
+            
+            case SayNode s:
+                ctx.Locals["say"] = RenderChatParts(s.Parts, ctx);
                 return ExecResult.Normal;
 
             default:
@@ -316,6 +321,12 @@ public static class Interpreter
                 throw new Exception("[GFS] CODE cannot be used as an expression");
             case TaskCallNode:
                 throw new Exception("[GFS] TASK call cannot be used as an expression");
+            case DialogueOptionNode do_:
+                return new Dictionary<string, object?>
+                {
+                    ["goto"] = do_.Goto,
+                    ["label"] = do_.Label,
+                };
             default:
                 throw new Exception($"[GFS] Cannot evaluate {node.GetType().Name}");
         }
@@ -454,5 +465,27 @@ private static bool TryToDouble(object? v, out double result)
             return "{" + string.Join(", ", parts) + "}";
         }
         return v.ToString() ?? "";
+    }
+
+    public static void ExecuteDialogueTopic(
+        SuiteNode suite, TopicNode topic, CallContext ctx, FunctionRegistry functions)
+    {
+        if (suite.Namespace != "server")
+            throw new Exception($"[GFS] Expected [server] script, got [{suite.Namespace}]");
+        if (suite.Section != "dialogue")
+            throw new Exception($"[GFS] Expected [dialogue] section, got [{suite.Section}]");
+
+        ctx.Effects.Clear();
+
+        // Top-level assigns run first, every time a topic executes. This seeds
+        // Locals with per-session values (e.g. credits = ${PLAYER_CREDITS}) so
+        // they reflect the player's current state at each step.
+        foreach (var stmt in suite.Statements)
+        {
+            if (stmt is AssignNode)
+                ExecuteStatement(stmt, ctx, functions);
+        }
+
+        ExecuteBlock(topic.Body, ctx, functions);
     }
 }

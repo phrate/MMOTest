@@ -158,7 +158,7 @@ public partial class NpcEditorBridge : Node
 				   n.playing_animation, n.loot_table_name,
 				   n.is_dead, n.is_dying, n.spawn_timer,
 				   n.spawn_flags, n.ai_package_state, n.ai_action_state,
-				   n.attackable, n.combat_levels_id, n.render_slug,
+				   n.attackable, n.combat_levels_id, n.render_slug, n.dialogue_script,
 				   n.aggressive, n.aggro_range,
 				   c.slug_id, c.template_slug, c.final_level,
 				   c.hitpoints, c.max_hitpoints,
@@ -193,34 +193,35 @@ public partial class NpcEditorBridge : Node
 			["attackable"] = r.GetInt64(14) != 0,
 			["combat_levels_id"] = r.IsDBNull(15) ? 0L : r.GetInt64(15),
 			["render_slug"] = r.IsDBNull(16) ? "" : r.GetString(16),
-			["aggressive"] = r.GetInt64(17) != 0,
-			["aggro_range"] = r.GetInt32(18),
+			["dialogue_script"] = r.IsDBNull(17) ? "" : r.GetString(17),
+			["aggressive"] = r.GetInt64(18) != 0,
+			["aggro_range"] = r.GetInt32(19),
 		};
 		if (!r.IsDBNull(19))
 		{
-			d["combat_slug"] = r.GetString(19);
-			d["template_slug"] = r.IsDBNull(20) ? "" : r.GetString(20);
-			d["final_level"] = r.GetInt32(21);
-			d["hitpoints"] = r.GetInt32(22);
-			d["max_hitpoints"] = r.GetInt32(23);
-			d["accuracy"] = r.GetInt32(24);
-			d["max_accuracy"] = r.GetInt32(25);
-			d["strength"] = r.GetInt32(26);
-			d["max_strength"] = r.GetInt32(27);
-			d["defence"] = r.GetInt32(28);
-			d["max_defence"] = r.GetInt32(29);
-			d["ether"] = r.GetInt32(30);
-			d["max_ether"] = r.GetInt32(31);
-			d["poisoned"] = r.GetInt32(32) != 0;
-			d["burning"] = r.GetInt32(33) != 0;
-			d["frozen"] = r.GetInt32(34) != 0;
-			d["melee_bonus"] = r.GetInt32(35);
-			d["ranged_bonus"] = r.GetInt32(36);
-			d["ether_bonus"] = r.GetInt32(37);
-			d["melee_defense"] = r.GetInt32(38);
-			d["ranged_defense"] = r.GetInt32(39);
-			d["ether_defense"] = r.GetInt32(40);
-			d["attack_speed"] = r.GetInt32(41);
+			d["combat_slug"] = r.GetString(20);
+			d["template_slug"] = r.IsDBNull(21) ? "" : r.GetString(20);
+			d["final_level"] = r.GetInt32(22);
+			d["hitpoints"] = r.GetInt32(23);
+			d["max_hitpoints"] = r.GetInt32(24);
+			d["accuracy"] = r.GetInt32(25);
+			d["max_accuracy"] = r.GetInt32(26);
+			d["strength"] = r.GetInt32(27);
+			d["max_strength"] = r.GetInt32(28);
+			d["defence"] = r.GetInt32(29);
+			d["max_defence"] = r.GetInt32(30);
+			d["ether"] = r.GetInt32(31);
+			d["max_ether"] = r.GetInt32(32);
+			d["poisoned"] = r.GetInt32(33) != 0;
+			d["burning"] = r.GetInt32(34) != 0;
+			d["frozen"] = r.GetInt32(35) != 0;
+			d["melee_bonus"] = r.GetInt32(36);
+			d["ranged_bonus"] = r.GetInt32(37);
+			d["ether_bonus"] = r.GetInt32(38);
+			d["melee_defense"] = r.GetInt32(39);
+			d["ranged_defense"] = r.GetInt32(40);
+			d["ether_defense"] = r.GetInt32(41);
+			d["attack_speed"] = r.GetInt32(42);
 		}
 		return d;
 	}
@@ -243,7 +244,8 @@ public partial class NpcEditorBridge : Node
 						aggressive = $aggr, aggro_range = $arange,
 						ai_package_state = $ai_pkg, ai_action_state = $ai_act,
 						spawn_flags = $sf, loot_table_name = $lt,
-						spawn_timer = $stimer
+						spawn_timer = $stimer,
+						dialogue_script = $dialogue_script
 					WHERE id = $id;";
 				cmd.Parameters.AddWithValue("$display", GetString(d, "display", ""));
 				cmd.Parameters.AddWithValue("$render_slug", GetString(d, "render_slug", ""));

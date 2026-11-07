@@ -15,6 +15,8 @@ public sealed class ActiveNpc
     public long? CombatLevelsId { get; init; }
     public int FinalLevel { get; init; } = 1;
     public string RenderSlug { get; init; } = "";
+    public string DialogueScript { get; set; } = "";
+    public bool IsBanker { get; set; } = false;
 
     // Editable at runtime via admin NPC editor.
     public string Display { get; set; } = "";

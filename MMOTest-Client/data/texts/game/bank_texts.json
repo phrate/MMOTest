@@ -1,0 +1,30 @@
+{
+  "title": "Bank",
+  "close_button": "Close",
+  "capacity": "Bank ({used}/{capacity})",
+  "cert_toggle": "Cert. Mode",
+  "swap_mode": "Swap",
+  "insert_mode": "Insert",
+  "withdraw_1": "Withdraw 1",
+  "withdraw_10": "Withdraw 10",
+  "withdraw_100": "Withdraw 100",
+  "withdraw_x": "Withdraw X…",
+  "withdraw_all": "Withdraw All",
+  "deposit_1": "Deposit 1",
+  "deposit_10": "Deposit 10",
+  "deposit_100": "Deposit 100",
+  "deposit_x": "Deposit X…",
+  "deposit_all": "Deposit All",
+  "error": {
+	"unavailable": "That banker is unavailable.",
+	"full": "Bank is full.",
+	"partial_withdraw": "Could not withdraw all items.",
+	"non_bankable": "You cannot bank that item.",
+	"nothing_to_deposit": "You have nothing to deposit.",
+	"nothing_to_withdraw": "You have nothing to withdraw.",
+	"slot_invalid": "Invalid bank slot."
+  },
+  "cancel": {
+	"interrupted": "You have no time for that!"
+  }
+}

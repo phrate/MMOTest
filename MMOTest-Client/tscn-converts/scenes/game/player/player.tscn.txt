@@ -1,0 +1,70 @@
+[gd_scene load_steps=7 format=3 uid="uid://cbaep7c5ub1qr"]
+
+[ext_resource type="Script" uid="uid://d1vrplwx1kwp7" path="res://scenes/game/player/camera_3d.gd" id="1_4m2od"]
+[ext_resource type="Script" uid="uid://beskxuif7somw" path="res://scenes/game/player/player.gd" id="1_t5cse"]
+
+[sub_resource type="Animation" id="Animation_abehh"]
+length = 0.001
+
+[sub_resource type="Animation" id="Animation_t5cse"]
+resource_name = "idle"
+loop_mode = 1
+
+[sub_resource type="Animation" id="Animation_bkoau"]
+resource_name = "walk"
+length = 0.5
+loop_mode = 1
+
+[sub_resource type="AnimationLibrary" id="AnimationLibrary_prej5"]
+_data = {
+&"RESET": SubResource("Animation_abehh"),
+&"idle": SubResource("Animation_t5cse"),
+&"walk": SubResource("Animation_bkoau")
+}
+
+[node name="player" type="CharacterBody3D"]
+script = ExtResource("1_t5cse")
+
+[node name="Camera3D" type="Camera3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 0.771935, 0.635701, 0, -0.635701, 0.771935, 0.380983, 4.35042, 3.1242)
+current = true
+fov = 40.0
+script = ExtResource("1_4m2od")
+target_offset = Vector3(0, 0.35, 0)
+focus_smoothing = 30.0
+min_pitch_degrees = 25.0
+max_pitch_degrees = 89.0
+invert_vertical_drag = true
+min_distance = 6.0
+max_distance = 22.0
+zoom_step = 1.0
+zoom_smoothing = 30.0
+default_yaw_degrees = 30.0
+default_distance = 15.0
+default_fov = 40.0
+min_fov = 40.0
+max_fov = 40.0
+
+[node name="Avatar" type="Node3D" parent="."]
+
+[node name="NameLabel" type="Label3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 2.75, 0)
+billboard = 1
+no_depth_test = true
+text = "{username}"
+font_size = 24
+
+[node name="ChatLabel" type="Label3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 2.5, 0)
+billboard = 1
+no_depth_test = true
+modulate = Color(1, 0.88, 0.1, 1)
+text = "{text}"
+font_size = 40
+outline_size = 15
+autowrap_mode = 3
+
+[node name="AnimationPlayer" type="AnimationPlayer" parent="."]
+libraries = {
+&"": SubResource("AnimationLibrary_prej5")
+}

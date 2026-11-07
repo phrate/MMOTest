@@ -31,9 +31,16 @@ void fragment() {
 
 var _target_pos: Vector3
 var _target_yaw: float = 0.0
+var _waypoint_pos: Vector3 = Vector3(NAN, NAN, NAN)
+var _waypoint_yaw: float = 0.0
 var _pending_path_id := -1
 var _last_request_id := -1
 var _last_path_length := 0
+var _last_request_goal := INVALID_TILE          # tile the player clicked
+var _walking_to_message_destination := Vector3.INF  # last tile of the truncated path
+var _walking_should_message := false
+var _walking_message_shown := false
+
 var _render_scene_instance: Node3D = null
 var _hitbox_is_fallback := false
 
@@ -622,6 +629,10 @@ func _entity_sub(node: Node) -> int:
 # ---------- Path ----------
 
 func _request_path_to(tile: Vector2i) -> void:
+	_walking_should_message = false
+	_walking_message_shown = false
+	_walking_to_message_destination = Vector3.INF
+	_last_request_goal = tile
 	var cur := Vector2i(roundi(global_position.x), roundi(global_position.z))
 	_pending_path_id = Pathfinder.request_path(cur, tile)
 	_last_request_id = _pending_path_id
@@ -633,6 +644,11 @@ func _on_path_found(request_id: int, path: Array) -> void:
 	_pending_path_id = -1
 	_last_path_length = path.size()
 	if path.is_empty(): return
+	var final_tile: Vector2i = path[-1]
+	if final_tile != _last_request_goal:
+		_walking_should_message = true
+		_walking_to_message_destination = Vector3(
+			final_tile.x, float(World.get_z(final_tile.x, final_tile.y)), final_tile.y)
 	Network.send_walk_path(path)
 
 
@@ -648,30 +664,57 @@ func _on_path_failed(request_id: int, reason: String) -> void:
 func _process(delta: float) -> void:
 	_update_hover_tooltip()
 
-	var to_target := _target_pos - global_position
-	var horiz_sq := to_target.x * to_target.x + to_target.z * to_target.z
+	var current_target := _target_pos
+	var current_yaw := _target_yaw
+
+	if not is_nan(_waypoint_pos.x):
+		var to_waypoint := _waypoint_pos - global_position
+		var to_target := _target_pos - global_position
+		var dist_waypoint := to_waypoint.length()
+		var dist_target := to_target.length()
+		# Aim at the waypoint only while it is still between us and the target.
+		# Once we've passed it (moved away from it on the way to the target),
+		# the dot product goes negative and we stop aiming at it — otherwise
+		# we'd oscillate: reach waypoint, move toward target, drift back past
+		# waypoint, re-aim at it, and repeat every frame.
+		if dist_waypoint > 0.01 and to_waypoint.dot(to_target) > 0.0:
+			current_target = _waypoint_pos
+			current_yaw = _waypoint_yaw
+
+	var to_current := current_target - global_position
+	var horiz_sq := to_current.x * to_current.x + to_current.z * to_current.z
 	var speed := move_speed
 	if horiz_sq > 0.0001:
 		var horiz_dist := sqrt(horiz_sq)
-		var dist_3d := to_target.length()
+		var dist_3d := to_current.length()
 		speed = move_speed * (dist_3d / horiz_dist)
 	var step := speed * delta
-	if to_target.length_squared() <= step * step:
-		global_position = _target_pos
+	if to_current.length_squared() <= step * step:
+		global_position = current_target
 	else:
-		global_position = global_position.move_toward(_target_pos, step)
-	rotation.y = _target_yaw
+		global_position = global_position.move_toward(current_target, step)
+	rotation.y = current_yaw
 
 
-func _on_self_position_updated(x: float, y: float, z: float, yaw: float) -> void:
+func _on_self_position_updated(x: float, y: float, z: float, yaw: float,
+		wx: float, wy: float, wz: float, wyaw: float) -> void:
 	_target_pos = Vector3(x, y, z)
 	_target_yaw = yaw
+	if is_nan(wx):
+		_waypoint_pos = Vector3(NAN, NAN, NAN)
+	else:
+		_waypoint_pos = Vector3(wx, wy, wz)
+		_waypoint_yaw = wyaw
 
 
 func _on_player_respawned(x: float, y: float, z: float, yaw: float, hp: int, max_hp: int) -> void:
 	visuals.reset_hp_tracking()
 	_pending_path_id = -1
 	_last_path_length = 0
+	_walking_should_message = false
+	_walking_message_shown = false
+	_walking_to_message_destination = Vector3.INF
+	_waypoint_pos = Vector3(NAN, NAN, NAN)
 	global_position = Vector3(x, y, z)
 	rotation.y = yaw
 	_target_pos = global_position
