@@ -11,3 +11,4 @@ res://autoload/Bank.gd
 res://scenes/game/bank/bank_panel.gd
 res://scenes/game/inventory/inventory_panel.gd
 res://scenes/game/bank/bank_slot.gd
+res://scripts/ui/ui_style.gd

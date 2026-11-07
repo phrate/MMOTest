@@ -3,6 +3,7 @@
   "close_button": "Close",
   "capacity": "Bank ({used}/{capacity})",
   "cert_toggle": "Cert. Mode",
+  "cert_hover": "Enabling this mode withdraws items as [color=gold]Certifications[/color]. They have no stack limit, but cannot be used or consumed as they normally would.",
   "swap_mode": "Swap",
   "insert_mode": "Insert",
   "withdraw_1": "Withdraw 1",

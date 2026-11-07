@@ -653,6 +653,7 @@ func send_bank_withdraw(session_id: String, item_id: int, quantity: int) -> void
 func send_bank_move(session_id: String, from: int, to: int, insert: bool) -> void:
 	send({"type": "bank_move", "session_id": session_id, "from": from, "to": to, "insert": insert})
 
+
 func send_bank_close(session_id: String) -> void:
 	send({"type": "bank_close", "session_id": session_id})
 

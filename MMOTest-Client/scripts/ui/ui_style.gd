@@ -14,6 +14,7 @@ const TEXT_COLOR    := Color(1, 1, 1)
 const OUTLINE_COLOR := Color(0, 0, 0)
 const FONT_SIZE     := 13
 const OUTLINE_SIZE  := 3
+const MULTI_WORD_VERBS := ["Talk to", "Pick up", "Trade with", "Bank with", "Follow with", "Give to"]
 
 
 static func make_panel_style() -> StyleBoxFlat:
@@ -63,16 +64,20 @@ static func make_empty_style() -> StyleBoxEmpty:
 
 
 static func format_primary_bbcode(display: String) -> String:
-	var space_idx := display.find(" ")
-	if space_idx < 0:
-		return "[color=%s]%s[/color]" % [VERB_COLOR.to_html(false), display]
-	var verb := display.substr(0, space_idx)
-	var rest := display.substr(space_idx + 1)
+	var parts := split_verb(display)
+	var verb: String = parts[0]
+	var rest: String = parts[1]
+	if rest.is_empty():
+		return "[color=%s]%s[/color]" % [VERB_COLOR.to_html(false), verb]
 	return "[color=%s]%s[/color] %s" % [VERB_COLOR.to_html(false), verb, rest]
 
 
 static func split_verb(text: String) -> Array:
-	# Returns [verb, rest] — rest empty if no space.
+	for verb in MULTI_WORD_VERBS:
+		if text == verb:
+			return [verb, ""]
+		if text.begins_with(verb + " "):
+			return [verb, text.substr(verb.length() + 1)]
 	var space_idx := text.find(" ")
 	if space_idx < 0:
 		return [text, ""]

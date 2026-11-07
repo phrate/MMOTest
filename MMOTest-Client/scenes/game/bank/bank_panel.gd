@@ -6,27 +6,27 @@ extends CanvasLayer
 const PANEL_WIDTH := 420.0
 const SLOT_SIZE := Vector2(40, 40)
 const COLS := 8
-const MAX_VISIBLE_ROWS := 14
-
-const OUTLINE_COLOR_NONE := Color(0, 0, 0, 0)
-const OUTLINE_COLOR_GREEN := Color(0.2, 0.9, 0.2, 1.0)
-const OUTLINE_WIDTH := 2
 
 const SLOT_BG_COLOR     := Color(0.18, 0.18, 0.18, 1.0)
 const SLOT_BORDER_COLOR := Color(0.32, 0.32, 0.32, 1.0)
 
 const BUTTON_GREEN := Color(0.25, 0.62, 0.25)
 const BUTTON_RED   := Color(0.62, 0.20, 0.20)
+const SWAP_BG      := Color(0.85, 0.55, 0.15)   # orange — swap mode
+const INSERT_BG    := Color(0.55, 0.25, 0.75)   # purple — insert mode
+
+const CERT_HOVER_WIDTH := 200
 
 var _overlay: Control
 var _panel: PanelContainer
 var _title: Label
 var _grid: GridContainer
 var _scroll: ScrollContainer
-var _swap_mode: bool = true     # true = swap, false = insert
-var _context_actions: Array = []
 var _cert_btn: Button
 var _swap_btn: Button
+var _swap_mode: bool = true     # true = swap, false = insert
+
+var _context_actions: Array = []
 
 var _action_menu_layer: CanvasLayer
 var _action_menu: ActionMenu
@@ -43,11 +43,7 @@ func _ready() -> void:
 	_build_hover()
 	Bank.state_changed.connect(_on_state)
 	Bank.closed.connect(_on_closed)
-	Bank.notice_received.connect(_noop_notice)
 	Network.state_changed.connect(_on_network_state)
-
-
-func _noop_notice(_text: String) -> void: pass
 
 
 func _process(_d: float) -> void:
@@ -67,6 +63,10 @@ func _input(event: InputEvent) -> void:
 					_scroll.scroll_vertical += step
 				get_viewport().set_input_as_handled()
 
+
+# ============================================================
+# Construction
+# ============================================================
 
 func _build_ui() -> void:
 	_overlay = Control.new()
@@ -105,7 +105,7 @@ func _build_ui() -> void:
 	col.add_theme_constant_override("separation", 8)
 	margin.add_child(col)
 
-	# Header row: title + close on the right
+	# Header row: title + close only
 	var header := HBoxContainer.new()
 	header.add_theme_constant_override("separation", 6)
 	col.add_child(header)
@@ -132,24 +132,26 @@ func _build_ui() -> void:
 	_grid.add_theme_constant_override("v_separation", 2)
 	_scroll.add_child(_grid)
 
-	# Bottom row: cert + swap on the left
+	# Bottom row: cert on left, swap on right
 	var bottom := HBoxContainer.new()
 	bottom.add_theme_constant_override("separation", 6)
 	col.add_child(bottom)
 
 	_cert_btn = _make_toggle_button(_text("cert_toggle"))
 	_cert_btn.toggled.connect(_on_cert_toggled)
+	_cert_btn.mouse_entered.connect(_on_cert_hover_enter)
+	_cert_btn.mouse_exited.connect(_on_cert_hover_exit)
 	bottom.add_child(_cert_btn)
+
+	var bottom_spacer := Control.new()
+	bottom_spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	bottom_spacer.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	bottom.add_child(bottom_spacer)
 
 	_swap_btn = _make_mode_button(_text("swap_mode"))
 	_swap_btn.pressed.connect(_on_swap_pressed)
 	bottom.add_child(_swap_btn)
-
-	_grid = GridContainer.new()
-	_grid.columns = COLS
-	_grid.add_theme_constant_override("h_separation", 2)
-	_grid.add_theme_constant_override("v_separation", 2)
-	_scroll.add_child(_grid)
+	_update_swap_button_style()
 
 
 func _build_action_menu() -> void:
@@ -184,12 +186,17 @@ func _build_hover() -> void:
 	_hover_panel.add_child(_hover_label)
 
 
-# ---------- State ----------
+# ============================================================
+# State sync
+# ============================================================
 
 func _on_state() -> void:
 	_overlay.visible = Bank.is_active()
 	if not Bank.is_active(): return
 	_title.text = _text("capacity", {"used": Bank.used_slots(), "capacity": Bank.capacity})
+	_swap_mode = not Bank.insert_mode
+	_swap_btn.text = _text("swap_mode") if _swap_mode else _text("insert_mode")
+	_update_swap_button_style()
 	if _cert_btn != null:
 		_cert_btn.set_pressed_no_signal(Bank.cert_mode)
 	_render_grid()
@@ -207,6 +214,10 @@ func _on_network_state(state: int) -> void:
 	if state == Network.State.DISCONNECTED:
 		_overlay.visible = false
 
+
+# ============================================================
+# Grid rendering
+# ============================================================
 
 func _render_grid() -> void:
 	for c in _grid.get_children():
@@ -235,37 +246,9 @@ func _render_grid() -> void:
 			slot.mouse_exited.connect(_on_slot_hover_exit)
 			slot.move_requested.connect(_on_slot_move_requested)
 		else:
-			# Empty slots accept drops but can't be dragged from.
 			slot.move_requested.connect(_on_slot_move_requested)
 			slot.pressed.connect(_noop_press.bind(i))
 		_grid.add_child(slot)
-
-
-func _on_slot_gui_input(event: InputEvent, index: int) -> void:
-	if not (event is InputEventMouseButton and event.pressed): return
-	if event.button_index == MOUSE_BUTTON_RIGHT:
-		_show_withdraw_menu(index)
-		get_viewport().set_input_as_handled()
-
-
-func _on_slot_move_requested(from: int, to: int, insert: bool) -> void:
-	Network.send_bank_move(Bank.session_id, from, to, insert)
-
-
-func _on_swap_pressed() -> void:
-	_swap_mode = not _swap_mode
-	Bank.insert_mode = not _swap_mode
-	_swap_btn.text = _text("swap_mode") if _swap_mode else _text("insert_mode")
-
-
-func _noop_press(_i: int) -> void: pass
-
-
-func _on_slot_pressed(index: int) -> void:
-	# Fires only on clean click (drag cancels this signal).
-	var entry = Bank.slots[index]
-	if entry == null: return
-	Network.send_bank_withdraw(Bank.session_id, int(entry.get("item_id", 0)), 1)
 
 
 func _slot_style() -> StyleBoxFlat:
@@ -283,28 +266,7 @@ func _slot_style() -> StyleBoxFlat:
 	return style
 
 
-func _make_slot() -> Button:
-	var btn := Button.new()
-	btn.custom_minimum_size = SLOT_SIZE
-	btn.focus_mode = Control.FOCUS_NONE
-	btn.icon_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	btn.vertical_icon_alignment = VERTICAL_ALIGNMENT_CENTER
-	var style := StyleBoxFlat.new()
-	style.bg_color = SLOT_BG_COLOR
-	style.border_color = SLOT_BORDER_COLOR
-	style.border_width_left = 1
-	style.border_width_right = 1
-	style.border_width_top = 1
-	style.border_width_bottom = 1
-	style.corner_radius_top_left = 3
-	style.corner_radius_top_right = 3
-	style.corner_radius_bottom_left = 3
-	style.corner_radius_bottom_right = 3
-	btn.add_theme_stylebox_override("normal", style)
-	btn.add_theme_stylebox_override("hover", style)
-	btn.add_theme_stylebox_override("pressed", style)
-	btn.add_theme_stylebox_override("focus", StyleBoxEmpty.new())
-	return btn
+func _noop_press(_i: int) -> void: pass
 
 
 func _populate_slot(btn: Button, entry: Dictionary) -> void:
@@ -340,25 +302,30 @@ func _populate_slot(btn: Button, entry: Dictionary) -> void:
 		btn.add_child(lbl)
 
 
-func _lookup_item(item_id: int) -> Dictionary:
-	return {}   # superseded; entries now carry display directly
+# ============================================================
+# Slot input
+# ============================================================
+
+func _on_slot_pressed(index: int) -> void:
+	var entry = Bank.slots[index]
+	if entry == null: return
+	Network.send_bank_withdraw(Bank.session_id, int(entry.get("item_id", 0)), 1)
 
 
-# ---------- Input ----------
-
-func _on_slot_input(event: InputEvent, index: int) -> void:
+func _on_slot_gui_input(event: InputEvent, index: int) -> void:
 	if not (event is InputEventMouseButton and event.pressed): return
-	match event.button_index:
-		MOUSE_BUTTON_LEFT:
-			# Left click = withdraw 1
-			var entry = Bank.slots[index]
-			if entry != null:
-				Network.send_bank_withdraw(Bank.session_id, int(entry.get("item_id", 0)), 1)
-			get_viewport().set_input_as_handled()
-		MOUSE_BUTTON_RIGHT:
-			_show_withdraw_menu(index)
-			get_viewport().set_input_as_handled()
+	if event.button_index == MOUSE_BUTTON_RIGHT:
+		_show_withdraw_menu(index)
+		get_viewport().set_input_as_handled()
 
+
+func _on_slot_move_requested(from: int, to: int, insert: bool) -> void:
+	Network.send_bank_move(Bank.session_id, from, to, insert)
+
+
+# ============================================================
+# Withdraw menu
+# ============================================================
 
 func _show_withdraw_menu(index: int) -> void:
 	var entry = Bank.slots[index]
@@ -394,7 +361,6 @@ func _dispatch(act: Dictionary, qty: int) -> void:
 
 
 func _open_amount_dialog(item_id: int, kind: String) -> void:
-	# Simple inline prompt via ConfirmationDialog; matches the trade panel pattern.
 	var dlg := ConfirmationDialog.new()
 	dlg.title = "Withdraw amount"
 	dlg.ok_button_text = "OK"
@@ -412,7 +378,9 @@ func _open_amount_dialog(item_id: int, kind: String) -> void:
 	le.grab_focus()
 
 
-# ---------- Toggle handlers ----------
+# ============================================================
+# Cert + Swap
+# ============================================================
 
 func _on_cert_toggled(pressed: bool) -> void:
 	Bank.cert_mode = pressed
@@ -420,14 +388,47 @@ func _on_cert_toggled(pressed: bool) -> void:
 		Network.send_bank_cert_mode(Bank.session_id, pressed)
 
 
+func _on_cert_hover_enter() -> void:
+	_hover_label.custom_minimum_size = Vector2(CERT_HOVER_WIDTH, 0)
+	_hover_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_hover_label.text = _text("cert_hover")
+	_hover_panel.visible = true
+	_update_hover_position()
+
+
+func _on_cert_hover_exit() -> void:
+	_hover_label.autowrap_mode = TextServer.AUTOWRAP_OFF
+	_hover_label.custom_minimum_size = Vector2(60, 0)
+	_hover_panel.visible = false
+
+
+func _on_swap_pressed() -> void:
+	_swap_mode = not _swap_mode
+	Bank.insert_mode = not _swap_mode
+	_swap_btn.text = _text("swap_mode") if _swap_mode else _text("insert_mode")
+	_update_swap_button_style()
+
+
+func _update_swap_button_style() -> void:
+	if _swap_btn == null: return
+	var base := SWAP_BG if _swap_mode else INSERT_BG
+	_swap_btn.add_theme_stylebox_override("normal", _btn_style(base))
+	_swap_btn.add_theme_stylebox_override("hover", _btn_style(base.lightened(0.12)))
+	_swap_btn.add_theme_stylebox_override("pressed", _btn_style(base.darkened(0.12)))
+
+
 func _on_close_pressed() -> void:
 	if Bank.is_active():
 		Network.send_bank_close(Bank.session_id)
 
 
-# ---------- Hover ----------
+# ============================================================
+# Slot hover
+# ============================================================
 
 func _on_slot_hover(entry: Dictionary, _from_bank: bool) -> void:
+	_hover_label.autowrap_mode = TextServer.AUTOWRAP_OFF
+	_hover_label.custom_minimum_size = Vector2(60, 0)
 	var name_text := str(entry.get("display", ""))
 	if name_text.is_empty():
 		name_text = "Item %d" % int(entry.get("item_id", 0))
@@ -450,7 +451,9 @@ func _update_hover_position() -> void:
 	_hover_panel.position = Vector2i(pos)
 
 
-# ---------- Helpers ----------
+# ============================================================
+# Helpers
+# ============================================================
 
 func _text(key: String, params: Dictionary = {}) -> String:
 	return Texts.get_text("game.bank." + key, params)
@@ -476,9 +479,6 @@ func _make_mode_button(text: String) -> Button:
 	var btn := Button.new()
 	btn.text = text
 	btn.focus_mode = Control.FOCUS_NONE
-	btn.add_theme_stylebox_override("normal", _btn_style(Color(0.18, 0.18, 0.18)))
-	btn.add_theme_stylebox_override("hover", _btn_style(Color(0.24, 0.24, 0.24)))
-	btn.add_theme_stylebox_override("pressed", _btn_style(Color(0.18, 0.18, 0.18)))
 	btn.add_theme_color_override("font_color", Color.WHITE)
 	btn.add_theme_color_override("font_hover_color", Color.WHITE)
 	btn.add_theme_color_override("font_pressed_color", Color.WHITE)
