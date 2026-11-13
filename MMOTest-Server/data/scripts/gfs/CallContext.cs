@@ -17,4 +17,18 @@ public sealed class CallContext
 
     public Action<string, Dictionary<string, object>>? RunScript { get; set; }
     public Func<string, SuiteNode?>? TaskLookup { get; set; }
+
+    // Recipe-context state.
+    public bool IsRecipeContext { get; set; }
+    public bool RecipeFailed { get; set; }
+    public List<(int ItemId, int Quantity)> RecipeConsume { get; } = new();
+    public List<(int ItemId, int Quantity)> RecipeOutput { get; } = new();
+    public Dictionary<string, List<AstNode>> RecipeFailMessages { get; } = new();
+    public Dictionary<string, List<AstNode>> RecipeSuccessMessages { get; } = new();
+
+    // Resolvers, wired by the caller at execution time. For [recipe] scripts:
+    //   ResolveIdent: "item_X" -> item id, "level_X" -> player skill level, else null
+    //   CountItemInInventory: item id -> total quantity across the player's inventory
+    public Func<string, object?>? ResolveIdent { get; set; }
+    public Func<int, int>? CountItemInInventory { get; set; }
 }

@@ -55,4 +55,8 @@ public static class ErrorKeys
     public const string BankNothingToWithdraw = "bank.error.nothing_to_withdraw";
     public const string BankSlotInvalid  = "bank.error.slot_invalid";
     public const string BankCancelInterrupted = "bank.cancel.interrupted";
+    
+    // ---------- Recipe ----------
+    public const string RecipeNothingHappened  = "recipe.error.nothing_happened";
+    public const string RecipeInventoryFull    = "recipe.error.inventory_full";
 }

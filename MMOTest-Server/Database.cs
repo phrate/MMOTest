@@ -8,6 +8,12 @@ using Microsoft.Data.Sqlite;
 namespace MMOTest.Server;
 
 public record PlayerRecord(long Id, string Username, string PasswordHash, bool IsAdmin);
+public record RecipeRecord(
+    long Id,
+    string Slug,
+    string Pair,
+    string ScriptPath,
+    Dictionary<string, int> XpRewards);
 
 public class Database
 {
@@ -95,7 +101,9 @@ public class Database
                 ether       INTEGER NOT NULL DEFAULT 0 CHECK (ether       >= 0),
                 woodcutting INTEGER NOT NULL DEFAULT 0 CHECK (woodcutting >= 0),
                 mining      INTEGER NOT NULL DEFAULT 0 CHECK (mining      >= 0),
-                fishing     INTEGER NOT NULL DEFAULT 0 CHECK (fishing     >= 0)
+                fishing     INTEGER NOT NULL DEFAULT 0 CHECK (fishing     >= 0),
+                medicine    INTEGER NOT NULL DEFAULT 0 CHECK (medicine    >= 0),
+                engineering INTEGER NOT NULL DEFAULT 0 CHECK (engineering >= 0)
             );");
 
         Exec(conn, @"
@@ -135,6 +143,10 @@ public class Database
                 max_mining      INTEGER NOT NULL DEFAULT 1 CHECK (max_mining      >= 1),
                 fishing         INTEGER NOT NULL DEFAULT 1 CHECK (fishing         >= 0),
                 max_fishing     INTEGER NOT NULL DEFAULT 1 CHECK (max_fishing     >= 1),
+                medicine        INTEGER NOT NULL DEFAULT 1 CHECK (medicine        >= 0),
+                max_medicine    INTEGER NOT NULL DEFAULT 1 CHECK (max_medicine    >= 1),
+                engineering     INTEGER NOT NULL DEFAULT 1 CHECK (engineering     >= 0),
+                max_engineering INTEGER NOT NULL DEFAULT 1 CHECK (max_engineering >= 1),
                 created_at      TEXT    NOT NULL DEFAULT (datetime('now')),
                 updated_at      TEXT    NOT NULL DEFAULT (datetime('now'))
             );");
@@ -280,6 +292,18 @@ public class Database
             slug_id   TEXT    NOT NULL UNIQUE,
             item_bag  TEXT    NOT NULL DEFAULT '{}'
         );");
+    
+        Exec(conn, @"
+        CREATE TABLE IF NOT EXISTS recipes (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            slug_id     TEXT    NOT NULL UNIQUE,
+            pair        TEXT    NOT NULL UNIQUE,
+            script      TEXT    NOT NULL,
+            xp_rewards  TEXT    NOT NULL DEFAULT '{}',
+            created_at  TEXT    NOT NULL DEFAULT (datetime('now'))
+        );");
+
+        Exec(conn, "CREATE INDEX IF NOT EXISTS idx_recipes_pair ON recipes (pair);");
 
         // Auto-add columns for older DBs that predate newer schema fields.
         EnsureColumn(conn, "players", "is_admin",         "INTEGER NOT NULL DEFAULT 0 CHECK (is_admin IN (0, 1))");
@@ -313,6 +337,12 @@ public class Database
         EnsureColumn(conn, "items",   "non_certable",  "INTEGER NOT NULL DEFAULT 0 CHECK (non_certable IN (0, 1))");
         EnsureColumn(conn, "items",   "non_bankable",  "INTEGER NOT NULL DEFAULT 0 CHECK (non_bankable IN (0, 1))");
         EnsureColumn(conn, "npcs",    "is_banker",     "INTEGER NOT NULL DEFAULT 0 CHECK (is_banker IN (0, 1))");
+        EnsureColumn(conn, "skill_levels", "medicine",        "INTEGER NOT NULL DEFAULT 1 CHECK (medicine        >= 0)");
+        EnsureColumn(conn, "skill_levels", "max_medicine",    "INTEGER NOT NULL DEFAULT 1 CHECK (max_medicine    >= 1)");
+        EnsureColumn(conn, "skill_levels", "engineering",     "INTEGER NOT NULL DEFAULT 1 CHECK (engineering     >= 0)");
+        EnsureColumn(conn, "skill_levels", "max_engineering", "INTEGER NOT NULL DEFAULT 1 CHECK (max_engineering >= 1)");
+        EnsureColumn(conn, "player_xp",    "medicine",        "INTEGER NOT NULL DEFAULT 0 CHECK (medicine        >= 0)");
+        EnsureColumn(conn, "player_xp",    "engineering",     "INTEGER NOT NULL DEFAULT 0 CHECK (engineering     >= 0)");
 
         EnsureCertItems(conn);
 
@@ -651,10 +681,14 @@ public class Database
         cmd.Transaction = tx;
         cmd.CommandText = @"
             INSERT INTO skill_levels
-                (player_id, woodcutting, max_woodcutting, mining, max_mining, fishing, max_fishing)
-            VALUES
-                ($pid, 1, 1, 1, 1, 1, 1)
-            RETURNING id;";
+    (player_id,
+     woodcutting, max_woodcutting, mining, max_mining, fishing, max_fishing,
+     medicine, max_medicine, engineering, max_engineering)
+VALUES
+    ($pid,
+     1, 1, 1, 1, 1, 1,
+     1, 1, 1, 1)
+RETURNING id;";
         cmd.Parameters.AddWithValue("$pid", playerId);
         return (long)cmd.ExecuteScalar();
     }
@@ -671,9 +705,10 @@ public class Database
             read.Transaction = tx;
             read.CommandText = @"
                 SELECT c.max_hitpoints, c.max_accuracy, c.max_strength, c.max_defence,
-                       c.max_ether, s.max_woodcutting, s.max_mining, s.max_fishing
-                FROM combat_levels c CROSS JOIN skill_levels s
-                WHERE c.id = $combatId AND s.id = $skillId;";
+       c.max_ether, s.max_woodcutting, s.max_mining, s.max_fishing,
+       s.max_medicine, s.max_engineering
+FROM combat_levels c CROSS JOIN skill_levels s
+WHERE c.id = $combatId AND s.id = $skillId;";
             read.Parameters.AddWithValue("$combatId", combatId);
             read.Parameters.AddWithValue("$skillId", skillId);
             using var reader = read.ExecuteReader();
@@ -688,10 +723,12 @@ public class Database
         insert.Transaction = tx;
         insert.CommandText = @"
             INSERT INTO player_xp
-                (hitpoints, accuracy, strength, defence, ether, woodcutting, mining, fishing)
-            VALUES
-                ($hp, $accuracy, $strength, $defence, $ether, $woodcutting, $mining, $fishing)
-            RETURNING id;";
+    (hitpoints, accuracy, strength, defence, ether,
+     woodcutting, mining, fishing, medicine, engineering)
+VALUES
+    ($hp, $accuracy, $strength, $defence, $ether,
+     $woodcutting, $mining, $fishing, $medicine, $engineering)
+RETURNING id;";
         insert.Parameters.AddWithValue("$hp", xp[0]);
         insert.Parameters.AddWithValue("$accuracy", xp[1]);
         insert.Parameters.AddWithValue("$strength", xp[2]);
@@ -700,6 +737,8 @@ public class Database
         insert.Parameters.AddWithValue("$woodcutting", xp[5]);
         insert.Parameters.AddWithValue("$mining", xp[6]);
         insert.Parameters.AddWithValue("$fishing", xp[7]);
+        insert.Parameters.AddWithValue("$medicine", xp[8]);
+        insert.Parameters.AddWithValue("$engineering", xp[9]);
         return (long)insert.ExecuteScalar();
     }
 
@@ -998,6 +1037,71 @@ public Task SetPlayerSidAsync(long playerId, long sid) => Task.Run(() =>
         }
     });
 
+public Task AwardSkillXpAsync(long playerId, string skillId, long tenths, int newLevel)
+{
+    string col = skillId switch
+    {
+        "hitpoints"   => "hitpoints",
+        "accuracy"    => "accuracy",
+        "strength"    => "strength",
+        "defence"     => "defence",
+        "ether"       => "ether",
+        "woodcutting" => "woodcutting",
+        "mining"      => "mining",
+        "fishing"     => "fishing",
+        "medicine"    => "medicine",
+        "engineering" => "engineering",
+        _ => null
+    };
+    if (col == null || tenths <= 0) return Task.CompletedTask;
+    bool isCombat = skillId is "hitpoints" or "accuracy" or "strength" or "defence" or "ether";
+
+    return Task.Run(() =>
+    {
+        using var conn = Open();
+        using var tx = conn.BeginTransaction();
+        try
+        {
+            using (var xp = conn.CreateCommand())
+            {
+                xp.Transaction = tx;
+                xp.CommandText = $"UPDATE player_xp SET {col} = {col} + $t WHERE id = (SELECT xp_id FROM players WHERE id = $pid);";
+                xp.Parameters.AddWithValue("$t", tenths);
+                xp.Parameters.AddWithValue("$pid", playerId);
+                xp.ExecuteNonQuery();
+            }
+            using (var lv = conn.CreateCommand())
+            {
+                lv.Transaction = tx;
+                if (isCombat)
+                {
+                    lv.CommandText = $@"
+                        UPDATE combat_levels SET
+                            {col} = MAX({col}, $level),
+                            max_{col} = MAX(max_{col}, $level)
+                        WHERE id = (SELECT combat_levels_id FROM players WHERE id = $pid);";
+                }
+                else
+                {
+                    lv.CommandText = $@"
+                        UPDATE skill_levels SET
+                            {col} = MAX({col}, $level),
+                            max_{col} = MAX(max_{col}, $level)
+                        WHERE player_id = $pid;";
+                }
+                lv.Parameters.AddWithValue("$level", newLevel);
+                lv.Parameters.AddWithValue("$pid", playerId);
+                lv.ExecuteNonQuery();
+            }
+            tx.Commit();
+        }
+        catch
+        {
+            try { tx.Rollback(); } catch { }
+            throw;
+        }
+    });
+}
 public Task<long[]?> GetInventorySlotsAsync(long playerId) => Task.Run(() =>
 {
     using var conn = Open();
@@ -1119,6 +1223,38 @@ public Task<List<ItemMeta>> GetAllItemsSync() => Task.Run(() =>
             r.GetInt64(8) != 0, r.GetInt64(9) != 0));
     return list;
 });
+
+public List<RecipeRecord> GetAllRecipesSync()
+{
+    var result = new List<RecipeRecord>();
+    using var conn = Open();
+    using var cmd = conn.CreateCommand();
+    cmd.CommandText = "SELECT id, slug_id, pair, script, xp_rewards FROM recipes;";
+    using var r = cmd.ExecuteReader();
+    while (r.Read())
+    {
+        var xpDict = new Dictionary<string, int>();
+        string xpJson = r.IsDBNull(4) ? "{}" : r.GetString(4);
+        try
+        {
+            using var doc = System.Text.Json.JsonDocument.Parse(xpJson);
+            foreach (var prop in doc.RootElement.EnumerateObject())
+                if (prop.Value.TryGetInt32(out var v) && v > 0)
+                    xpDict[prop.Name] = v;
+        }
+        catch (System.Text.Json.JsonException e)
+        {
+            GD.PrintErr($"[Database] Recipe '{r.GetString(1)}' xp_rewards parse error: {e.Message}");
+        }
+        result.Add(new RecipeRecord(
+            r.GetInt64(0),
+            r.GetString(1),
+            r.GetString(2),
+            r.GetString(3),
+            xpDict));
+    }
+    return result;
+}
 
 public Dictionary<string, Dictionary<string, (int Min, int Max)>> GetAllLootTablesSync()
 {
@@ -1250,8 +1386,9 @@ public Dictionary<string, (int Min, int Max)> GetAllCreditsLootSync()
     });
 
     /// <summary>Skill ids in display order, with combat skills before gathering skills.</summary>
-    public static readonly string[] SkillIds =
-        { "hitpoints", "accuracy", "strength", "defence", "ether", "woodcutting", "mining", "fishing" };
+public static readonly string[] SkillIds =
+    { "hitpoints", "accuracy", "strength", "defence", "ether",
+      "woodcutting", "mining", "fishing", "medicine", "engineering" };
 
     public record SkillLevel(string Id, int Level, int Max, long CurrentXpTenths);
 
@@ -1267,7 +1404,9 @@ public Dictionary<string, (int Min, int Max)> GetAllCreditsLootSync()
                    c.ether, c.max_ether, COALESCE(x.ether, 0),
                    s.woodcutting, s.max_woodcutting, COALESCE(x.woodcutting, 0),
                    s.mining, s.max_mining, COALESCE(x.mining, 0),
-                   s.fishing, s.max_fishing, COALESCE(x.fishing, 0)
+                   s.fishing, s.max_fishing, COALESCE(x.fishing, 0),
+                   s.medicine, s.max_medicine, COALESCE(x.medicine, 0),
+                   s.engineering, s.max_engineering, COALESCE(x.engineering, 0)
             FROM players p
             JOIN combat_levels c ON p.combat_levels_id = c.id
             JOIN skill_levels s ON p.skill_levels_id = s.id

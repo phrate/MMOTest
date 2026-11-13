@@ -84,10 +84,10 @@ func _make_action_row(text: String, index: int) -> Control:
 	var row := HBoxContainer.new()
 	row.add_theme_constant_override("separation", 0)
 	row.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	row.add_child(_make_spacer(2.0))  # small padding so text isn't flush with the border
-	row.add_child(_make_label(verb, UIStyle.VERB_COLOR))
+	row.add_child(_make_spacer(2.0))
+	row.add_child(_make_label(verb, UIStyle.TEXT_COLOR))
 	if not rest.is_empty():
-		row.add_child(_make_label(" " + rest, UIStyle.TEXT_COLOR))
+		row.add_child(_make_label(" " + rest, UIStyle.ENTITY_COLOR))
 	row.add_child(_make_spacer(2.0))
 	item.add_child(row)
 

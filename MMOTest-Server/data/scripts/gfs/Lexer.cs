@@ -135,6 +135,7 @@ public sealed class Lexer
             case ':': Advance(); Add(TokenKind.COLON, ":"); return;
             case ',': Advance(); Add(TokenKind.COMMA, ","); return;
             case '.': Advance(); Add(TokenKind.DOT, "."); return;
+            case '/': Advance(); Add(TokenKind.SLASH, "/"); return;
         }
 
         throw new Exception($"Unexpected char '{c}' at {_line}:{_col}");
@@ -235,6 +236,11 @@ public sealed class Lexer
             "anim" => TokenKind.ANIM,
             "topic" => TokenKind.TOPIC,
             "say" => TokenKind.SAY,
+            "require"     => TokenKind.REQUIRE,
+            "fail"        => TokenKind.FAIL,
+            "success"     => TokenKind.SUCCESS,
+            "chance"      => TokenKind.CHANCE,
+            "chance_fail" => TokenKind.CHANCE_FAIL,
             _ => TokenKind.IDENT,
         };
         _tokens.Add(new Token(kind, text, _line, _col));

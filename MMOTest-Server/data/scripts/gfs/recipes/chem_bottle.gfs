@@ -1,0 +1,43 @@
+[server]
+[recipe]
+
+// DeepSeek note on this script for clarity:
+// If a player is at least level 5 in Medicine, let them combine
+// an empty chem bottle with 50 (stackable) gray pills to make
+// a chem bottle.
+
+
+// Recipe for "Chem Bottle"
+// Needs items:
+// - 1 "Empty Chem Bottle" id: item_chem_bottle_empty
+// - 50 "Gray Pills" id: item_pill_gray	<-- this is a stackable item
+// Requires levels:
+// - 5 "medicine"	<-- Player needs level 5 or higher in chemcraft to use this recipe
+// Gives:
+// - 1 "Chem Bottle" id: item_chem_bottle
+
+REQUIRE:
+	ITEMS:
+		item_chem_bottle_empty, 1
+		item_pill_gray, 50
+
+	LEVELS:
+		level_medicine, 5
+
+FAIL:
+	MESSAGES:
+		BAD_QUANTITIES:
+			chat local "You do not have enough pills to fill the bottle."
+		
+		BAD_LEVELS:
+			chat local "Your level in Medicine is not high enough to do this."
+
+SUCCESS:
+	consume = [
+		item_chem_bottle_empty, 1
+		item_pill_gray, 50
+	]
+	
+	output = [
+		item_chem_bottle, 1
+	]

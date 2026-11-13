@@ -13,19 +13,65 @@ var _context_actions: Array = []
 var _overlay_layer: CanvasLayer
 var _slot_hover_panel: PanelContainer
 var _slot_hover_label: RichTextLabel
+var _using_slot: int = -1
 
 
 func _ready() -> void:
 	_build_ui()
 	_build_action_menu()
-	Inventory.changed.connect(_refresh)
-	Trade.state_changed.connect(_refresh)
-	Bank.state_changed.connect(_refresh)
+	Inventory.changed.connect(_on_inventory_changed)
+	Trade.state_changed.connect(_on_mode_state_changed)
+	Bank.state_changed.connect(_on_mode_state_changed)
 	_refresh()
 
 
 func _process(_delta: float) -> void:
 	_update_slot_hover()
+
+
+func _input(event: InputEvent) -> void:
+	if _using_slot < 0: return
+	if not (event is InputEventMouseButton and event.pressed): return
+
+	if event.button_index == MOUSE_BUTTON_LEFT:
+		for i in _buttons.size():
+			var btn: InventorySlot = _buttons[i]
+			if not is_instance_valid(btn): continue
+			if btn.get_global_rect().has_point(event.position):
+				if i == _using_slot:
+					_cancel_use_mode()
+					get_viewport().set_input_as_handled()
+					return
+				var target: Dictionary = Inventory.get_slot(i)
+				if target.is_empty():
+					_cancel_use_mode()
+					get_viewport().set_input_as_handled()
+					return
+				Network.send_combine_attempt(_using_slot, i)
+				_cancel_use_mode()
+				get_viewport().set_input_as_handled()
+				return
+		# Click outside inventory: cancel use-mode and swallow the click.
+		_cancel_use_mode()
+		get_viewport().set_input_as_handled()
+		return
+
+	if event.button_index == MOUSE_BUTTON_RIGHT:
+		for i in _buttons.size():
+			var btn2: InventorySlot = _buttons[i]
+			if not is_instance_valid(btn2): continue
+			if btn2.get_global_rect().has_point(event.position):
+				return
+		_cancel_use_mode()
+		get_viewport().set_input_as_handled()
+		return
+
+
+func _unhandled_input(event: InputEvent) -> void:
+	if _using_slot < 0: return
+	if event is InputEventKey and event.pressed and not event.echo and event.keycode == KEY_ESCAPE:
+		_cancel_use_mode()
+		get_viewport().set_input_as_handled()
 
 
 # ---------- UI construction ----------
@@ -186,6 +232,10 @@ func _update_slot_hover() -> void:
 			_slot_hover_panel.visible = false
 			return
 
+	if _using_slot >= 0:
+		_update_use_mode_hover()
+		return
+
 	if get_viewport().gui_is_dragging():
 		_slot_hover_panel.visible = false
 		return
@@ -295,6 +345,8 @@ func _on_swap_requested(from_slot: int, to_slot: int) -> void:
 func _on_slot_input(event: InputEvent, slot_index: int) -> void:
 	if event is InputEventMouseButton and event.pressed:
 		if event.button_index == MOUSE_BUTTON_RIGHT:
+			if _using_slot >= 0:
+				_cancel_use_mode()
 			if Bank.is_active():
 				_show_bank_deposit_menu(slot_index, get_viewport().get_mouse_position())
 			elif Trade.is_active():
@@ -361,7 +413,6 @@ func _show_context_menu(slot_index: int, pos: Vector2) -> void:
 func _on_action_menu_selected(index: int) -> void:
 	if index < 0 or index >= _context_actions.size(): return
 	var act: Dictionary = _context_actions[index]
-	
 	if str(act.get("kind", "")) == "bank_deposit":
 		var qty := int(act.get("qty", 0))
 		var item_id := int(act.get("item_id", 0))
@@ -370,14 +421,20 @@ func _on_action_menu_selected(index: int) -> void:
 			return
 		Network.send_bank_deposit(Bank.session_id, item_id, qty)
 		return
-	
 	if str(act.get("kind", "")) == "trade_offer":
-		var qty := int(act.get("qty", 0))
-		var item_id := int(act.get("item_id", 0))
-		if qty == -2:
-			Trade.offer_amount_requested.emit(item_id)
+		var qty2 := int(act.get("qty", 0))
+		var item_id2 := int(act.get("item_id", 0))
+		if qty2 == -2:
+			Trade.offer_amount_requested.emit(item_id2)
 			return
-		Network.send_trade_offer_add(Trade.session_id, item_id, qty)
+		Network.send_trade_offer_add(Trade.session_id, item_id2, qty2)
+		return
+	var id := str(act.get("id", ""))
+	if id == "use":
+		var args: Dictionary = act.get("args", {})
+		var slot := int(args.get("slot", -1))
+		if slot >= 0:
+			_enter_use_mode(slot)
 		return
 	var script_path: String = str(act.get("script", ""))
 	if script_path.is_empty(): return
@@ -411,6 +468,9 @@ func _fire_primary(slot_index: int) -> void:
 	var actions: Array = Tooltips.build_actions(key, _item_system_vars(data))
 	if actions.is_empty(): return
 	var action: Dictionary = actions[0]
+	if str(action.get("id", "")) == "use":
+		_enter_use_mode(slot_index)
+		return
 	var script_path: String = str(action.get("script", ""))
 	if script_path.is_empty(): return
 	Network.run_action(script_path, action.get("args", {}), 0)
@@ -432,3 +492,72 @@ func _open_bank_deposit_amount(item_id: int) -> void:
 	add_child(dlg)
 	dlg.popup_centered()
 	le.grab_focus()
+
+
+func _on_inventory_changed() -> void:
+	if _using_slot >= 0:
+		if Inventory.get_slot(_using_slot).is_empty():
+			_cancel_use_mode()
+	_refresh()
+
+
+func _on_mode_state_changed() -> void:
+	if _using_slot >= 0 and (Bank.is_active() or Trade.is_active()):
+		_cancel_use_mode()
+	_refresh()
+
+
+func _enter_use_mode(slot_index: int) -> void:
+	var data: Dictionary = Inventory.get_slot(slot_index)
+	if data.is_empty(): return
+	_using_slot = slot_index
+	_update_use_mode_hover()
+
+
+func _cancel_use_mode() -> void:
+	_using_slot = -1
+	_slot_hover_panel.visible = false
+
+
+func _update_use_mode_hover() -> void:
+	if _using_slot < 0: return
+	var source: Dictionary = Inventory.get_slot(_using_slot)
+	if source.is_empty():
+		_cancel_use_mode()
+		return
+
+	var source_name := str(source.get("display", "?"))
+	var mouse := get_viewport().get_mouse_position()
+
+	var hovered_slot := -1
+	for i in _buttons.size():
+		var btn: InventorySlot = _buttons[i]
+		if not is_instance_valid(btn): continue
+		if btn.get_global_rect().has_point(mouse):
+			hovered_slot = i
+			break
+
+	var target_name := ""
+	if hovered_slot >= 0 and hovered_slot != _using_slot:
+		var target: Dictionary = Inventory.get_slot(hovered_slot)
+		if not target.is_empty():
+			target_name = str(target.get("display", ""))
+
+	var blue := UIStyle.ENTITY_COLOR.to_html(false)
+	if target_name.is_empty():
+		_slot_hover_label.text = "Use [color=%s]%s[/color] on.." % [blue, source_name]
+	else:
+		_slot_hover_label.text = "Use [color=%s]%s[/color] on [color=%s]%s[/color]" % [blue, source_name, blue, target_name]
+
+	_slot_hover_panel.reset_size()
+	var vp := get_viewport().get_visible_rect().size
+	var pos := mouse + Vector2(16, -_slot_hover_panel.size.y - 8)
+	pos.x = min(pos.x, vp.x - _slot_hover_panel.size.x - 4)
+	pos.y = max(pos.y, 4.0)
+	_slot_hover_panel.position = Vector2i(pos)
+	_slot_hover_panel.visible = true
+
+
+func tab_deselected() -> void:
+	if _using_slot >= 0:
+		_cancel_use_mode()

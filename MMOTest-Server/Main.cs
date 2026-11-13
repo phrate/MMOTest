@@ -166,6 +166,7 @@ public partial class Main : Node
 		if (DiagPathfinding) enabledGroups.Add("diag_pathfinding");
 		if (DiagChat)        enabledGroups.Add("diag_chat");
 		if (DiagNpc)         enabledGroups.Add("diag_npc");
+		if (DiagRecipe)      enabledGroups.Add("diag_recipe");
 		Diag.Configure(DiagVerbose, enabledGroups);
 		GD.Print($"[Server] Diagnostics: verbose={DiagVerbose}, enabled=[{string.Join(",", enabledGroups)}]");
 		
@@ -256,6 +257,7 @@ public partial class Main : Node
 			Gfs.Utils.BankUtils.Register(_gfsFns, this);
 			_perTick = new Gfs.PerTickManager(_gfsFns);
 			_gfs.ScriptsChanged += OnGfsScriptsChanged;
+			LoadRecipes();
 
 			_npcRender = new NpcRenderManager(new[]
 			{
@@ -430,6 +432,7 @@ public partial class Main : Node
 		ProcessTradeQueues();
 		ProcessTradeIntents();
 		ProcessBankIntents();
+		ProcessRecipeIntents();
 
 		// 2c. Combat
 		ProcessHostility();
@@ -491,70 +494,70 @@ public partial class Main : Node
 
 
 	private (PlayerPosition Endpoint, bool Finished, Vector3? Waypoint, float WaypointYaw)
-    StepTowardPath(PlayerPosition current, List<Vector2I> path)
+	StepTowardPath(PlayerPosition current, List<Vector2I> path)
 {
-    float remaining = WalkSpeed * (float)TickIntervalSeconds;
-    float x = current.X;
-    float z = current.Z;
-    float yaw = current.Yaw;
+	float remaining = WalkSpeed * (float)TickIntervalSeconds;
+	float x = current.X;
+	float z = current.Z;
+	float yaw = current.Yaw;
 
-    Vector3? lastWaypoint = null;
-    float lastWaypointYaw = 0f;
-    bool pastFirstIteration = false;
+	Vector3? lastWaypoint = null;
+	float lastWaypointYaw = 0f;
+	bool pastFirstIteration = false;
 
-    while (remaining > 0.0001f && path.Count > 0)
-    {
-        var target = path[0];
-        float dx = target.X - x;
-        float dz = target.Y - z;
-        float dist = MathF.Sqrt(dx * dx + dz * dz);
+	while (remaining > 0.0001f && path.Count > 0)
+	{
+		var target = path[0];
+		float dx = target.X - x;
+		float dz = target.Y - z;
+		float dist = MathF.Sqrt(dx * dx + dz * dz);
 
-        if (dist < 0.0001f)
-        {
-            path.RemoveAt(0);
-            continue;
-        }
+		if (dist < 0.0001f)
+		{
+			path.RemoveAt(0);
+			continue;
+		}
 
-        float newYaw = MathF.Atan2(-dx, -dz);
-        newYaw = MathF.Round(newYaw / (MathF.PI / 4f)) * (MathF.PI / 4f);
+		float newYaw = MathF.Atan2(-dx, -dz);
+		newYaw = MathF.Round(newYaw / (MathF.PI / 4f)) * (MathF.PI / 4f);
 
-        if (pastFirstIteration && MathF.Abs(yaw - newYaw) > 0.001f)
-        {
-            // The corner is the tile the character just reached, which is the
-            // current x/z — not `target`, which is the next tile to head for.
-            // Sending the next tile as the waypoint aims the client at a point
-            // past the tick endpoint and produces a wide slide.
-            int cx = (int)MathF.Round(x);
-            int cz = (int)MathF.Round(z);
-            var wInfo = GetTileInfo(cx, cz);
-            lastWaypoint = new Vector3(cx, wInfo.Z, cz);
-            lastWaypointYaw = yaw;
-        }
+		if (pastFirstIteration && MathF.Abs(yaw - newYaw) > 0.001f)
+		{
+			// The corner is the tile the character just reached, which is the
+			// current x/z — not `target`, which is the next tile to head for.
+			// Sending the next tile as the waypoint aims the client at a point
+			// past the tick endpoint and produces a wide slide.
+			int cx = (int)MathF.Round(x);
+			int cz = (int)MathF.Round(z);
+			var wInfo = GetTileInfo(cx, cz);
+			lastWaypoint = new Vector3(cx, wInfo.Z, cz);
+			lastWaypointYaw = yaw;
+		}
 
-        if (dist <= remaining)
-        {
-            x = target.X;
-            z = target.Y;
-            remaining -= dist;
-            path.RemoveAt(0);
-        }
-        else
-        {
-            float ratio = remaining / dist;
-            x += dx * ratio;
-            z += dz * ratio;
-            remaining = 0;
-        }
-        yaw = newYaw;
-        pastFirstIteration = true;
-    }
+		if (dist <= remaining)
+		{
+			x = target.X;
+			z = target.Y;
+			remaining -= dist;
+			path.RemoveAt(0);
+		}
+		else
+		{
+			float ratio = remaining / dist;
+			x += dx * ratio;
+			z += dz * ratio;
+			remaining = 0;
+		}
+		yaw = newYaw;
+		pastFirstIteration = true;
+	}
 
-    int tileX = (int)MathF.Round(x);
-    int tileY = (int)MathF.Round(z);
-    var tinfo = GetTileInfo(tileX, tileY);
-    var endpoint = new PlayerPosition(x, tinfo.Z, z, yaw);
-    bool finished = path.Count == 0;
-    return (endpoint, finished, lastWaypoint, lastWaypointYaw);
+	int tileX = (int)MathF.Round(x);
+	int tileY = (int)MathF.Round(z);
+	var tinfo = GetTileInfo(tileX, tileY);
+	var endpoint = new PlayerPosition(x, tinfo.Z, z, yaw);
+	bool finished = path.Count == 0;
+	return (endpoint, finished, lastWaypoint, lastWaypointYaw);
 }
 
 	private void StepNpcMovement(ActiveNpc npc)
@@ -678,6 +681,7 @@ public partial class Main : Node
 	[Export] public bool DiagPathfinding { get; set; } = false;
 	[Export] public bool DiagChat { get; set; } = false;
 	[Export] public bool DiagNpc { get; set; } = false;
+	[Export] public bool DiagRecipe { get; set; } = false;
 
 	// ---------- Connection events ----------
 
@@ -720,6 +724,7 @@ public partial class Main : Node
 			_bankCapacityByPlayer.Remove(session.PlayerId);
 			_pendingBank.Remove(session.PlayerId);
 			_pendingBankIntents.Remove(session.PlayerId);
+			_pendingRecipeIntents.Remove(session.PlayerId);
 
 			if (_positions.TryGetValue(session.PlayerId, out PlayerPosition pos))
 			{
@@ -792,6 +797,7 @@ public partial class Main : Node
 				case "bank_move": HandleBankMove(peerId, root); break;
 				case "bank_close": HandleBankClose(peerId, root); break;
 				case "bank_cert_mode": HandleBankCertMode(peerId, root); break;
+				case "combine_attempt": HandleCombineAttempt(peerId, root); break;
 				default:
 					GD.PrintErr($"[Server] Unknown message type '{type}' from {peerId}");
 					break;
@@ -1084,7 +1090,7 @@ public partial class Main : Node
 	CancelDialogueForPlayer(session.PlayerId, "");
 	CancelPendingTalkFor(session.PlayerId);
 	CancelBankForPlayer(session.PlayerId, "");        // silent
-    CancelPendingBankFor(session.PlayerId);
+	CancelPendingBankFor(session.PlayerId);
 	_pendingEngage.Remove(session.PlayerId);
 	_pendingPickup.Remove(session.PlayerId);
 
@@ -2047,7 +2053,7 @@ internal void RequestEngage(long playerId, long npcId)
 	CancelDialogueForPlayer(playerId, ErrorKeys.DialogueCancelInterrupted);
 	CancelPendingTalkFor(playerId);
 	CancelBankForPlayer(playerId, ErrorKeys.BankCancelInterrupted);
-    CancelPendingBankFor(playerId);
+	CancelPendingBankFor(playerId);
 
 	if (ArePositionsAdjacent(playerId, npc))
 	{
@@ -2100,7 +2106,7 @@ internal void EngageNpc(long playerId, long npcId, bool initiatedByPlayer = true
 	CancelDialogueForPlayer(playerId, ErrorKeys.DialogueCancelInterrupted);
 	CancelPendingTalkFor(playerId);
 	CancelBankForPlayer(playerId, ErrorKeys.BankCancelInterrupted);
-    CancelPendingBankFor(playerId);
+	CancelPendingBankFor(playerId);
 
 	var pair = new CombatPair
 	{

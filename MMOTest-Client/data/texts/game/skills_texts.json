@@ -7,7 +7,9 @@
 		"ether": "Ether",
 		"woodcutting": "Woodcutting",
 		"mining": "Mining",
-		"fishing": "Fishing"
+		"fishing": "Fishing",
+		"medicine": "Medicine",
+		"engineering": "Engineering"
 	},
 	"hover": "{name}\nLevel {level} / {max}",
 	"xp": "XP: {current_xp}",

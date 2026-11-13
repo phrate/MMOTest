@@ -9,12 +9,13 @@ public enum TokenKind
     ASSIGN, EQ, NEQ, LT, LTE, GT, GTE,
     LBRACKET, RBRACKET, LBRACE, RBRACE,
     LPAREN, RPAREN,
-    COLON, COMMA, DOT,
+    COLON, COMMA, DOT, SLASH,
     CHAT, LOCAL, PUBLIC, OVERHEAD, PRIVATE, PRIVATE_LOCAL,
     IF, ELSE, IS, NOT, EMPTY, NULL,
     TASK, RUN, SKIP, CONTINUE, CODE, ON,
     ANIM,
-    TOPIC, SAY
+    TOPIC, SAY,
+    REQUIRE, FAIL, SUCCESS, CHANCE, CHANCE_FAIL,
 }
 
 public sealed record Token(TokenKind Kind, string Text, int Line, int Col)

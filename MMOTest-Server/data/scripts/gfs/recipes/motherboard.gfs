@@ -1,0 +1,66 @@
+[server]
+[recipe]
+
+// DeepSeek note on this script for clarity:
+// This recipe requires several items, requires a level,
+// and has a special dice-roll success state
+
+
+// Recipe for "Motherboard"
+// Needs items:
+// - 1 "Soldering Iron" id: item_soldering_iron
+// - 1 "Greenboard" id: item_computer_greenboard
+// - 4 "Computer Chip" id: item_computer_chip
+// - 20 "Capacitor" id: item_computer_capacitor
+// Needs levels:
+// - 38 "engineering"
+// Gives:
+// - 1 "Motherboard" id: item_computer_motherboard
+// Special:
+// - 25% chance to only use half the capacitors if player's Engineering is >= 70
+
+REQUIRE:
+	ITEMS:
+		item_soldering_iron, 1
+		item_computer_greenboard, 1
+		item_computer_chip, 4
+		item_computer_capacitor, 20
+	
+	LEVELS:
+		engineering, 38
+
+FAIL:
+	MESSAGES:
+		BAD_ITEMS:
+			chat local "You do not have all the required items to make a motherboard."
+
+		BAD_QUANTITIES:
+			chat local "You do not have enough of the required items to make a motherboard."
+
+		BAD_LEVELS:
+			chat local "Your Engineering skill is not high enough to make a motherboard."
+
+SUCCESS:
+	consume = [
+		item_computer_greenboard, 1
+		item_computer_chip, 4
+	]	
+
+	// Special case: if player engineering >= 70, roll 25% chance to only consume 10 capacitors
+	if level_engineering >= 70:
+		CHANCE 25/100:
+			consume = [
+				item_computer_capacitor, 10
+			]
+		CHANCE_FAIL:
+			consume = [
+				item_computer_capacitor, 20
+			]
+	else:
+		consume = [
+			item_computer_capacitor, 20
+		]	
+
+	output = [
+		item_computer_motherboard, 1
+	]

@@ -11,6 +11,7 @@ public sealed class Parser
 
     public Parser(List<Token> tokens) { _tokens = tokens; }
     private bool _isDialogueSection;
+    private bool _isRecipeSection;
 
     public SuiteNode Parse()
     {
@@ -21,6 +22,8 @@ public sealed class Parser
         SkipNewlines();
         var secTok = Expect(TokenKind.SECTION);
         _isDialogueSection = secTok.Text == "dialogue";
+        _isRecipeSection = secTok.Text == "recipe";
+        
 
         SkipNewlines();
         var tags = new List<string>();
@@ -34,6 +37,18 @@ public sealed class Parser
                 throw Error($"Unknown tag <{nameTok.Text}> at {nameTok.Line}:{nameTok.Col}");
             tags.Add(nameTok.Text);
             SkipNewlines();
+        }
+
+        if (_isRecipeSection)
+        {
+            var require = ParseRequireBlock();
+            var fail = ParseFailBlock();
+            var success = ParseSuccessBlock();
+            SkipNewlines();
+            if (Peek().Kind != TokenKind.EOF)
+                throw Error($"Unexpected token after SUCCESS block at {Peek().Line}:{Peek().Col}");
+            var recipeNode = new RecipeNode(require, fail, success, secTok.Line);
+            return new SuiteNode(nsTok.Text, secTok.Text, tags, new List<AstNode>(), Recipe: recipeNode);
         }
 
         bool isTaskFile = secTok.Text == "task";
@@ -94,11 +109,14 @@ public sealed class Parser
     private AstNode ParseStatement()
     {
         var t = Peek();
+        if (_isRecipeSection && t.Kind == TokenKind.IDENT
+            && (t.Text == "consume" || t.Text == "output")
+            && Peek(1).Kind == TokenKind.ASSIGN)
+        {
+            return ParseConsumeOrOutput(t.Text == "consume");
+        }
         return t.Kind switch
         {
-            TokenKind.SAY => _isDialogueSection
-                ? ParseSay()
-                : throw Error($"Unexpected 'say' outside [dialogue] section at {t.Line}:{t.Col}"),
             TokenKind.CHAT     => ParseChat(),
             TokenKind.IF       => ParseIf(),
             TokenKind.TASK     => ParseTaskStatement(),
@@ -108,6 +126,11 @@ public sealed class Parser
             TokenKind.CODE     => ParseCode(),
             TokenKind.IDENT    => ParseIdentStatement(),
             TokenKind.ANIM     => ParseAnim(),
+            TokenKind.SAY      => _isDialogueSection
+                ? ParseSay()
+                : throw Error($"Unexpected 'say' outside [dialogue] section at {t.Line}:{t.Col}"),
+            TokenKind.CHANCE => ParseChanceStatement(),
+            TokenKind.FAIL   => ParseFailCall(),
             _ => throw Error($"Unexpected token {t.Kind} at {t.Line}:{t.Col}"),
         };
     }
@@ -656,5 +679,236 @@ private AstNode ParseComparison()
         Expect(TokenKind.COLON);
         var labelTok = Expect(TokenKind.STRING);
         return new DialogueOptionNode(gotoTok.Text, labelTok.Text, gotoTok.Line);
+    }
+
+    private List<AstNode> ParseRequireBlock()
+    {
+        var requireTok = Expect(TokenKind.REQUIRE);
+        if (Peek().Kind == TokenKind.COLON) Advance();
+        ConsumeNewline();
+        if (Peek().Kind != TokenKind.INDENT)
+            throw Error($"REQUIRE must be followed by an indented block at {requireTok.Line}:{requireTok.Col}");
+        Advance();
+        var stmts = new List<AstNode>();
+        while (Peek().Kind != TokenKind.DEDENT && Peek().Kind != TokenKind.EOF)
+        {
+            if (Peek().Kind == TokenKind.NEWLINE) { Advance(); continue; }
+            var t = Peek();
+            if (t.Kind == TokenKind.IDENT && t.Text == "ITEMS" && Peek(1).Kind == TokenKind.COLON)
+            {
+                stmts.Add(ParseItemsCheck());
+                continue;
+            }
+            if (t.Kind == TokenKind.IDENT && t.Text == "LEVELS" && Peek(1).Kind == TokenKind.COLON)
+            {
+                stmts.Add(ParseLevelsCheck());
+                continue;
+            }
+            stmts.Add(ParseStatement());
+        }
+        if (Peek().Kind == TokenKind.DEDENT) Advance();
+        return stmts;
+    }
+
+    private ItemsCheckNode ParseItemsCheck()
+    {
+        var itemsTok = Advance();  // "ITEMS"
+        Expect(TokenKind.COLON);
+        ConsumeNewline();
+        if (Peek().Kind != TokenKind.INDENT)
+            throw Error($"ITEMS must be followed by an indented block at {itemsTok.Line}:{itemsTok.Col}");
+        Advance();
+        var items = new List<(string, AstNode)>();
+        while (Peek().Kind != TokenKind.DEDENT && Peek().Kind != TokenKind.EOF)
+        {
+            if (Peek().Kind == TokenKind.NEWLINE) { Advance(); continue; }
+            var slugTok = Expect(TokenKind.IDENT);
+            Expect(TokenKind.COMMA);
+            var qty = ParseExpr();
+            items.Add((slugTok.Text, qty));
+            ConsumeNewline();
+        }
+        if (Peek().Kind == TokenKind.DEDENT) Advance();
+        return new ItemsCheckNode(items, itemsTok.Line);
+    }
+
+    private LevelsCheckNode ParseLevelsCheck()
+    {
+        var levelsTok = Advance();  // "LEVELS"
+        Expect(TokenKind.COLON);
+        ConsumeNewline();
+        if (Peek().Kind != TokenKind.INDENT)
+            throw Error($"LEVELS must be followed by an indented block at {levelsTok.Line}:{levelsTok.Col}");
+        Advance();
+        var levels = new List<(string, AstNode)>();
+        while (Peek().Kind != TokenKind.DEDENT && Peek().Kind != TokenKind.EOF)
+        {
+            if (Peek().Kind == TokenKind.NEWLINE) { Advance(); continue; }
+            var skillTok = Expect(TokenKind.IDENT);
+            Expect(TokenKind.COMMA);
+            var lvl = ParseExpr();
+            levels.Add((skillTok.Text, lvl));
+            ConsumeNewline();
+        }
+        if (Peek().Kind == TokenKind.DEDENT) Advance();
+        return new LevelsCheckNode(levels, levelsTok.Line);
+    }
+
+    private List<AstNode> ParseFailBlock()
+    {
+        var stmts = new List<AstNode>();
+        if (Peek().Kind != TokenKind.FAIL) return stmts;
+        if (Peek(1).Kind != TokenKind.COLON) return stmts;
+        var failTok = Advance();
+        Advance();  // colon
+        ConsumeNewline();
+        if (Peek().Kind != TokenKind.INDENT)
+            throw Error($"FAIL block must be indented at {failTok.Line}:{failTok.Col}");
+        Advance();
+        while (Peek().Kind != TokenKind.DEDENT && Peek().Kind != TokenKind.EOF)
+        {
+            if (Peek().Kind == TokenKind.NEWLINE) { Advance(); continue; }
+            var t = Peek();
+            if (t.Kind == TokenKind.IDENT && t.Text == "MESSAGES" && Peek(1).Kind == TokenKind.COLON)
+            {
+                stmts.Add(ParseMessagesBlock("fail"));
+                continue;
+            }
+            throw Error($"FAIL block only supports MESSAGES: at {t.Line}:{t.Col}");
+        }
+        if (Peek().Kind == TokenKind.DEDENT) Advance();
+        return stmts;
+    }
+
+    private MessagesNode ParseMessagesBlock(string target)
+    {
+        var msgTok = Advance();  // "MESSAGES"
+        Expect(TokenKind.COLON);
+        ConsumeNewline();
+        if (Peek().Kind != TokenKind.INDENT)
+            throw Error($"MESSAGES must be followed by an indented block at {msgTok.Line}:{msgTok.Col}");
+        Advance();
+        var entries = new Dictionary<string, List<AstNode>>();
+        while (Peek().Kind != TokenKind.DEDENT && Peek().Kind != TokenKind.EOF)
+        {
+            if (Peek().Kind == TokenKind.NEWLINE) { Advance(); continue; }
+            var nameTok = Expect(TokenKind.IDENT);
+            Expect(TokenKind.COLON);
+            ConsumeNewline();
+            if (Peek().Kind != TokenKind.INDENT)
+                throw Error($"Message '{nameTok.Text}' must be indented at {nameTok.Line}:{nameTok.Col}");
+            Advance();
+            var body = new List<AstNode>();
+            while (Peek().Kind != TokenKind.DEDENT && Peek().Kind != TokenKind.EOF)
+            {
+                if (Peek().Kind == TokenKind.NEWLINE) { Advance(); continue; }
+                body.Add(ParseStatement());
+            }
+            if (Peek().Kind == TokenKind.DEDENT) Advance();
+            entries[nameTok.Text] = body;
+        }
+        if (Peek().Kind == TokenKind.DEDENT) Advance();
+        return new MessagesNode(target, entries, msgTok.Line);
+    }
+
+        private List<AstNode> ParseSuccessBlock()
+    {
+        var successTok = Expect(TokenKind.SUCCESS);
+        if (Peek().Kind == TokenKind.COLON) Advance();
+        ConsumeNewline();
+        if (Peek().Kind != TokenKind.INDENT)
+            throw Error($"SUCCESS must be followed by an indented block at {successTok.Line}:{successTok.Col}");
+        Advance();
+        var stmts = new List<AstNode>();
+        while (Peek().Kind != TokenKind.DEDENT && Peek().Kind != TokenKind.EOF)
+        {
+            if (Peek().Kind == TokenKind.NEWLINE) { Advance(); continue; }
+            var t = Peek();
+            if (t.Kind == TokenKind.IDENT && t.Text == "MESSAGES" && Peek(1).Kind == TokenKind.COLON)
+            {
+                stmts.Add(ParseMessagesBlock("success"));
+                continue;
+            }
+            stmts.Add(ParseStatement());
+        }
+        if (Peek().Kind == TokenKind.DEDENT) Advance();
+        return stmts;
+    }
+
+    private AstNode ParseConsumeOrOutput(bool isConsume)
+    {
+        var nameTok = Advance();
+        Expect(TokenKind.ASSIGN);
+        Expect(TokenKind.LBRACKET);
+        SkipNewlines();
+        var pairs = new List<(AstNode, AstNode)>();
+        while (Peek().Kind != TokenKind.RBRACKET)
+        {
+            var slugExpr = ParseExpr();
+            Expect(TokenKind.COMMA);
+            var qtyExpr = ParseExpr();
+            pairs.Add((slugExpr, qtyExpr));
+            SkipNewlines();
+            if (Peek().Kind == TokenKind.COMMA) { Advance(); SkipNewlines(); }
+            if (Peek().Kind == TokenKind.EOF) throw Error("Unterminated consume/output array");
+        }
+        Expect(TokenKind.RBRACKET);
+        ConsumeNewline();
+        return isConsume
+            ? new ConsumeAssignNode(pairs, nameTok.Line)
+            : new OutputAssignNode(pairs, nameTok.Line);
+    }
+
+    private ChanceNode ParseChanceStatement()
+    {
+        var chanceTok = Expect(TokenKind.CHANCE);
+        var numTok = Expect(TokenKind.NUMBER);
+        if (!int.TryParse(numTok.Text, out int numerator))
+            throw Error($"CHANCE numerator must be an integer at {numTok.Line}:{numTok.Col}");
+        Expect(TokenKind.SLASH);
+        var denTok = Expect(TokenKind.NUMBER);
+        if (!int.TryParse(denTok.Text, out int denominator) || denominator <= 0)
+            throw Error($"CHANCE denominator must be a positive integer at {denTok.Line}:{denTok.Col}");
+        Expect(TokenKind.COLON);
+        ConsumeNewline();
+        if (Peek().Kind != TokenKind.INDENT)
+            throw Error($"CHANCE block must be indented at {chanceTok.Line}:{chanceTok.Col}");
+        Advance();
+        var thenBlock = new List<AstNode>();
+        while (Peek().Kind != TokenKind.DEDENT && Peek().Kind != TokenKind.EOF)
+        {
+            if (Peek().Kind == TokenKind.NEWLINE) { Advance(); continue; }
+            thenBlock.Add(ParseStatement());
+        }
+        if (Peek().Kind == TokenKind.DEDENT) Advance();
+
+        var elseBlock = new List<AstNode>();
+        if (Peek().Kind == TokenKind.CHANCE_FAIL)
+        {
+            Advance();
+            if (Peek().Kind == TokenKind.COLON) Advance();
+            ConsumeNewline();
+            if (Peek().Kind == TokenKind.INDENT)
+            {
+                Advance();
+                while (Peek().Kind != TokenKind.DEDENT && Peek().Kind != TokenKind.EOF)
+                {
+                    if (Peek().Kind == TokenKind.NEWLINE) { Advance(); continue; }
+                    elseBlock.Add(ParseStatement());
+                }
+                if (Peek().Kind == TokenKind.DEDENT) Advance();
+            }
+        }
+        return new ChanceNode(numerator, denominator, thenBlock, elseBlock, chanceTok.Line);
+    }
+
+    private FailCallNode ParseFailCall()
+    {
+        var failTok = Expect(TokenKind.FAIL);
+        Expect(TokenKind.LPAREN);
+        var nameTok = Expect(TokenKind.IDENT);
+        Expect(TokenKind.RPAREN);
+        ConsumeNewline();
+        return new FailCallNode(nameTok.Text, failTok.Line);
     }
 }

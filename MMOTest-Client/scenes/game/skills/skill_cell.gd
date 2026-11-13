@@ -61,7 +61,7 @@ func _make_icon(id: String) -> Control:
 	letter.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	letter.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	letter.add_theme_font_size_override("font_size", 14)
-	letter.add_theme_color_override("font_color", UIStyle.VERB_COLOR)
+	letter.add_theme_color_override("font_color", UIStyle.ENTITY_COLOR)
 	letter.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	return letter
 

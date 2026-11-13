@@ -660,3 +660,7 @@ func send_bank_close(session_id: String) -> void:
 
 func send_bank_cert_mode(session_id: String, enabled: bool) -> void:
 	send({"type": "bank_cert_mode", "session_id": session_id, "enabled": enabled})
+
+
+func send_combine_attempt(slot_a: int, slot_b: int) -> void:
+	send({"type": "combine_attempt", "slot_a": slot_a, "slot_b": slot_b})

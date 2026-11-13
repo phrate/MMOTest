@@ -308,7 +308,7 @@ func _build_input_dialog() -> void:
 	le_style.content_margin_bottom = 4
 	_input_line.add_theme_stylebox_override("normal", le_style)
 	var le_focus := le_style.duplicate() as StyleBoxFlat
-	le_focus.border_color = UIStyle.VERB_COLOR
+	le_focus.border_color = UIStyle.ENTITY_COLOR
 	_input_line.add_theme_stylebox_override("focus", le_focus)
 	_input_line.text_changed.connect(_on_input_text_changed)
 	_input_line.text_submitted.connect(func(_t): _confirm_input_dialog())
@@ -939,7 +939,7 @@ func _make_their_offer_label() -> Control:
 	var hbox := HBoxContainer.new()
 	hbox.add_theme_constant_override("separation", 0)
 	var name_lbl := _make_plain_label(Trade.partner_username)
-	name_lbl.add_theme_color_override("font_color", UIStyle.VERB_COLOR)
+	name_lbl.add_theme_color_override("font_color", UIStyle.ENTITY_COLOR)
 	hbox.add_child(name_lbl)
 	hbox.add_child(_make_plain_label("'s offer"))
 	return hbox

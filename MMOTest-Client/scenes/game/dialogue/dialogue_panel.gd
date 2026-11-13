@@ -126,9 +126,9 @@ func _make_option_button(text: String) -> Button:
 	btn.text = text
 	btn.focus_mode = Control.FOCUS_NONE
 	btn.alignment = HORIZONTAL_ALIGNMENT_LEFT
-	btn.add_theme_color_override("font_color", UIStyle.VERB_COLOR)
-	btn.add_theme_color_override("font_hover_color", UIStyle.VERB_COLOR.lightened(0.2))
-	btn.add_theme_color_override("font_pressed_color", UIStyle.VERB_COLOR.darkened(0.2))
+	btn.add_theme_color_override("font_color", UIStyle.TEXT_COLOR)
+	btn.add_theme_color_override("font_hover_color", UIStyle.TEXT_COLOR.lightened(0.2))
+	btn.add_theme_color_override("font_pressed_color", UIStyle.TEXT_COLOR.darkened(0.2))
 	btn.add_theme_font_size_override("font_size", 18)
 	var empty := StyleBoxEmpty.new()
 	btn.add_theme_stylebox_override("normal", empty)

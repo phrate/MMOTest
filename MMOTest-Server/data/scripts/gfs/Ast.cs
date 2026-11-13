@@ -7,12 +7,48 @@ public abstract record AstNode(int Line);
 public sealed record SuiteNode(
     string Namespace, string Section, List<string> Tags, List<AstNode> Statements,
     string? TaskName = null, List<string>? TaskArgs = null,
-    Dictionary<string, TopicNode>? Topics = null) : AstNode(0);
+    Dictionary<string, TopicNode>? Topics = null,
+    RecipeNode? Recipe = null) : AstNode(0);
 
 public sealed record AssignNode(string Name, AstNode Value, int LineNum) : AstNode(LineNum);
 public sealed record TopicNode(string Name, List<AstNode> Body, int LineNum) : AstNode(LineNum);
 public sealed record SayNode(string RawText, List<PrintPart> Parts, int LineNum) : AstNode(LineNum);
 public sealed record DialogueOptionNode(string Goto, string Label, int LineNum) : AstNode(LineNum);
+public sealed record RecipeNode(
+    List<AstNode> Require,
+    List<AstNode> Fail,
+    List<AstNode> Success,
+    int LineNum) : AstNode(LineNum);
+
+public sealed record ItemsCheckNode(
+    List<(string Slug, AstNode Quantity)> Items,
+    int LineNum) : AstNode(LineNum);
+
+public sealed record LevelsCheckNode(
+    List<(string Skill, AstNode Level)> Levels,
+    int LineNum) : AstNode(LineNum);
+
+public sealed record MessagesNode(
+    string Target,
+    Dictionary<string, List<AstNode>> Entries,
+    int LineNum) : AstNode(LineNum);
+
+public sealed record ChanceNode(
+    int Numerator,
+    int Denominator,
+    List<AstNode> ThenBlock,
+    List<AstNode> ElseBlock,
+    int LineNum) : AstNode(LineNum);
+
+public sealed record FailCallNode(string Cause, int LineNum) : AstNode(LineNum);
+
+public sealed record ConsumeAssignNode(
+    List<(AstNode SlugExpr, AstNode QuantityExpr)> Pairs,
+    int LineNum) : AstNode(LineNum);
+
+public sealed record OutputAssignNode(
+    List<(AstNode SlugExpr, AstNode QuantityExpr)> Pairs,
+    int LineNum) : AstNode(LineNum);
 public sealed record PrintPart(bool IsRef, string Literal, string RefName);
 
 public enum ChatKind { Local, Public, Overhead, Private, PrivateLocal }

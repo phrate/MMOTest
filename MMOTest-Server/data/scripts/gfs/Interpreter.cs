@@ -95,6 +95,57 @@ public static class Interpreter
             case SayNode s:
                 ctx.Locals["say"] = RenderChatParts(s.Parts, ctx);
                 return ExecResult.Normal;
+            
+            case ItemsCheckNode ic:
+                return ExecuteItemsCheck(ic, ctx, functions);
+
+            case LevelsCheckNode lc:
+                return ExecuteLevelsCheck(lc, ctx, functions);
+
+            case MessagesNode m:
+                var target = m.Target == "fail" ? ctx.RecipeFailMessages : ctx.RecipeSuccessMessages;
+                foreach (var kv in m.Entries) target[kv.Key] = kv.Value;
+                return ExecResult.Normal;
+
+            case ChanceNode c:
+                int roll = Random.Shared.Next(0, c.Denominator);
+                if (roll < c.Numerator)
+                    return ExecuteBlock(c.ThenBlock, ctx, functions);
+                if (c.ElseBlock.Count > 0)
+                    return ExecuteBlock(c.ElseBlock, ctx, functions);
+                return ExecResult.Normal;
+
+            case FailCallNode fc:
+                ExecuteFailCause(fc.Cause, ctx, functions);
+                return ExecResult.Ended;
+
+            case ConsumeAssignNode ca:
+                foreach (var (slugExpr, qtyExpr) in ca.Pairs)
+                {
+                    var slugObj = Evaluate(slugExpr, ctx, functions);
+                    var qtyObj = Evaluate(qtyExpr, ctx, functions);
+                    if (slugObj == null || qtyObj == null) continue;
+                    long slugId, qty;
+                    try { slugId = Convert.ToInt64(slugObj); qty = Convert.ToInt64(qtyObj); }
+                    catch { continue; }
+                    if (slugId > 0 && qty > 0)
+                        ctx.RecipeConsume.Add(((int)slugId, (int)qty));
+                }
+                return ExecResult.Normal;
+
+            case OutputAssignNode oa:
+                foreach (var (slugExpr, qtyExpr) in oa.Pairs)
+                {
+                    var slugObj = Evaluate(slugExpr, ctx, functions);
+                    var qtyObj = Evaluate(qtyExpr, ctx, functions);
+                    if (slugObj == null || qtyObj == null) continue;
+                    long slugId, qty;
+                    try { slugId = Convert.ToInt64(slugObj); qty = Convert.ToInt64(qtyObj); }
+                    catch { continue; }
+                    if (slugId > 0 && qty > 0)
+                        ctx.RecipeOutput.Add(((int)slugId, (int)qty));
+                }
+                return ExecResult.Normal;
 
             default:
                 throw new Exception($"[GFS] Unsupported statement {stmt.GetType().Name} at line {stmt.Line}");
@@ -395,11 +446,15 @@ private static bool TryToDouble(object? v, out double result)
         return sb.ToString();
     }
 
-    private static object? ResolveRef(string kind, string name, CallContext ctx) => kind switch
+        private static object? ResolveRef(string kind, string name, CallContext ctx) => kind switch
     {
-        "local" => ctx.Locals.TryGetValue(name, out var l) ? l : null,
-        "arg" => ctx.Args.TryGetValue(name, out var a) ? a : null,
-        "system" => ctx.System.TryGetValue(name, out var s) ? s : null,
+        "local" => ctx.Locals.TryGetValue(name, out var l) ? l
+                 : ctx.System.TryGetValue(name, out var s) ? s
+                 : ctx.ResolveIdent?.Invoke(name),
+        "arg" => ctx.Args.TryGetValue(name, out var a) ? a
+                 : ctx.ResolveIdent?.Invoke(name),
+        "system" => ctx.System.TryGetValue(name, out var s2) ? s2
+                 : ctx.ResolveIdent?.Invoke(name),
         _ => null
     };
 
@@ -487,5 +542,108 @@ private static bool TryToDouble(object? v, out double result)
         }
 
         ExecuteBlock(topic.Body, ctx, functions);
+    }
+
+public static void ExecuteRecipe(
+    SuiteNode suite, CallContext ctx, FunctionRegistry functions)
+{
+    if (suite.Namespace != "server")
+        throw new Exception($"[GFS] Expected [server] script, got [{suite.Namespace}]");
+    if (suite.Section != "recipe")
+        throw new Exception($"[GFS] Expected [recipe] section, got [{suite.Section}]");
+    if (suite.Recipe == null)
+        throw new Exception("[GFS] Recipe suite has no RecipeNode");
+
+    ctx.Effects.Clear();
+    ctx.IsRecipeContext = true;
+    ctx.RecipeFailed = false;
+    ctx.RecipeConsume.Clear();
+    ctx.RecipeOutput.Clear();
+    ctx.RecipeFailMessages.Clear();
+    ctx.RecipeSuccessMessages.Clear();
+
+    // Phase 0: register FAIL messages before REQUIRE runs. The FAIL block only
+    // contains MessagesNode entries (parser enforces this), so executing it
+    // here is safe and idempotent. Without this, ExecuteFailCause can't find
+    // the message body when REQUIRE fails.
+    ExecuteBlock(suite.Recipe.Fail, ctx, functions);
+
+    // Phase 1: REQUIRE.
+    ExecuteBlock(suite.Recipe.Require, ctx, functions);
+    if (ctx.RecipeFailed) return;
+
+    // Phase 2: SUCCESS.
+    ExecuteBlock(suite.Recipe.Success, ctx, functions);
+    if (ctx.RecipeFailed) return;
+
+    // Phase 3: fire SUCCESS.MESSAGES.DEFAULT if defined.
+    if (ctx.RecipeSuccessMessages.TryGetValue("DEFAULT", out var defaultMsg))
+        ExecuteBlock(defaultMsg, ctx, functions);
+}
+
+    private static ExecResult ExecuteItemsCheck(
+        ItemsCheckNode ic, CallContext ctx, FunctionRegistry functions)
+    {
+        bool anyMissing = false;
+        bool anyInsufficient = false;
+        foreach (var (slug, qtyExpr) in ic.Items)
+        {
+            var slugObj = ctx.ResolveIdent?.Invoke(slug);
+            if (slugObj == null) { anyMissing = true; continue; }
+            int itemId;
+            try { itemId = (int)Convert.ToInt64(slugObj); } catch { anyMissing = true; continue; }
+            if (itemId <= 0) { anyMissing = true; continue; }
+
+            var qtyObj = Evaluate(qtyExpr, ctx, functions);
+            if (qtyObj == null) { anyInsufficient = true; continue; }
+            int required;
+            try { required = (int)Convert.ToInt64(qtyObj); } catch { anyInsufficient = true; continue; }
+            if (required <= 0) continue;
+
+            int available = ctx.CountItemInInventory?.Invoke(itemId) ?? 0;
+            if (available == 0) anyMissing = true;
+            else if (available < required) anyInsufficient = true;
+        }
+        if (anyMissing || anyInsufficient)
+        {
+            string cause = anyMissing ? "BAD_ITEMS" : "BAD_QUANTITIES";
+            ExecuteFailCause(cause, ctx, functions);
+            return ExecResult.Ended;
+        }
+        return ExecResult.Normal;
+    }
+
+    private static ExecResult ExecuteLevelsCheck(
+        LevelsCheckNode lc, CallContext ctx, FunctionRegistry functions)
+    {
+        bool anyInsufficient = false;
+        foreach (var (skill, lvlExpr) in lc.Levels)
+        {
+            // LEVELS: blocks hold bare skill names (e.g. "engineering"); prepend
+            // level_ so the resolver finds the player's level.
+            var skillObj = ctx.ResolveIdent?.Invoke("level_" + skill);
+            if (skillObj == null) { anyInsufficient = true; continue; }
+            int available;
+            try { available = (int)Convert.ToInt64(skillObj); } catch { anyInsufficient = true; continue; }
+
+            var lvlObj = Evaluate(lvlExpr, ctx, functions);
+            if (lvlObj == null) { anyInsufficient = true; continue; }
+            int required;
+            try { required = (int)Convert.ToInt64(lvlObj); } catch { anyInsufficient = true; continue; }
+            if (available < required) anyInsufficient = true;
+        }
+        if (anyInsufficient)
+        {
+            ExecuteFailCause("BAD_LEVELS", ctx, functions);
+            return ExecResult.Ended;
+        }
+        return ExecResult.Normal;
+    }
+
+    private static void ExecuteFailCause(string cause, CallContext ctx, FunctionRegistry functions)
+    {
+        ctx.RecipeFailed = true;
+        if (ctx.RecipeFailMessages.TryGetValue(cause, out var body))
+            ExecuteBlock(body, ctx, functions);
     }
 }

@@ -9,7 +9,7 @@ const TAB_COLOR          := Color(0.12, 0.12, 0.12, 0.95)
 const TAB_HOVER_COLOR    := Color(0.20, 0.20, 0.20, 0.95)
 const TAB_SELECTED_COLOR := Color(0.30, 0.26, 0.14, 0.95)
 const TAB_BORDER_COLOR   := Color(0.30, 0.30, 0.30, 1.0)
-const VERB_COLOR    := Color("#4a9eff")
+const ENTITY_COLOR  := Color("#4a9eff")
 const TEXT_COLOR    := Color(1, 1, 1)
 const OUTLINE_COLOR := Color(0, 0, 0)
 const FONT_SIZE     := 13
@@ -68,8 +68,8 @@ static func format_primary_bbcode(display: String) -> String:
 	var verb: String = parts[0]
 	var rest: String = parts[1]
 	if rest.is_empty():
-		return "[color=%s]%s[/color]" % [VERB_COLOR.to_html(false), verb]
-	return "[color=%s]%s[/color] %s" % [VERB_COLOR.to_html(false), verb, rest]
+		return verb
+	return "%s [color=%s]%s[/color]" % [verb, ENTITY_COLOR.to_html(false), rest]
 
 
 static func split_verb(text: String) -> Array:
