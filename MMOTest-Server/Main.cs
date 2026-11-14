@@ -127,6 +127,7 @@ public partial class Main : Node
 	private TradeSystem _trade;
 	private DialogueSystem _dialogue;
 	private BankSystem _bank;
+	private RecipeSystem _recipe;
 
 	public override void _Ready()
 	{
@@ -248,7 +249,8 @@ public partial class Main : Node
 			_trade = new TradeSystem(this, _state, _items, _db.Inventory, _perTick);
 			_dialogue = new DialogueSystem(this, _state, _gfs, _gfsFns, _perTick);
 			_bank = new BankSystem(this, _state, _items, _db.Bank, _db.Inventory, _perTick);
-			LoadRecipes();
+			_recipe = new RecipeSystem(this, _state, _items, _db.Recipes, _db.Inventory, _db.Stats, _gfs, _gfsFns, _world);
+			_recipe.LoadRecipes();
 
 			_npcRender = new NpcRenderManager(new[]
 			{
@@ -422,7 +424,7 @@ public partial class Main : Node
 		_trade.ProcessTradeQueues();
 		_trade.ProcessTradeIntents();
 		_bank.ProcessBankIntents();
-		ProcessRecipeIntents();
+		_recipe.ProcessRecipeIntents();
 
 		// 2c. Combat
 		ProcessHostility();
@@ -720,7 +722,7 @@ public partial class Main : Node
 			_state.DialogueByPlayer.Remove(session.PlayerId);
 			_dialogue.ClearPendingFor(session.PlayerId);
 			_bank.ClearPlayer(session.PlayerId);
-			_pendingRecipeIntents.Remove(session.PlayerId);
+			_recipe.ClearPendingFor(session.PlayerId);
 
 			if (_state.Positions.TryGetValue(session.PlayerId, out PlayerPosition pos))
 			{
@@ -793,7 +795,7 @@ public partial class Main : Node
 				case "bank_move": _bank.HandleBankMove(peerId, root); break;
 				case "bank_close": _bank.HandleBankClose(peerId, root); break;
 				case "bank_cert_mode": _bank.HandleBankCertMode(peerId, root); break;
-				case "combine_attempt": HandleCombineAttempt(peerId, root); break;
+				case "combine_attempt": _recipe.HandleCombineAttempt(peerId, root); break;
 				default:
 					GD.PrintErr($"[Server] Unknown message type '{type}' from {peerId}");
 					break;
@@ -1389,7 +1391,7 @@ private async Task CompleteLoginAsync(long peerId, PlayerRecord player)
 		SendBytes(peerId, JsonSerializer.SerializeToUtf8Bytes(message), channel, mode);
 	}
 
-	private void RouteChatEffects(long pid, string username, int cx, int cy,
+	internal void RouteChatEffects(long pid, string username, int cx, int cy,
 		List<Dictionary<string, object>> effects, long selfPeer)
 	{
 		foreach (var effect in effects)
@@ -3149,7 +3151,7 @@ private void SendInventory(long peerId)
 	Send(peerId, new { type = "inventory_data", slots });
 }
 
-private void SendSkills(long peerId)
+internal void SendSkills(long peerId)
 {
 	if (!_state.Sessions.TryGetValue(peerId, out var session)) return;
 	if (!_state.SkillsByPlayer.TryGetValue(session.PlayerId, out var skills)) return;

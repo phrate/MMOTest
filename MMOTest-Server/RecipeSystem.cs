@@ -6,7 +6,15 @@ using Godot;
 
 namespace MMOTest.Server;
 
-public partial class Main
+/// <summary>
+/// Owns item-combination recipes: pair lookup, GFS script execution against
+/// an inventory sandbox, XP awards.
+///
+/// Coupling note (temporary): holds Main for Send / ChatToPlayer /
+/// BroadcastInventory / SendSkills / RouteChatEffects. Phase 4's
+/// OutboundChannel absorbs these.
+/// </summary>
+internal sealed class RecipeSystem
 {
     private sealed class RecipeIntent
     {
@@ -14,12 +22,38 @@ public partial class Main
         public int SlotB { get; init; }
     }
 
+    private readonly Main _main;
+    private readonly ServerState _state;
+    private readonly ItemLookup _items;
+    private readonly RecipeRepository _recipes;
+    private readonly InventoryRepository _inventory;
+    private readonly PlayerStatsRepository _stats;
+    private readonly Gfs.GfsManager _gfs;
+    private readonly Gfs.FunctionRegistry _gfsFns;
+    private readonly WorldService _world;
+
     private readonly Dictionary<string, RecipeRecord> _recipesByPair = new();
     private readonly Dictionary<long, List<RecipeIntent>> _pendingRecipeIntents = new();
 
-    private void LoadRecipes()
+    public RecipeSystem(Main main, ServerState state, ItemLookup items,
+                        RecipeRepository recipes, InventoryRepository inventory,
+                        PlayerStatsRepository stats, Gfs.GfsManager gfs,
+                        Gfs.FunctionRegistry gfsFns, WorldService world)
     {
-        var recipes = _db.Recipes.GetAllSync();
+        _main = main;
+        _state = state;
+        _items = items;
+        _recipes = recipes;
+        _inventory = inventory;
+        _stats = stats;
+        _gfs = gfs;
+        _gfsFns = gfsFns;
+        _world = world;
+    }
+
+    internal void LoadRecipes()
+    {
+        var recipes = _recipes.GetAllSync();
         _recipesByPair.Clear();
         foreach (var r in recipes)
             _recipesByPair[r.Pair] = r;
@@ -44,7 +78,9 @@ public partial class Main
         list.Add(new RecipeIntent { SlotA = slotA, SlotB = slotB });
     }
 
-    private void ProcessRecipeIntents()
+    internal void ClearPendingFor(long playerId) => _pendingRecipeIntents.Remove(playerId);
+
+    internal void ProcessRecipeIntents()
     {
         if (_pendingRecipeIntents.Count == 0) return;
 
@@ -81,7 +117,7 @@ public partial class Main
 
         if (!_recipesByPair.TryGetValue(pair, out var recipe))
         {
-            ChatToPlayer(playerId, "Nothing seemed to happen.");
+            _main.ChatToPlayer(playerId, "Nothing seemed to happen.");
             return false;
         }
 
@@ -91,13 +127,13 @@ public partial class Main
         if (ast == null)
         {
             Diag.Log("diag_recipe", $"[Recipe] no recipe for pair {pair}");
-            ChatToPlayer(playerId, "Nothing seemed to happen.");
+            _main.ChatToPlayer(playerId, "Nothing seemed to happen.");
             return false;
         }
         if (ast.Namespace != "server" || ast.Section != "recipe" || ast.Recipe == null)
         {
             GD.PrintErr($"[Recipe] Script {recipe.ScriptPath} is not a [server][recipe] file");
-            ChatToPlayer(playerId, "Nothing seemed to happen.");
+            _main.ChatToPlayer(playerId, "Nothing seemed to happen.");
             return false;
         }
 
@@ -154,7 +190,7 @@ public partial class Main
         catch (Exception e)
         {
             GD.PrintErr($"[Recipe] Runtime error in {recipe.ScriptPath}: {e.Message}");
-            ChatToPlayer(playerId, "Nothing seemed to happen.");
+            _main.ChatToPlayer(playerId, "Nothing seemed to happen.");
             return false;
         }
 
@@ -169,9 +205,6 @@ public partial class Main
 
         if (ctx.RecipeFailed)
         {
-            // Failure paths can produce consumes (e.g. "the log is destroyed")
-            // and/or outputs (e.g. "you partially succeed"). Apply both to the
-            // sandbox. XP is not awarded on failure.
             bool changed = false;
 
             foreach (var (itemId, qty) in ctx.RecipeConsume)
@@ -201,14 +234,14 @@ public partial class Main
             {
                 Array.Copy(sandbox, realInv, realInv.Length);
                 for (int i = 0; i < realInv.Length; i++)
-                    _db.Inventory.SaveSlotSync(playerId, i, realInv[i]);
-                BroadcastInventory(playerId);
+                    _inventory.SaveSlotSync(playerId, i, realInv[i]);
+                _main.BroadcastInventory(playerId);
             }
 
             if (ctx.Effects.Count > 0)
-                RouteChatEffects(playerId, session.Username, cx, cy, ctx.Effects, peerId);
+                _main.RouteChatEffects(playerId, session.Username, cx, cy, ctx.Effects, peerId);
             else if (!changed)
-                ChatToPlayer(playerId, "Nothing seemed to happen.");
+                _main.ChatToPlayer(playerId, "Nothing seemed to happen.");
 
             Diag.Log("diag_recipe",
                 $"[Recipe] {recipe.Slug} FAILED: consume={ctx.RecipeConsume.Count} output={ctx.RecipeOutput.Count} effects={ctx.Effects.Count} changed={changed}");
@@ -216,44 +249,41 @@ public partial class Main
             return changed;
         }
 
-        // Apply consumes to sandbox.
         foreach (var (itemId, qty) in ctx.RecipeConsume)
         {
             int removed = RemoveItemFromSandbox(sandbox, itemId, qty);
             if (removed < qty)
             {
                 GD.PrintErr($"[Recipe] Failed to consume {qty}x item {itemId} in {recipe.ScriptPath} (removed {removed})");
-                ChatToPlayer(playerId, "Nothing seemed to happen.");
+                _main.ChatToPlayer(playerId, "Nothing seemed to happen.");
                 return false;
             }
         }
 
-        // Apply outputs to sandbox.
         foreach (var (itemId, qty) in ctx.RecipeOutput)
         {
             if (!_items.TryGetById(itemId, out var meta))
             {
                 GD.PrintErr($"[Recipe] Unknown output item {itemId} in {recipe.ScriptPath}");
-                ChatToPlayer(playerId, "Nothing seemed to happen.");
+                _main.ChatToPlayer(playerId, "Nothing seemed to happen.");
                 return false;
             }
             if (!TryGiveToSandbox(sandbox, itemId, meta.Stackable, qty))
             {
-                ChatToPlayer(playerId, "You don't have enough inventory space.");
+                _main.ChatToPlayer(playerId, "You don't have enough inventory space.");
                 return false;
             }
         }
 
-        // Commit sandbox back to real inventory.
         Array.Copy(sandbox, realInv, realInv.Length);
         for (int i = 0; i < realInv.Length; i++)
-            _db.Inventory.SaveSlotSync(playerId, i, realInv[i]);
-        BroadcastInventory(playerId);
+            _inventory.SaveSlotSync(playerId, i, realInv[i]);
+        _main.BroadcastInventory(playerId);
 
         AwardRecipeXp(playerId, recipe.XpRewards);
 
         if (ctx.Effects.Count > 0)
-            RouteChatEffects(playerId, session.Username, cx, cy, ctx.Effects, peerId);
+            _main.RouteChatEffects(playerId, session.Username, cx, cy, ctx.Effects, peerId);
 
         Diag.Log("diag_recipe",
             $"[Recipe] {recipe.Slug} SUCCESS: consume={ctx.RecipeConsume.Count} output={ctx.RecipeOutput.Count} effects={ctx.Effects.Count}");
@@ -346,9 +376,9 @@ public partial class Main
                 Max = newLevel,
             };
 
-            _ = _db.Stats.AwardSkillXpAsync(playerId, skillId, tenthsToAdd, newLevel);
+            _ = _stats.AwardSkillXpAsync(playerId, skillId, tenthsToAdd, newLevel);
         }
 
-        SendSkills(peerId);
+        _main.SendSkills(peerId);
     }
 }
