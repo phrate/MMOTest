@@ -47,7 +47,7 @@ public partial class Main
         SendError(peerId, "login_result", DevDisabledKey);
         return;
     }
-    if (_sessions.ContainsKey(peerId))
+    if (_state.Sessions.ContainsKey(peerId))
     {
         SendError(peerId, "login_result", ErrorKeys.LoginAlreadyLoggedIn);
         return;
@@ -61,11 +61,11 @@ public partial class Main
     try
     {
         // Atomic claim check. Must run BEFORE any await, otherwise two
-        // simultaneous connections both see _sessions empty during the
+        // simultaneous connections both see _state.Sessions empty during the
         // GetPlayerByUsernameAsync await window and both proceed to log
         // in as phrate.
         bool alreadyInSession = false;
-        foreach (var kv in _sessions)
+        foreach (var kv in _state.Sessions)
         {
             if (kv.Value.Username.Equals(DevUsername, StringComparison.OrdinalIgnoreCase))
             {

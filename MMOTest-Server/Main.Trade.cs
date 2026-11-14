@@ -64,12 +64,12 @@ public partial class Main
 			SendTradeError(requesterId, ErrorKeys.TradeSelf);
 			return;
 		}
-		if (_dialogueByPlayer.ContainsKey(requesterId))
+		if (_state.DialogueByPlayer.ContainsKey(requesterId))
 			CancelDialogueForPlayer(requesterId, "");
 		CancelPendingTalkFor(requesterId);
 		CancelBankForPlayer(requesterId, "");
 		CancelPendingBankFor(requesterId);
-		if (_dialogueByPlayer.ContainsKey(targetPlayerId))
+		if (_state.DialogueByPlayer.ContainsKey(targetPlayerId))
 		{
 			SendTradeError(requesterId, ErrorKeys.TradeBusy);
 			return;
@@ -95,33 +95,33 @@ public partial class Main
 			return;
 		}
 		if (_lastTradeRequestTick.TryGetValue(requesterId, out long lastRequest)
-			&& _currentTick - lastRequest < TradeRequestCooldownTicks)
+			&& _state.CurrentTick - lastRequest < TradeRequestCooldownTicks)
 		{
 			SendTradeError(requesterId, ErrorKeys.TradeCooldown);
 			return;
 		}
-		_lastTradeRequestTick[requesterId] = _currentTick;
+		_lastTradeRequestTick[requesterId] = _state.CurrentTick;
 		SendTradeInvite(requesterId, targetPlayerId);
 	}
 
 	private bool IsTradePlayerAvailable(long playerId)
-		=> _peerByPlayerId.ContainsKey(playerId)
-			&& _positions.ContainsKey(playerId)
-			&& _inventoryByPlayer.ContainsKey(playerId)
-			&& _creditsByPlayer.ContainsKey(playerId);
+		=> _state.PeerByPlayerId.ContainsKey(playerId)
+			&& _state.Positions.ContainsKey(playerId)
+			&& _state.Inventories.ContainsKey(playerId)
+			&& _state.Credits.ContainsKey(playerId);
 
 	private bool HasPendingTradeInvite(long playerId)
 		=> _pendingTradeInvites.ContainsKey(playerId)
 			|| _pendingTradeInvites.Values.Any(invite => invite.RequesterId == playerId);
 
 	private bool IsInCombatOrPursuit(long playerId)
-		=> _combatByPlayer.ContainsKey(playerId)
-			|| _pendingEngage.ContainsKey(playerId)
-			|| (_playerCombat.TryGetValue(playerId, out var combat) && combat.CurrentHp <= 0);
+		=> _state.CombatByPlayer.ContainsKey(playerId)
+			|| _state.PendingEngage.ContainsKey(playerId)
+			|| (_state.PlayerCombat.TryGetValue(playerId, out var combat) && combat.CurrentHp <= 0);
 
 	private bool TryGetPlayerSession(long playerId, out PlayerSession session)
 	{
-		foreach (var entry in _sessions.Values)
+		foreach (var entry in _state.Sessions.Values)
 		{
 			if (entry.PlayerId != playerId) continue;
 			session = entry;
@@ -141,7 +141,7 @@ public partial class Main
 		{
 			long targetId = entry.Key;
 			var invite = entry.Value;
-			if (_currentTick >= invite.ExpiresAtTick
+			if (_state.CurrentTick >= invite.ExpiresAtTick
 				|| !IsTradePlayerAvailable(invite.RequesterId)
 				|| !IsTradePlayerAvailable(targetId)
 				|| IsInCombatOrPursuit(invite.RequesterId)
@@ -155,7 +155,7 @@ public partial class Main
 
 		foreach (TradeSession trade in _tradeByPlayer.Values.Distinct().ToList())
 		{
-			if (_currentTick - trade.StartedTick >= TradeSessionTimeoutTicks)
+			if (_state.CurrentTick - trade.StartedTick >= TradeSessionTimeoutTicks)
 				CancelTrade(trade, ErrorKeys.TradeTimeout);
 			else if (IsInCombatOrPursuit(trade.PlayerAId) || IsInCombatOrPursuit(trade.PlayerBId))
 				CancelTrade(trade, ErrorKeys.TradeCancelCombat);
@@ -198,7 +198,7 @@ public partial class Main
 		if (changed)
 		{
 			ResetTradeAcceptance(trade);
-			trade.StartedTick = _currentTick;
+			trade.StartedTick = _state.CurrentTick;
 			SendTradeState(trade);
 		}
 	}
@@ -207,7 +207,7 @@ public partial class Main
 	{
 		bool isPlayerA = playerId == trade.PlayerAId;
 		var ownOffer = isPlayerA ? trade.OfferA : trade.OfferB;
-		if (!_inventoryByPlayer.TryGetValue(playerId, out var inventory)) return false;
+		if (!_state.Inventories.TryGetValue(playerId, out var inventory)) return false;
 
 		bool changed = false;
 		foreach (var intent in intents)
@@ -223,7 +223,7 @@ public partial class Main
 						changed = true;
 					break;
 				case TradeIntent.Kind.SetCredits:
-					int max = _creditsByPlayer[playerId];
+					int max = _state.Credits[playerId];
 					int clamped = Math.Clamp(intent.Quantity, 0, max);
 					int current = isPlayerA ? trade.CreditsA : trade.CreditsB;
 					if (current != clamped)
@@ -284,7 +284,7 @@ public partial class Main
 		{
 			RequesterId = requesterId,
 			InviteId = inviteId,
-			ExpiresAtTick = _currentTick + TradeInviteTimeoutTicks,
+			ExpiresAtTick = _state.CurrentTick + TradeInviteTimeoutTicks,
 		};
 		_pendingTradeInvites[targetPlayerId] = invite;
 
@@ -300,7 +300,7 @@ public partial class Main
 
 	internal void HandleTradeInviteResponse(long peerId, JsonElement root, bool accept)
 	{
-		if (!_sessions.TryGetValue(peerId, out var recipient)) return;
+		if (!_state.Sessions.TryGetValue(peerId, out var recipient)) return;
 		if (!root.TryGetProperty("invite_id", out var inviteElement)
 			|| inviteElement.ValueKind != JsonValueKind.String) return;
 		string inviteId = inviteElement.GetString() ?? "";
@@ -318,7 +318,7 @@ public partial class Main
 			});
 			return;
 		}
-		if (_currentTick >= invite.ExpiresAtTick)
+		if (_state.CurrentTick >= invite.ExpiresAtTick)
 		{
 			CloseTradeInvite(recipient.PlayerId, invite, ErrorKeys.TradeInviteExpired);
 			return;
@@ -369,12 +369,12 @@ public partial class Main
 			Id = Guid.NewGuid().ToString("N"),
 			PlayerAId = invite.RequesterId,
 			PlayerBId = recipient.PlayerId,
-			StartedTick = _currentTick,
+			StartedTick = _state.CurrentTick,
 		};
 		_tradeByPlayer[trade.PlayerAId] = trade;
 		_tradeByPlayer[trade.PlayerBId] = trade;
-		_pendingPickup.Remove(trade.PlayerAId);
-		_pendingPickup.Remove(trade.PlayerBId);
+		_state.PendingPickup.Remove(trade.PlayerAId);
+		_state.PendingPickup.Remove(trade.PlayerBId);
 		SendTradeState(trade);
 	}
 
@@ -467,7 +467,7 @@ public partial class Main
 		if (isPlayerA) trade.AcceptedA = true;
 		else trade.AcceptedB = true;
 		if (trade.AcceptedA && trade.AcceptedB) trade.Phase = TradePhase.Confirming;
-		trade.StartedTick = _currentTick;
+		trade.StartedTick = _state.CurrentTick;
 		SendTradeState(trade);
 	}
 
@@ -483,7 +483,7 @@ public partial class Main
 
 	internal void HandleTradeCancel(long peerId, JsonElement root)
 	{
-		if (!_sessions.TryGetValue(peerId, out var player)) return;
+		if (!_state.Sessions.TryGetValue(peerId, out var player)) return;
 		if (_tradeByPlayer.TryGetValue(player.PlayerId, out var trade)
 			&& root.TryGetProperty("session_id", out var idElement)
 			&& idElement.ValueKind == JsonValueKind.String
@@ -544,8 +544,8 @@ public partial class Main
 			return;
 		}
 
-		int balanceA = _creditsByPlayer[trade.PlayerAId];
-		int balanceB = _creditsByPlayer[trade.PlayerBId];
+		int balanceA = _state.Credits[trade.PlayerAId];
+		int balanceB = _state.Credits[trade.PlayerBId];
 		int resultCreditsA = checked(balanceA - trade.CreditsA + trade.CreditsB);
 		int resultCreditsB = checked(balanceB - trade.CreditsB + trade.CreditsA);
 		try
@@ -564,10 +564,10 @@ public partial class Main
 			return;
 		}
 
-		_inventoryByPlayer[trade.PlayerAId] = inventoryA;
-		_inventoryByPlayer[trade.PlayerBId] = inventoryB;
-		_creditsByPlayer[trade.PlayerAId] = resultCreditsA;
-		_creditsByPlayer[trade.PlayerBId] = resultCreditsB;
+		_state.Inventories[trade.PlayerAId] = inventoryA;
+		_state.Inventories[trade.PlayerBId] = inventoryB;
+		_state.Credits[trade.PlayerAId] = resultCreditsA;
+		_state.Credits[trade.PlayerBId] = resultCreditsB;
 		_tradeByPlayer.Remove(trade.PlayerAId);
 		_tradeByPlayer.Remove(trade.PlayerBId);
 		BroadcastInventory(trade.PlayerAId);
@@ -584,10 +584,10 @@ public partial class Main
 		inventoryA = null!;
 		inventoryB = null!;
 		errorKey = ErrorKeys.TradeCommitFailed;
-		if (!_inventoryByPlayer.TryGetValue(trade.PlayerAId, out var currentA)
-			|| !_inventoryByPlayer.TryGetValue(trade.PlayerBId, out var currentB)
-			|| !_creditsByPlayer.TryGetValue(trade.PlayerAId, out int balanceA)
-			|| !_creditsByPlayer.TryGetValue(trade.PlayerBId, out int balanceB)
+		if (!_state.Inventories.TryGetValue(trade.PlayerAId, out var currentA)
+			|| !_state.Inventories.TryGetValue(trade.PlayerBId, out var currentB)
+			|| !_state.Credits.TryGetValue(trade.PlayerAId, out int balanceA)
+			|| !_state.Credits.TryGetValue(trade.PlayerBId, out int balanceB)
 			|| trade.CreditsA > balanceA || trade.CreditsB > balanceB) return false;
 
 		inventoryA = (long[])currentA.Clone();
@@ -733,7 +733,7 @@ public partial class Main
 		trade = null!;
 		playerId = 0;
 		isPlayerA = false;
-		if (!_sessions.TryGetValue(peerId, out var player)
+		if (!_state.Sessions.TryGetValue(peerId, out var player)
 			|| !_tradeByPlayer.TryGetValue(player.PlayerId, out trade)
 			|| !root.TryGetProperty("session_id", out var idElement)
 			|| idElement.ValueKind != JsonValueKind.String
@@ -804,7 +804,7 @@ public partial class Main
 
 	private void SendToTradePlayer(long playerId, object message)
 	{
-		if (_peerByPlayerId.TryGetValue(playerId, out long peerId)) Send(peerId, message);
+		if (_state.PeerByPlayerId.TryGetValue(playerId, out long peerId)) Send(peerId, message);
 	}
 
 	private void SendTradeError(long playerId, string errorKey, object? errorParams = null)
@@ -845,12 +845,12 @@ public partial class Main
 
 	private void SendCreditsToPlayer(long playerId, int credits)
 	{
-		if (_peerByPlayerId.TryGetValue(playerId, out long peerId))
+		if (_state.PeerByPlayerId.TryGetValue(playerId, out long peerId))
 			Send(peerId, new { type = "credits_updated", credits });
 	}
 
 	private void RemovePlayerIntent(long playerId)
 	{
-		if (_peerByPlayerId.TryGetValue(playerId, out long peerId)) _intents.Remove(peerId);
+		if (_state.PeerByPlayerId.TryGetValue(playerId, out long peerId)) _state.Intents.Remove(peerId);
 	}
 }

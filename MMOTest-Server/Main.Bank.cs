@@ -126,11 +126,11 @@ public partial class Main
         if (!_npcs.TryGetValue(npcId, out var npc)) return;
         if (npc.IsDead) return;
         if (!npc.IsBanker) { ChatToPlayer(playerId, "They are not a banker."); return; }
-        if (!_peerByPlayerId.ContainsKey(playerId) || !_positions.ContainsKey(playerId)) return;
+        if (!_state.PeerByPlayerId.ContainsKey(playerId) || !_state.Positions.ContainsKey(playerId)) return;
         if (_pendingBank.TryGetValue(playerId, out var current) && current == npcId) return;
 
-        _pendingEngage.Remove(playerId);
-        _pendingPickup.Remove(playerId);
+        _state.PendingEngage.Remove(playerId);
+        _state.PendingPickup.Remove(playerId);
         _perTick?.EndByStem(playerId, "follow_player");
         RemovePlayerIntent(playerId);
         CancelDialogueForPlayer(playerId, "");
@@ -157,10 +157,10 @@ public partial class Main
 
             if (!_npcs.TryGetValue(npcId, out var npc) || npc.IsDead || !npc.IsBanker)
             { toRemove.Add(playerId); continue; }
-            if (!_positions.ContainsKey(playerId)
-                || !_peerByPlayerId.TryGetValue(playerId, out var peerId))
+            if (!_state.Positions.ContainsKey(playerId)
+                || !_state.PeerByPlayerId.TryGetValue(playerId, out var peerId))
             { toRemove.Add(playerId); continue; }
-            if (_combatByPlayer.ContainsKey(playerId)) { toRemove.Add(playerId); continue; }
+            if (_state.CombatByPlayer.ContainsKey(playerId)) { toRemove.Add(playerId); continue; }
             if (ArePositionsAdjacent(playerId, npc))
             {
                 toRemove.Add(playerId);
@@ -189,9 +189,9 @@ public partial class Main
         CancelDialogueForPlayer(playerId, "");
         _perTick?.EndByStem(playerId, "follow_player");
         RemovePlayerIntent(playerId);
-        _pendingPickup.Remove(playerId);
-        _pendingEngage.Remove(playerId);
-        if (_combatByPlayer.TryGetValue(playerId, out var pair) && !pair.StateAnnounced)
+        _state.PendingPickup.Remove(playerId);
+        _state.PendingEngage.Remove(playerId);
+        if (_state.CombatByPlayer.TryGetValue(playerId, out var pair) && !pair.StateAnnounced)
             EndCombat(pair);
 
         SnapAndFaceForDialogue(playerId, npc);   // reuse snap+face; quiet since no look-at queue issue
@@ -208,7 +208,7 @@ public partial class Main
 
     private void SendBankOpen(BankSession session)
     {
-        if (!_peerByPlayerId.TryGetValue(session.PlayerId, out var peerId)) return;
+        if (!_state.PeerByPlayerId.TryGetValue(session.PlayerId, out var peerId)) return;
         var bank = _bankByPlayer[session.PlayerId];
         int cap = _bankCapacityByPlayer[session.PlayerId];
         Send(peerId, new
@@ -314,7 +314,7 @@ public partial class Main
 
     private long GetPlayerIdByPeer(long peerId)
     {
-        if (!_sessions.TryGetValue(peerId, out var sess)) return 0;
+        if (!_state.Sessions.TryGetValue(peerId, out var sess)) return 0;
         return sess.PlayerId;
     }
 
@@ -372,7 +372,7 @@ public partial class Main
     private bool ApplyDeposit(long playerId, BankIntent intent, out string notice)
     {
         notice = "";
-        if (!_inventoryByPlayer.TryGetValue(playerId, out var inv)) return false;
+        if (!_state.Inventories.TryGetValue(playerId, out var inv)) return false;
         if (!_bankByPlayer.TryGetValue(playerId, out var bank)) return false;
         if (!_items.TryGetById(intent.ItemId, out var item)) return false;
         if (item.NonBankable) { notice = ErrorKeys.BankNonBankable; return false; }
@@ -422,7 +422,7 @@ public partial class Main
         notice = "";
         long playerId = session.PlayerId;
         if (!_bankByPlayer.TryGetValue(playerId, out var bank)) return false;
-        if (!_inventoryByPlayer.TryGetValue(playerId, out var inv)) return false;
+        if (!_state.Inventories.TryGetValue(playerId, out var inv)) return false;
         if (!_items.TryGetById(intent.ItemId, out var bankedItem)) return false;
 
         int existingIdx = bank.FindIndex(e => e != null && e.ItemId == intent.ItemId);
@@ -575,7 +575,7 @@ public partial class Main
         _bankSessionByPlayer.Remove(session.PlayerId);
         _pendingBankIntents.Remove(session.PlayerId);
         PersistBank(session.PlayerId);
-        if (!_peerByPlayerId.TryGetValue(session.PlayerId, out var peerId)) return;
+        if (!_state.PeerByPlayerId.TryGetValue(session.PlayerId, out var peerId)) return;
         Send(peerId, new
         {
             type = "bank_close",
@@ -587,7 +587,7 @@ public partial class Main
 
     private void SendBankNotice(long playerId, string errorKey)
     {
-        if (!_peerByPlayerId.TryGetValue(playerId, out var peerId)) return;
+        if (!_state.PeerByPlayerId.TryGetValue(playerId, out var peerId)) return;
         Send(peerId, new { type = "bank_notice", error_key = errorKey, error_params = new { } });
     }
 }

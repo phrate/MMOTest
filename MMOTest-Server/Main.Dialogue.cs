@@ -7,23 +7,13 @@ namespace MMOTest.Server;
 
 public partial class Main
 {
-    private sealed class DialogueSession
-    {
-        public string SessionId { get; init; } = "";
-        public long PlayerId { get; init; }
-        public long NpcId { get; init; }
-        public string ScriptPath { get; init; } = "";
-        public Gfs.SuiteNode Ast { get; init; } = null!;
-        public string CurrentTopic { get; set; } = "start";
-        public bool IsOpened { get; set; }
-    }
 
 private readonly Dictionary<long, long> _pendingTalk = new(); // playerId -> npcId
 private readonly Dictionary<long, (long PlayerId, long Sid)> _npcLookAt = new();
 
 private void SnapAndFaceForDialogue(long playerId, ActiveNpc npc)
 {
-    if (!_positions.TryGetValue(playerId, out var pos)) return;
+    if (!_state.Positions.TryGetValue(playerId, out var pos)) return;
 
     int px = (int)MathF.Round(pos.X);
     int pz = (int)MathF.Round(pos.Z);
@@ -35,12 +25,12 @@ private void SnapAndFaceForDialogue(long playerId, ActiveNpc npc)
     yaw = MathF.Round(yaw / (MathF.PI / 4f)) * (MathF.PI / 4f);
 
     var newPos = new PlayerPosition(px, tinfo.Z, pz, yaw);
-    _positions[playerId] = newPos;
+    _state.Positions[playerId] = newPos;
 
     Broadcast(new
     {
         type = "tick_positions",
-        tick = _currentTick,
+        tick = _state.CurrentTick,
         updates = new[] {
             new {
                 player_id = playerId,
@@ -51,7 +41,7 @@ private void SnapAndFaceForDialogue(long playerId, ActiveNpc npc)
 
     long sid = 0;
     long peerId = GetPeerIdForPlayer(playerId);
-    if (peerId >= 0 && _sessions.TryGetValue(peerId, out var sess))
+    if (peerId >= 0 && _state.Sessions.TryGetValue(peerId, out var sess))
         sid = sess.Sid;
     QueueNpcLookAt(npc.Id, playerId, sid);
 }
@@ -77,7 +67,7 @@ private void ProcessNpcLookAt()
         if (!_npcs.TryGetValue(npcId, out var npc)) continue;
         if (npc.IsDead) continue;
         if (_combatByNpc.ContainsKey(npcId)) continue;   // combat facing takes precedence
-        if (!_positions.TryGetValue(playerId, out var ppos)) continue;
+        if (!_state.Positions.TryGetValue(playerId, out var ppos)) continue;
 
         int nx = (int)MathF.Round(npc.PosX);
         int nz = (int)MathF.Round(npc.PosZ);
@@ -111,14 +101,14 @@ internal void RequestTalk(long playerId, long npcId)
         ChatToPlayer(playerId, "They have nothing to say.");
         return;
     }
-    if (!_peerByPlayerId.ContainsKey(playerId) || !_positions.ContainsKey(playerId)) return;
+    if (!_state.PeerByPlayerId.ContainsKey(playerId) || !_state.Positions.ContainsKey(playerId)) return;
 
     // Already walking to talk to this exact NPC → no-op.
     if (_pendingTalk.TryGetValue(playerId, out var currentNpcId) && currentNpcId == npcId) return;
 
     // Cancel any conflicting pursuits.
-    _pendingEngage.Remove(playerId);
-    _pendingPickup.Remove(playerId);
+    _state.PendingEngage.Remove(playerId);
+    _state.PendingPickup.Remove(playerId);
     _perTick?.EndByStem(playerId, "follow_player");
     RemovePlayerIntent(playerId);
 
@@ -157,13 +147,13 @@ private void ProcessPendingTalk()
             toRemove.Add(playerId);
             continue;
         }
-        if (!_positions.ContainsKey(playerId)
-            || !_peerByPlayerId.TryGetValue(playerId, out var peerId))
+        if (!_state.Positions.ContainsKey(playerId)
+            || !_state.PeerByPlayerId.TryGetValue(playerId, out var peerId))
         {
             toRemove.Add(playerId);
             continue;
         }
-        if (_combatByPlayer.ContainsKey(playerId))
+        if (_state.CombatByPlayer.ContainsKey(playerId))
         {
             toRemove.Add(playerId);
             continue;
@@ -186,9 +176,8 @@ private void ProcessPendingTalk()
     foreach (var (pid, nid) in toOpen) OpenDialogue(pid, nid);
 }
 
-    private readonly Dictionary<long, DialogueSession> _dialogueByPlayer = new();
 
-    internal bool IsPlayerInDialogue(long playerId) => _dialogueByPlayer.ContainsKey(playerId);
+    internal bool IsPlayerInDialogue(long playerId) => _state.DialogueByPlayer.ContainsKey(playerId);
 
     private static string ResolveDialoguePath(string name)
     {
@@ -234,9 +223,9 @@ private void ProcessPendingTalk()
         CancelPendingBankFor(playerId);
         _perTick?.EndByStem(playerId, "follow_player");
         RemovePlayerIntent(playerId);
-        _pendingPickup.Remove(playerId);
-        _pendingEngage.Remove(playerId);
-        if (_combatByPlayer.TryGetValue(playerId, out var pair) && !pair.StateAnnounced)
+        _state.PendingPickup.Remove(playerId);
+        _state.PendingEngage.Remove(playerId);
+        if (_state.CombatByPlayer.TryGetValue(playerId, out var pair) && !pair.StateAnnounced)
             EndCombat(pair);
         
         SnapAndFaceForDialogue(playerId, npc);
@@ -250,15 +239,15 @@ private void ProcessPendingTalk()
             Ast = ast,
             CurrentTopic = "start",
         };
-        _dialogueByPlayer[playerId] = session;
+        _state.DialogueByPlayer[playerId] = session;
 
         ExecuteAndSendTopic(session, npc);
     }
 
     internal void HandleDialogueChoose(long peerId, JsonElement root)
     {
-        if (!_sessions.TryGetValue(peerId, out var player)) return;
-        if (!_dialogueByPlayer.TryGetValue(player.PlayerId, out var session)) return;
+        if (!_state.Sessions.TryGetValue(peerId, out var player)) return;
+        if (!_state.DialogueByPlayer.TryGetValue(player.PlayerId, out var session)) return;
         if (!root.TryGetProperty("session_id", out var sidEl) || sidEl.GetString() != session.SessionId) return;
         if (!root.TryGetProperty("goto", out var gotoEl) || gotoEl.ValueKind != JsonValueKind.String) return;
         string goto_ = gotoEl.GetString() ?? "";
@@ -283,13 +272,13 @@ private void ProcessPendingTalk()
 
     internal void CancelDialogueForPlayer(long playerId, string errorKey)
     {
-        if (!_dialogueByPlayer.TryGetValue(playerId, out var session)) return;
+        if (!_state.DialogueByPlayer.TryGetValue(playerId, out var session)) return;
         CloseDialogue(session, silent: string.IsNullOrEmpty(errorKey), errorKey);
     }
 
     private void ExecuteAndSendTopic(DialogueSession session, ActiveNpc npc)
     {
-        if (!_sessions.TryGetValue(GetPeerIdForPlayer(session.PlayerId), out var player))
+        if (!_state.Sessions.TryGetValue(GetPeerIdForPlayer(session.PlayerId), out var player))
         {
             CloseDialogue(session, silent: true);
             return;
@@ -319,8 +308,8 @@ private void ProcessPendingTalk()
 
     private Gfs.CallContext CreateDialogueContext(DialogueSession session, PlayerSession player, ActiveNpc npc)
     {
-        int credits = _creditsByPlayer.TryGetValue(session.PlayerId, out var c) ? c : 0;
-        var combat = _playerCombat.TryGetValue(session.PlayerId, out var cd) ? cd : null;
+        int credits = _state.Credits.TryGetValue(session.PlayerId, out var c) ? c : 0;
+        var combat = _state.PlayerCombat.TryGetValue(session.PlayerId, out var cd) ? cd : null;
         var system = new Dictionary<string, object>
         {
             ["SELF_ID"] = session.PlayerId,
@@ -370,7 +359,7 @@ private void ProcessPendingTalk()
         DialogueSession session, ActiveNpc npc, string say,
         List<Dictionary<string, object>> options)
     {
-        if (!_peerByPlayerId.TryGetValue(session.PlayerId, out var peerId)) return;
+        if (!_state.PeerByPlayerId.TryGetValue(session.PlayerId, out var peerId)) return;
         Send(peerId, new
         {
             type = session.IsOpened ? "dialogue_state" : "dialogue_open",
@@ -386,10 +375,10 @@ private void ProcessPendingTalk()
 
     private void CloseDialogue(DialogueSession session, bool silent, string errorKey = "")
     {
-        if (!_dialogueByPlayer.TryGetValue(session.PlayerId, out var current)
+        if (!_state.DialogueByPlayer.TryGetValue(session.PlayerId, out var current)
             || current.SessionId != session.SessionId) return;
-        _dialogueByPlayer.Remove(session.PlayerId);
-        if (!_peerByPlayerId.TryGetValue(session.PlayerId, out var peerId)) return;
+        _state.DialogueByPlayer.Remove(session.PlayerId);
+        if (!_state.PeerByPlayerId.TryGetValue(session.PlayerId, out var peerId)) return;
         Send(peerId, new
         {
             type = "dialogue_close",
@@ -401,7 +390,7 @@ private void ProcessPendingTalk()
 
     private long GetPeerIdForPlayer(long playerId)
     {
-        if (_peerByPlayerId.TryGetValue(playerId, out var peerId)) return peerId;
+        if (_state.PeerByPlayerId.TryGetValue(playerId, out var peerId)) return peerId;
         return -1;
     }
 }

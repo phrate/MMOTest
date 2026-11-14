@@ -28,8 +28,8 @@ public partial class Main
 
     internal void HandleCombineAttempt(long peerId, JsonElement root)
     {
-        if (!_sessions.TryGetValue(peerId, out var session)) return;
-        if (!_inventoryByPlayer.ContainsKey(session.PlayerId)) return;
+        if (!_state.Sessions.TryGetValue(peerId, out var session)) return;
+        if (!_state.Inventories.ContainsKey(session.PlayerId)) return;
 
         if (!root.TryGetProperty("slot_a", out var aEl) || !aEl.TryGetInt32(out int slotA)) return;
         if (!root.TryGetProperty("slot_b", out var bEl) || !bEl.TryGetInt32(out int slotB)) return;
@@ -53,7 +53,7 @@ public partial class Main
             if (!_pendingRecipeIntents.TryGetValue(playerId, out var intents)) continue;
             _pendingRecipeIntents.Remove(playerId);
 
-            if (!_inventoryByPlayer.TryGetValue(playerId, out var inv)) continue;
+            if (!_state.Inventories.TryGetValue(playerId, out var inv)) continue;
 
             foreach (var intent in intents)
             {
@@ -101,9 +101,9 @@ public partial class Main
             return false;
         }
 
-        if (!_inventoryByPlayer.TryGetValue(playerId, out var realInv)) return false;
-        if (!_peerByPlayerId.TryGetValue(playerId, out var peerId)) return false;
-        if (!_sessions.TryGetValue(peerId, out var session)) return false;
+        if (!_state.Inventories.TryGetValue(playerId, out var realInv)) return false;
+        if (!_state.PeerByPlayerId.TryGetValue(playerId, out var peerId)) return false;
+        if (!_state.Sessions.TryGetValue(peerId, out var session)) return false;
 
         var sandbox = (long[])realInv.Clone();
 
@@ -159,7 +159,7 @@ public partial class Main
         }
 
         int cx = 0, cy = 0;
-        if (_positions.TryGetValue(playerId, out var pos))
+        if (_state.Positions.TryGetValue(playerId, out var pos))
         {
             int tx = (int)MathF.Round(pos.X);
             int ty = (int)MathF.Round(pos.Z);
@@ -323,7 +323,7 @@ public partial class Main
     {
         if (xpRewards.Count == 0) return;
         if (!_skillsByPlayer.TryGetValue(playerId, out var skills)) return;
-        if (!_peerByPlayerId.TryGetValue(playerId, out var peerId)) return;
+        if (!_state.PeerByPlayerId.TryGetValue(playerId, out var peerId)) return;
 
         foreach (var (skillId, rawXp) in xpRewards)
         {

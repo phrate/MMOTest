@@ -38,21 +38,15 @@ public partial class Main : Node
 
 	private static readonly Regex UsernameRegex = new($"^[A-Za-z0-9_]{{{MinUsernameLength},{MaxUsernameLength}}}$");
 
-	private record PlayerSession(long PlayerId, string Username, bool IsAdmin, long Sid);
-	internal record PlayerPosition(float X, float Y, float Z, float Yaw);
-
 
 	private Database _db;
 	private SceneMultiplayer _mp;
 	private ENetMultiplayerPeer _enet;
-
+	internal readonly ServerState _state = new();
 	private readonly HashSet<long> _connectedPeers = new();
 	private readonly HashSet<long> _authInProgress = new();
-	private readonly Dictionary<long, PlayerSession> _sessions = new();
-	private readonly Dictionary<long, long> _peerByPlayerId = new();
 	private readonly Dictionary<long, List<BankEntry?>> _bankByPlayer = new();
 	private readonly Dictionary<long, int> _bankCapacityByPlayer = new();
-	private readonly Dictionary<long, PlayerPosition> _positions = new();
 
 	private double _npcVisRefreshAccum;
 	private const double NpcVisRefreshIntervalSeconds = 1.5;
@@ -72,21 +66,8 @@ public partial class Main : Node
 	private readonly Dictionary<long, ActiveNpc> _npcs = new();
 	private readonly Dictionary<long, HashSet<long>> _visibleNpcs = new();  // peerId -> npc ids
 	// ---------- Combat state ----------
-	internal sealed class CombatPair
-{
-	public long PlayerId { get; init; }
-	public long NpcId { get; init; }
-	public long LastPlayerSwingTick { get; set; }
-	public long LastNpcSwingTick { get; set; }
-	public bool StateAnnounced { get; set; }
-	public bool InitiatedByPlayer { get; set; } = true;
-	public Vector2I LastChaseTarget { get; set; } = new(-99999, -99999);
-}
-	private readonly Dictionary<long, CombatPair> _combatByPlayer = new();
-	private readonly Dictionary<long, long> _pendingEngage = new(); // playerId -> npcId (approach phase)
+
 	private readonly Dictionary<long, CombatPair> _combatByNpc = new();
-	private readonly Dictionary<long, PlayerCombatData> _playerCombat = new();
-	private readonly Dictionary<long, long[]> _inventoryByPlayer = new();
 	// ---------- Ground items ----------
 	internal sealed class GroundItem
 	{
@@ -107,12 +88,11 @@ public partial class Main : Node
 
 	private readonly Dictionary<long, GroundItem> _groundItems = new();
 	private readonly Dictionary<long, HashSet<long>> _visibleGroundItems = new();
-	private readonly Dictionary<long, long> _pendingPickup = new();
 	private long _nextGroundItemId = 1;
 	private const long GroundItemDespawnMs = 90 * 1000;  // 90s — player/npc drops only
 	private readonly ItemLookup _items = new();
 	private readonly Dictionary<string, Dictionary<string, (int Min, int Max)>> _lootTablesBySlug = new();
-	private readonly Dictionary<long, int> _creditsByPlayer = new();
+
 	private readonly Dictionary<long, List<SkillLevel>> _skillsByPlayer = new();
 	private readonly Dictionary<string, (int Min, int Max)> _creditsLootBySlug = new();
 	private readonly Dictionary<long, int> _playerHealAccumTicks = new();
@@ -129,13 +109,9 @@ public partial class Main : Node
 
 	private readonly Dictionary<long, Vector2I> _lastPlayerChunk = new();   // peerId -> chunk
 
-	// Per-peer remaining path. Front of the list is the next waypoint. Empty list
-	// (transient) means "arrived, about to be cleaned up in the same tick".
-	private readonly Dictionary<long, List<Vector2I>> _intents = new();
 
 
 	private double _tickAccumulator = 0.0;
-	private long _currentTick = 0;
 
 	private double _worldCheckAccumulator = 0.0;
 	private int _lastBroadcastVersion = -1;
@@ -341,7 +317,7 @@ public partial class Main : Node
 				type = "npc_render_updated",
 				slugs = _npcRender.GetManifest()
 			});
-			Diag.Log("diag_npc", $"Render bundles updated, notified {_sessions.Count} client(s)");
+			Diag.Log("diag_npc", $"Render bundles updated, notified {_state.Sessions.Count} client(s)");
 		}
 
 		DebugWanderTick(delta);   // TEMP-DEV
@@ -353,24 +329,24 @@ public partial class Main : Node
 
 	private void RunTick()
 	{
-		_currentTick++;
+		_state.CurrentTick++;
 
 		// 1. Movement processing (only if there are intents to process)
-		if (_intents.Count > 0)
+		if (_state.Intents.Count > 0)
 		{
 			var updates = new List<object>();
 			var donePeers = new List<long>();
 
-			foreach (long peerId in _intents.Keys.ToList())
+			foreach (long peerId in _state.Intents.Keys.ToList())
 			{
-				if (!_sessions.TryGetValue(peerId, out PlayerSession session)) { donePeers.Add(peerId); continue; }
-				if (!_positions.TryGetValue(session.PlayerId, out PlayerPosition current)) { donePeers.Add(peerId); continue; }
+				if (!_state.Sessions.TryGetValue(peerId, out PlayerSession session)) { donePeers.Add(peerId); continue; }
+				if (!_state.Positions.TryGetValue(session.PlayerId, out PlayerPosition current)) { donePeers.Add(peerId); continue; }
 
-				var path = _intents[peerId];
+				var path = _state.Intents[peerId];
 				if (path.Count == 0) { donePeers.Add(peerId); continue; }
 
 				var (next, finished, waypoint, waypointYaw) = StepTowardPath(current, path);
-				_positions[session.PlayerId] = next;
+				_state.Positions[session.PlayerId] = next;
 				updates.Add(new {
 					player_id = session.PlayerId,
 					x = next.X, y = next.Y, z = next.Z, yaw = next.Yaw,
@@ -383,10 +359,10 @@ public partial class Main : Node
 				if (finished) donePeers.Add(peerId);
 			}
 
-			foreach (long p in donePeers) _intents.Remove(p);
+			foreach (long p in donePeers) _state.Intents.Remove(p);
 			if (updates.Count > 0)
 			{
-				Broadcast(new { type = "tick_positions", tick = _currentTick, updates },
+				Broadcast(new { type = "tick_positions", tick = _state.CurrentTick, updates },
 					channel: 1, mode: MultiplayerPeer.TransferModeEnum.UnreliableOrdered);
 			}
 		}
@@ -461,13 +437,13 @@ public partial class Main : Node
 		{
 			foreach (var (pid, effects) in tickEffects)
 			{
-				if (!_positions.TryGetValue(pid, out var ppos)) continue;
+				if (!_state.Positions.TryGetValue(pid, out var ppos)) continue;
 				int pcx = (int)MathF.Floor((float)MathF.Round(ppos.X) / _world.ChunkSize);
 				int pcy = (int)MathF.Floor((float)MathF.Round(ppos.Z) / _world.ChunkSize);
 
 				string username = "";
 				long selfPeer = -1;
-				foreach (var kv in _sessions)
+				foreach (var kv in _state.Sessions)
 					if (kv.Value.PlayerId == pid) { username = kv.Value.Username; selfPeer = kv.Key; break; }
 
 				RouteChatEffects(pid, username, pcx, pcy, effects, selfPeer);
@@ -479,10 +455,10 @@ public partial class Main : Node
 		bool periodicNpcRefresh = _npcVisRefreshCounter >= 5;
 		if (periodicNpcRefresh) _npcVisRefreshCounter = 0;
 
-		foreach (long peerId in _sessions.Keys.ToList())
+		foreach (long peerId in _state.Sessions.Keys.ToList())
 		{
-			if (!_sessions.TryGetValue(peerId, out var sess)) continue;
-			if (!_positions.TryGetValue(sess.PlayerId, out var pos)) continue;
+			if (!_state.Sessions.TryGetValue(peerId, out var sess)) continue;
+			if (!_state.Positions.TryGetValue(sess.PlayerId, out var pos)) continue;
 			int tx = (int)MathF.Round(pos.X);
 			int ty = (int)MathF.Round(pos.Z);
 			var chunk = new Vector2I(
@@ -628,7 +604,7 @@ public partial class Main : Node
 		if (_world.Version == _lastBroadcastVersion) return;
 
 		_lastBroadcastVersion = _world.Version;
-		Diag.Log("diag_world", $"World hotfix: v{_world.Version}, notifying {_sessions.Count} client(s)");
+		Diag.Log("diag_world", $"World hotfix: v{_world.Version}, notifying {_state.Sessions.Count} client(s)");
 
 		Broadcast(new
 		{
@@ -711,32 +687,32 @@ public partial class Main : Node
 
 	private void OnPeerDisconnected(long peerId)
 	{
-		if (_sessions.TryGetValue(peerId, out var departingSession))
+		if (_state.Sessions.TryGetValue(peerId, out var departingSession))
 		{
 			CancelTradeForPlayer(departingSession.PlayerId, ErrorKeys.TradeCancelDisconnected);
 			CancelTradeQueuesForPlayer(departingSession.PlayerId, ErrorKeys.TradeCancelDisconnected);
 		}
 		_connectedPeers.Remove(peerId);
 		_authInProgress.Remove(peerId);
-		_intents.Remove(peerId);
+		_state.Intents.Remove(peerId);
 
-		if (_sessions.Remove(peerId, out PlayerSession session))
+		if (_state.Sessions.Remove(peerId, out PlayerSession session))
 		{
 			_perTick?.EndAllFor(session.PlayerId);          // MOVED INSIDE — session is non-null here
-			if (_combatByPlayer.TryGetValue(session.PlayerId, out var combatPair))
+			if (_state.CombatByPlayer.TryGetValue(session.PlayerId, out var combatPair))
 				EndCombat(combatPair);
-			_playerCombat.Remove(session.PlayerId);
+			_state.PlayerCombat.Remove(session.PlayerId);
 			_lastConsumeTick.Remove(session.PlayerId);
-			_inventoryByPlayer.Remove(session.PlayerId);
-			_creditsByPlayer.Remove(session.PlayerId);
+			_state.Inventories.Remove(session.PlayerId);
+			_state.Credits.Remove(session.PlayerId);
 			_skillsByPlayer.Remove(session.PlayerId);
-			_pendingEngage.Remove(session.PlayerId);
+			_state.PendingEngage.Remove(session.PlayerId);
 			_playerHealAccumTicks.Remove(session.PlayerId);
-			_peerByPlayerId.Remove(session.PlayerId);
-			_pendingPickup.Remove(session.PlayerId);
+			_state.PeerByPlayerId.Remove(session.PlayerId);
+			_state.PendingPickup.Remove(session.PlayerId);
 			_pendingTradeIntents.Remove(session.PlayerId);
 			_visibleGroundItems.Remove(peerId);
-			_dialogueByPlayer.Remove(session.PlayerId);
+			_state.DialogueByPlayer.Remove(session.PlayerId);
 			_pendingTalk.Remove(session.PlayerId);
 			_bankByPlayer.Remove(session.PlayerId);
 			_bankCapacityByPlayer.Remove(session.PlayerId);
@@ -744,14 +720,14 @@ public partial class Main : Node
 			_pendingBankIntents.Remove(session.PlayerId);
 			_pendingRecipeIntents.Remove(session.PlayerId);
 
-			if (_positions.TryGetValue(session.PlayerId, out PlayerPosition pos))
+			if (_state.Positions.TryGetValue(session.PlayerId, out PlayerPosition pos))
 			{
 				int tx = (int)MathF.Round(pos.X);
 				int ty = (int)MathF.Round(pos.Z);
 				int tz = (int)MathF.Round(pos.Y);
 				_ = _db.Players.SetTileAsync(session.PlayerId, tx, ty, tz);
 			}
-			_positions.Remove(session.PlayerId);
+			_state.Positions.Remove(session.PlayerId);
 			_lastPlayerChunk.Remove(peerId);
 			_visibleNpcs.Remove(peerId);
 
@@ -831,7 +807,7 @@ public partial class Main : Node
 
 	private void HandleTooltipsInfo(long peerId)
 	{
-		if (!_sessions.ContainsKey(peerId))
+		if (!_state.Sessions.ContainsKey(peerId))
 		{
 			SendError(peerId, "tooltips_info_result", ErrorKeys.WorldNotLoggedIn);
 			return;
@@ -912,7 +888,7 @@ public partial class Main : Node
 
 	private void HandleGfsInfo(long peerId)
 	{
-		if (!_sessions.ContainsKey(peerId))
+		if (!_state.Sessions.ContainsKey(peerId))
 		{
 			SendError(peerId, "gfs_info_result", ErrorKeys.WorldNotLoggedIn);
 			return;
@@ -925,7 +901,7 @@ public partial class Main : Node
 
 	private void OnGfsScriptsChanged(Dictionary<string, Dictionary<string, object>> changed, int version)
 	{
-		if (_sessions.Count == 0) return;
+		if (_state.Sessions.Count == 0) return;
 		Broadcast(new
 		{
 			type = "gfs_updated",
@@ -937,7 +913,7 @@ public partial class Main : Node
 
 	private void HandleRunAction(long peerId, JsonElement root)
 	{
-		if (!_sessions.TryGetValue(peerId, out PlayerSession session)) { GD.Print("[DIAG] run_action: no session"); return; }
+		if (!_state.Sessions.TryGetValue(peerId, out PlayerSession session)) { GD.Print("[DIAG] run_action: no session"); return; }
 		if (!root.TryGetProperty("script", out var scriptEl)) { GD.Print("[DIAG] run_action: no script"); return; }
 		string scriptPath = scriptEl.GetString() ?? "";
 		var ast = _gfs.GetAst(scriptPath);
@@ -994,7 +970,7 @@ public partial class Main : Node
 		}
 		//GD.Print($"[DIAG] after run: effects={effects.Count} endReq={ctx.EndScriptRequested} tags=[{string.Join(",", ast.Tags)}]");
 
-		if (_positions.TryGetValue(session.PlayerId, out var pos))
+		if (_state.Positions.TryGetValue(session.PlayerId, out var pos))
 		{
 			int cx = (int)MathF.Floor((float)MathF.Round(pos.X) / _world.ChunkSize);
 			int cy = (int)MathF.Floor((float)MathF.Round(pos.Z) / _world.ChunkSize);
@@ -1018,7 +994,7 @@ public partial class Main : Node
 
 	private void HandlePing(long peerId, JsonElement root)
 	{
-		if (!_sessions.ContainsKey(peerId)) return;
+		if (!_state.Sessions.ContainsKey(peerId)) return;
 		if (!root.TryGetProperty("t", out JsonElement tEl) || !tEl.TryGetInt64(out long clientT)) return;
 		Send(peerId, new { type = "pong", t = clientT });
 	}
@@ -1030,7 +1006,7 @@ public partial class Main : Node
 	private void HandleDevShutdown(long peerId)
 	{
 		if (!OS.IsDebugBuild()) return;
-		if (!_sessions.TryGetValue(peerId, out PlayerSession s) || !s.IsAdmin) return;
+		if (!_state.Sessions.TryGetValue(peerId, out PlayerSession s) || !s.IsAdmin) return;
 		GD.Print($"[Server] dev_shutdown requested by {s.Username}");
 		GracefulShutdown();
 	}
@@ -1056,7 +1032,7 @@ public partial class Main : Node
 	{
 		if (_shuttingDown) return;
 		_shuttingDown = true;
-		GD.Print($"[Server] Graceful shutdown: notifying {_sessions.Count} client(s)");
+		GD.Print($"[Server] Graceful shutdown: notifying {_state.Sessions.Count} client(s)");
 
 		Broadcast(new
 		{
@@ -1097,7 +1073,7 @@ public partial class Main : Node
 	/// </summary>
 	private void HandlePlayerWalkBuffered(long peerId, JsonElement root)
 {
-	if (!_sessions.TryGetValue(peerId, out PlayerSession session)) return;
+	if (!_state.Sessions.TryGetValue(peerId, out PlayerSession session)) return;
 
 	// Manual click-to-walk cancels all script-driven movement and pending
 	// queues. Without clearing pickup, a queued pickup abandoned by walking
@@ -1109,15 +1085,15 @@ public partial class Main : Node
 	CancelPendingTalkFor(session.PlayerId);
 	CancelBankForPlayer(session.PlayerId, "");        // silent
 	CancelPendingBankFor(session.PlayerId);
-	_pendingEngage.Remove(session.PlayerId);
-	_pendingPickup.Remove(session.PlayerId);
+	_state.PendingEngage.Remove(session.PlayerId);
+	_state.PendingPickup.Remove(session.PlayerId);
 
-	if (_combatByPlayer.TryGetValue(session.PlayerId, out var combatPair) && !combatPair.StateAnnounced)
+	if (_state.CombatByPlayer.TryGetValue(session.PlayerId, out var combatPair) && !combatPair.StateAnnounced)
 	{
 		EndCombat(combatPair);
 	}
 
-	if (!_positions.TryGetValue(session.PlayerId, out PlayerPosition current)) return;
+	if (!_state.Positions.TryGetValue(session.PlayerId, out PlayerPosition current)) return;
 
 	if (!root.TryGetProperty("path", out JsonElement pathEl) || pathEl.ValueKind != JsonValueKind.Array)
 		return;
@@ -1159,7 +1135,7 @@ public partial class Main : Node
 		if (!IsWalkableTile(path[0].X, curY)) return;
 	}
 
-	_intents[peerId] = path;
+	_state.Intents[peerId] = path;
 }
 
 
@@ -1199,7 +1175,7 @@ public partial class Main : Node
 				await GiveLootTableAsync(playerId, "trade_testing", forceAll: true);
 
 				// Roll starting credits. Written straight to the DB; the player
-				// is not yet in _creditsByPlayer (that cache is populated on
+				// is not yet in _state.Credits (that cache is populated on
 				// login in CompleteLoginAsync), so we can't route through
 				// GivePlayerCredits here.
 				if (_creditsLootBySlug.TryGetValue("trade_testing_credits", out var creditRange))
@@ -1224,7 +1200,7 @@ public partial class Main : Node
 	private async Task HandleLoginAsync(long peerId, string username, string password, string reason = "")
 	{
 		GD.Print($"[Server] Got login from peer {peerId}: user='{username}'");
-		if (_sessions.ContainsKey(peerId))
+		if (_state.Sessions.ContainsKey(peerId))
 		{ SendError(peerId, "login_result", ErrorKeys.LoginAlreadyLoggedIn); return; }
 		if (!_authInProgress.Add(peerId))
 		{ SendError(peerId, "login_result", ErrorKeys.RequestInProgress); return; }
@@ -1267,22 +1243,22 @@ private async Task CompleteLoginAsync(long peerId, PlayerRecord player)
 	}
 
 	var combatData = await _db.Stats.GetCombatAsync(player.Id);
-	_playerCombat[player.Id] = combatData ?? new PlayerCombatData(1, 1, 1, 0, 0, 10, 10, 1);
+	_state.PlayerCombat[player.Id] = combatData ?? new PlayerCombatData(1, 1, 1, 0, 0, 10, 10, 1);
 
 	var inv = await _db.Inventory.GetSlotsAsync(player.Id);
 	if (inv == null) inv = new long[28];
-	_inventoryByPlayer[player.Id] = inv;
+	_state.Inventories[player.Id] = inv;
 
 	LoadBankForPlayer(player.Id);
 
 	int credits = await _db.Players.GetCreditsAsync(player.Id);
-	_creditsByPlayer[player.Id] = credits;
+	_state.Credits[player.Id] = credits;
 
 
 	_skillsByPlayer[player.Id] = await _db.Stats.GetSkillsAsync(player.Id);
 
 	// Compute spawn position and publish it BEFORE the session. Any concurrent
-	// EnterWorld (from another player logging in) reads _positions to build
+	// EnterWorld (from another player logging in) reads _state.Positions to build
 	// world_state — the position must be set before the peer becomes visible.
 	PlayerPosition spawnPos;
 	var saved = await _db.Players.GetTileAsync(player.Id);
@@ -1304,15 +1280,15 @@ private async Task CompleteLoginAsync(long peerId, PlayerRecord player)
 	{
 		spawnPos = ComputeSpawnPosition(player.Id);
 	}
-	_positions[player.Id] = spawnPos;
+	_state.Positions[player.Id] = spawnPos;
 
 	// Session published after position. No awaits between these lines, so the
 	// pair is atomic from the perspective of other ticks.
 	long sid = Random.Shared.NextInt64(1, long.MaxValue);
 	_ = _db.Players.SetSidAsync(player.Id, sid);
 	var session = new PlayerSession(player.Id, player.Username, player.IsAdmin, sid);
-	_sessions[peerId] = session;
-	_peerByPlayerId[player.Id] = peerId;
+	_state.Sessions[peerId] = session;
+	_state.PeerByPlayerId[player.Id] = peerId;
 
 	GD.Print($"[Server] Login: {player.Username} (id {player.Id}, count {loginCount}{(player.IsAdmin ? ", admin" : "")})");
 	Send(peerId, new
@@ -1347,10 +1323,10 @@ private async Task CompleteLoginAsync(long peerId, PlayerRecord player)
 	private void EnterWorld(long peerId, PlayerSession session, PlayerPosition spawnPos)
 {
 	var others = new List<object>();
-	foreach (var (otherPeerId, other) in _sessions)
+	foreach (var (otherPeerId, other) in _state.Sessions)
 	{
 		if (otherPeerId == peerId) continue;
-		if (!_positions.TryGetValue(other.PlayerId, out var pos)) continue;
+		if (!_state.Positions.TryGetValue(other.PlayerId, out var pos)) continue;
 		others.Add(new
 		{
 			player_id = other.PlayerId,
@@ -1385,14 +1361,14 @@ private async Task CompleteLoginAsync(long peerId, PlayerRecord player)
 
 	private void HandleWorldInfo(long peerId)
 	{
-		if (!_sessions.ContainsKey(peerId)) { SendError(peerId, "world_info_result", ErrorKeys.WorldNotLoggedIn); return; }
+		if (!_state.Sessions.ContainsKey(peerId)) { SendError(peerId, "world_info_result", ErrorKeys.WorldNotLoggedIn); return; }
 		if (!_world.EnsureLoaded())         { SendError(peerId, "world_info_result", ErrorKeys.WorldUnavailable); return; }
 		Send(peerId, new { type = "world_info_result", ok = true, world_version = _world.Version, format_version = _world.FormatVersion });
 	}
 
 	private void HandleWorldFetch(long peerId)
 	{
-		if (!_sessions.ContainsKey(peerId)) { SendError(peerId, "world_data", ErrorKeys.WorldNotLoggedIn); return; }
+		if (!_state.Sessions.ContainsKey(peerId)) { SendError(peerId, "world_data", ErrorKeys.WorldNotLoggedIn); return; }
 		if (!_world.EnsureLoaded())         { SendError(peerId, "world_data", ErrorKeys.WorldUnavailable); return; }
 		var root = _world.GetRootElement();
 		if (root == null) { SendError(peerId, "world_data", ErrorKeys.WorldUnavailable); return; }
@@ -1434,7 +1410,7 @@ private async Task CompleteLoginAsync(long peerId, PlayerRecord player)
 					if (targetPid > 0)
 					{
 						long targetPeer = -1;
-						foreach (var kv in _sessions) if (kv.Value.PlayerId == targetPid) { targetPeer = kv.Key; break; }
+						foreach (var kv in _state.Sessions) if (kv.Value.PlayerId == targetPid) { targetPeer = kv.Key; break; }
 						if (targetPeer >= 0) Send(targetPeer, new { type = "private_message", text });
 					}
 					break;
@@ -1457,7 +1433,7 @@ private async Task CompleteLoginAsync(long peerId, PlayerRecord player)
 		MultiplayerPeer.TransferModeEnum mode = MultiplayerPeer.TransferModeEnum.Reliable)
 	{
 		byte[] bytes = JsonSerializer.SerializeToUtf8Bytes(message);
-		foreach (long peerId in _sessions.Keys)
+		foreach (long peerId in _state.Sessions.Keys)
 		{
 			if (peerId == exceptPeerId) continue;
 			SendBytes(peerId, bytes, channel, mode);
@@ -1471,8 +1447,8 @@ private async Task CompleteLoginAsync(long peerId, PlayerRecord player)
 	}
 	private void HandleChatSend(long peerId, JsonElement root)
 	{
-		if (!_sessions.TryGetValue(peerId, out PlayerSession session)) return;
-		if (!_positions.TryGetValue(session.PlayerId, out PlayerPosition pos)) return;
+		if (!_state.Sessions.TryGetValue(peerId, out PlayerSession session)) return;
+		if (!_state.Positions.TryGetValue(session.PlayerId, out PlayerPosition pos)) return;
 		if (!root.TryGetProperty("message", out JsonElement msgEl)) return;
 
 		string text = (msgEl.GetString() ?? "").Trim();
@@ -1498,7 +1474,7 @@ private async Task CompleteLoginAsync(long peerId, PlayerRecord player)
 	
 
 	internal bool TryGetPosition(long playerId, out PlayerPosition pos) =>
-		_positions.TryGetValue(playerId, out pos);
+		_state.Positions.TryGetValue(playerId, out pos);
 
 	internal bool TryGetTileInfo(int x, int y, out TileInfo info)
 	{
@@ -1510,7 +1486,7 @@ private async Task CompleteLoginAsync(long peerId, PlayerRecord player)
 	internal bool TryGetCredits(long playerId, out int credits)
 	{
 		credits = 0;
-		return _creditsByPlayer.TryGetValue(playerId, out credits);
+		return _state.Credits.TryGetValue(playerId, out credits);
 	}
 
 	/// <summary>
@@ -1554,8 +1530,8 @@ private async Task CompleteLoginAsync(long peerId, PlayerRecord player)
 	internal void SetIntent(long playerId, List<Vector2I> route)
 	{
 		long peerId = -1;
-		foreach (var kv in _sessions) if (kv.Value.PlayerId == playerId) { peerId = kv.Key; break; }
-		if (peerId >= 0) _intents[peerId] = new List<Vector2I>(route);
+		foreach (var kv in _state.Sessions) if (kv.Value.PlayerId == playerId) { peerId = kv.Key; break; }
+		if (peerId >= 0) _state.Intents[peerId] = new List<Vector2I>(route);
 	}
 
 	internal Dictionary<string, object>? GetActiveScriptArgs(long playerId, string stem) =>
@@ -1591,7 +1567,7 @@ private async Task CompleteLoginAsync(long peerId, PlayerRecord player)
 
 	internal List<Vector2I> PathfindToNearest(long selfPlayerId, int goalX, int goalY)
 	{
-		if (!_positions.TryGetValue(selfPlayerId, out var pos)) return new();
+		if (!_state.Positions.TryGetValue(selfPlayerId, out var pos)) return new();
 		return PathfindBetween((int)MathF.Round(pos.X), (int)MathF.Round(pos.Z), goalX, goalY);
 	}
 
@@ -1678,7 +1654,7 @@ private async Task CompleteLoginAsync(long peerId, PlayerRecord player)
 
 	private void HandleNpcRenderInfo(long peerId)
 	{
-		if (!_sessions.ContainsKey(peerId)) return;
+		if (!_state.Sessions.ContainsKey(peerId)) return;
 		Send(peerId, new
 		{
 			type = "npc_render_info_response",
@@ -1688,7 +1664,7 @@ private async Task CompleteLoginAsync(long peerId, PlayerRecord player)
 
 	private void HandleNpcRenderFetch(long peerId, JsonElement root)
 	{
-		if (!_sessions.ContainsKey(peerId)) return;
+		if (!_state.Sessions.ContainsKey(peerId)) return;
 		if (!root.TryGetProperty("slugs", out var slugsEl) || slugsEl.ValueKind != JsonValueKind.Array) return;
 
 		foreach (var s in slugsEl.EnumerateArray())
@@ -1847,7 +1823,7 @@ private void RollNpcDeathLoot(ActiveNpc npc, long killerPlayerId)
 	if (killerPlayerId > 0
 		&& !string.IsNullOrEmpty(npc.CreditsTableName)
 		&& _creditsLootBySlug.TryGetValue(npc.CreditsTableName, out var range)
-		&& _positions.ContainsKey(killerPlayerId))
+		&& _state.Positions.ContainsKey(killerPlayerId))
 	{
 		int amount = _combatRng.Next(range.Min, range.Max + 1);
 		if (amount > 0)
@@ -1882,17 +1858,17 @@ internal void GivePlayerCredits(long playerId, int amount)
 {
 	if (IsTradeInventoryLocked(playerId)) return;
 	if (amount <= 0) return;
-	if (!_creditsByPlayer.TryGetValue(playerId, out int current)) return;
+	if (!_state.Credits.TryGetValue(playerId, out int current)) return;
 	int newTotal = current + amount;
-	_creditsByPlayer[playerId] = newTotal;
+	_state.Credits[playerId] = newTotal;
 	_db.Players.SetCreditsSync(playerId, newTotal);
 	BroadcastCredits(playerId);
 }
 
 private void BroadcastCredits(long playerId)
 {
-	if (!_peerByPlayerId.TryGetValue(playerId, out long peerId)) return;
-	if (!_creditsByPlayer.TryGetValue(playerId, out int c)) return;
+	if (!_state.PeerByPlayerId.TryGetValue(playerId, out long peerId)) return;
+	if (!_state.Credits.TryGetValue(playerId, out int c)) return;
 	Send(peerId, new { type = "credits_updated", credits = c });
 }
 
@@ -1913,7 +1889,7 @@ internal void RequestEngage(long playerId, long npcId)
 	if (npc.IsDead) return;
 	if (!npc.Attackable) return;
 
-	if (_combatByPlayer.TryGetValue(playerId, out var existing))
+	if (_state.CombatByPlayer.TryGetValue(playerId, out var existing))
 	{
 		if (existing.NpcId == npcId) return;
 		return;
@@ -1921,8 +1897,8 @@ internal void RequestEngage(long playerId, long npcId)
 
 	if (_combatByNpc.ContainsKey(npcId))
 	{
-		if (_pendingEngage.TryGetValue(playerId, out var pendingNpc) && pendingNpc == npcId)
-			_pendingEngage.Remove(playerId);
+		if (_state.PendingEngage.TryGetValue(playerId, out var pendingNpc) && pendingNpc == npcId)
+			_state.PendingEngage.Remove(playerId);
 		ChatToPlayer(playerId, "That's already in a fight, I cannot engage in attack.");
 		Diag.Log("diag_combat", $"Player {playerId} tried to engage already-engaged NPC {npc.Name} (id {npcId}); rejected");
 		return;
@@ -1937,12 +1913,12 @@ internal void RequestEngage(long playerId, long npcId)
 
 	if (ArePositionsAdjacent(playerId, npc))
 	{
-		_pendingEngage.Remove(playerId);
+		_state.PendingEngage.Remove(playerId);
 		EngageNpc(playerId, npcId);
 		return;
 	}
 
-	_pendingEngage[playerId] = npcId;
+	_state.PendingEngage[playerId] = npcId;
 
 	// Cancel follow at click time, not at promotion time. During the approach
 	// phase the follow script would keep re-issuing its intent every tick and
@@ -1951,8 +1927,8 @@ internal void RequestEngage(long playerId, long npcId)
 	_perTick?.EndByStem(playerId, "follow_player");
 
 	long peerId = -1;
-	foreach (var kv in _sessions) if (kv.Value.PlayerId == playerId) { peerId = kv.Key; break; }
-	if (peerId >= 0) _intents.Remove(peerId);
+	foreach (var kv in _state.Sessions) if (kv.Value.PlayerId == playerId) { peerId = kv.Key; break; }
+	if (peerId >= 0) _state.Intents.Remove(peerId);
 	MovePlayerAdjacentToNpc(playerId, npc);
 	Diag.Log("diag_combat", $"Player {playerId} approaching NPC {npc.Name} (id {npcId})");
 }
@@ -1967,7 +1943,7 @@ internal void EngageNpc(long playerId, long npcId, bool initiatedByPlayer = true
 	if (!_npcs.TryGetValue(npcId, out var npc)) return;
 	if (npc.IsDead) return;
 
-	if (_combatByPlayer.TryGetValue(playerId, out var existing))
+	if (_state.CombatByPlayer.TryGetValue(playerId, out var existing))
 	{
 		if (existing.NpcId == npcId) return;
 		return;
@@ -1992,18 +1968,18 @@ internal void EngageNpc(long playerId, long npcId, bool initiatedByPlayer = true
 	{
 		PlayerId = playerId,
 		NpcId = npcId,
-		LastPlayerSwingTick = _currentTick - PlayerAttackSpeedTicks,
+		LastPlayerSwingTick = _state.CurrentTick - PlayerAttackSpeedTicks,
 		// Player-initiated combat: NPC's first swing is delayed by a full
 		// cooldown so the player always gets a clean opening hit. Hostility
 		// (initiatedByPlayer=false): NPC is free to swing on the first
 		// adjacent tick, matching "monster aggro hits immediately."
 		LastNpcSwingTick = initiatedByPlayer
-			? _currentTick
-			: _currentTick - npc.AttackSpeedTicks,
+			? _state.CurrentTick
+			: _state.CurrentTick - npc.AttackSpeedTicks,
 		StateAnnounced = false,
 		InitiatedByPlayer = initiatedByPlayer,
 	};
-	_combatByPlayer[playerId] = pair;
+	_state.CombatByPlayer[playerId] = pair;
 	if (!_combatByNpc.ContainsKey(npcId)) _combatByNpc[npcId] = pair;
 
 	_perTick?.EndByStem(playerId, "follow_player");
@@ -2013,7 +1989,7 @@ internal void EngageNpc(long playerId, long npcId, bool initiatedByPlayer = true
 
 	private void EndCombat(CombatPair pair)
 	{
-		_combatByPlayer.Remove(pair.PlayerId);
+		_state.CombatByPlayer.Remove(pair.PlayerId);
 		bool wasOwner = _combatByNpc.TryGetValue(pair.NpcId, out var owner) && owner == pair;
 		if (wasOwner) _combatByNpc.Remove(pair.NpcId);
 
@@ -2039,15 +2015,15 @@ internal void EngageNpc(long playerId, long npcId, bool initiatedByPlayer = true
 
 	private void ProcessCombat()
 {
-	if (_combatByPlayer.Count == 0) return;
+	if (_state.CombatByPlayer.Count == 0) return;
 	var toEnd = new List<CombatPair>();
 
-	foreach (var pair in _combatByPlayer.Values)
+	foreach (var pair in _state.CombatByPlayer.Values)
 	{
 		if (!_npcs.TryGetValue(pair.NpcId, out var npc)) { toEnd.Add(pair); continue; }
 		if (npc.IsDead) { toEnd.Add(pair); continue; }
-		if (!_positions.ContainsKey(pair.PlayerId)) { toEnd.Add(pair); continue; }
-		if (!_playerCombat.ContainsKey(pair.PlayerId)) { toEnd.Add(pair); continue; }
+		if (!_state.Positions.ContainsKey(pair.PlayerId)) { toEnd.Add(pair); continue; }
+		if (!_state.PlayerCombat.ContainsKey(pair.PlayerId)) { toEnd.Add(pair); continue; }
 
 		if (!ArePositionsAdjacent(pair.PlayerId, npc))
 		{
@@ -2067,7 +2043,7 @@ internal void EngageNpc(long playerId, long npcId, bool initiatedByPlayer = true
 				continue;
 			}
 
-			if (_positions.TryGetValue(pair.PlayerId, out var chasePos))
+			if (_state.Positions.TryGetValue(pair.PlayerId, out var chasePos))
 			{
 				var playerTile = new Vector2I(
 					(int)MathF.Round(chasePos.X),
@@ -2126,7 +2102,7 @@ internal void EngageNpc(long playerId, long npcId, bool initiatedByPlayer = true
 		//   - Player: only snap to face the NPC when standing still. While
 		//     walking, movement yaw drives facing (so fleeing looks correct).
 		//   - NPC:   always faces its target (it's actively engaging).
-		if (pair.StateAnnounced && _positions.TryGetValue(pair.PlayerId, out var facingPos))
+		if (pair.StateAnnounced && _state.Positions.TryGetValue(pair.PlayerId, out var facingPos))
 		{
 			int ptx = (int)MathF.Round(facingPos.X);
 			int pty = (int)MathF.Round(facingPos.Z);
@@ -2141,11 +2117,11 @@ internal void EngageNpc(long playerId, long npcId, bool initiatedByPlayer = true
 				pYaw = MathF.Round(pYaw / (MathF.PI / 4f)) * (MathF.PI / 4f);
 				if (MathF.Abs(pYaw - facingPos.Yaw) > 0.05f)
 				{
-					_positions[pair.PlayerId] = facingPos with { Yaw = pYaw };
+					_state.Positions[pair.PlayerId] = facingPos with { Yaw = pYaw };
 					Broadcast(new
 					{
 						type = "tick_positions",
-						tick = _currentTick,
+						tick = _state.CurrentTick,
 						updates = new[] {
 							new { player_id = pair.PlayerId, x = facingPos.X, y = facingPos.Y, z = facingPos.Z, yaw = pYaw }
 						}
@@ -2168,20 +2144,20 @@ internal void EngageNpc(long playerId, long npcId, bool initiatedByPlayer = true
 		}
 
 		if (!IsPlayerMoving(pair.PlayerId)
-			&& CanSwingTick(pair.LastPlayerSwingTick, PlayerAttackSpeedTicks, _currentTick))
+			&& CanSwingTick(pair.LastPlayerSwingTick, PlayerAttackSpeedTicks, _state.CurrentTick))
 		{
 			ResolvePlayerAttack(pair, npc);
-			pair.LastPlayerSwingTick = _currentTick;
-			if (npc.IsDead || !_playerCombat.ContainsKey(pair.PlayerId)) { toEnd.Add(pair); continue; }
+			pair.LastPlayerSwingTick = _state.CurrentTick;
+			if (npc.IsDead || !_state.PlayerCombat.ContainsKey(pair.PlayerId)) { toEnd.Add(pair); continue; }
 		}
 
 		if (_combatByNpc.TryGetValue(pair.NpcId, out var npcOwner) && npcOwner == pair)
 		{
-			if (CanSwingTick(pair.LastNpcSwingTick, npc.AttackSpeedTicks, _currentTick))
+			if (CanSwingTick(pair.LastNpcSwingTick, npc.AttackSpeedTicks, _state.CurrentTick))
 			{
 				ResolveNpcAttack(pair, npc);
-				pair.LastNpcSwingTick = _currentTick;
-				if (!_playerCombat.TryGetValue(pair.PlayerId, out var pd) || pd.CurrentHp <= 0)
+				pair.LastNpcSwingTick = _state.CurrentTick;
+				if (!_state.PlayerCombat.TryGetValue(pair.PlayerId, out var pd) || pd.CurrentHp <= 0)
 				{
 					HandlePlayerDeath(pair.PlayerId);
 					toEnd.Add(pair);
@@ -2232,12 +2208,12 @@ private void ProcessPlayerHealing()
 	const int HEAL_INTERVAL_TICKS = 83;
 	const int HEAL_PCT = 10;
 
-	foreach (var kv in _playerCombat)
+	foreach (var kv in _state.PlayerCombat)
 	{
 		long playerId = kv.Key;
 		var data = kv.Value;
 		if (data.CurrentHp >= data.MaxHp) { _playerHealAccumTicks[playerId] = 0; continue; }
-		if (!_positions.ContainsKey(playerId)) continue;
+		if (!_state.Positions.ContainsKey(playerId)) continue;
 
 		int accum = (_playerHealAccumTicks.TryGetValue(playerId, out var a) ? a : 0) + 1;
 		if (accum < HEAL_INTERVAL_TICKS)
@@ -2251,7 +2227,7 @@ private void ProcessPlayerHealing()
 		int newHp = Math.Min(data.MaxHp, data.CurrentHp + heal);
 		if (newHp == data.CurrentHp) continue;
 
-		_playerCombat[playerId] = data with { CurrentHp = newHp };
+		_state.PlayerCombat[playerId] = data with { CurrentHp = newHp };
 		_ = _db.Stats.SetPlayerHpAsync(playerId, newHp);
 		BroadcastPlayerHp(playerId, newHp, data.MaxHp);
 		Diag.Log("diag_combat", $"Player {playerId} regen to {newHp}/{data.MaxHp}");
@@ -2260,7 +2236,7 @@ private void ProcessPlayerHealing()
 
 	private void ResolvePlayerAttack(CombatPair pair, ActiveNpc npc)
 {
-	if (!_playerCombat.TryGetValue(pair.PlayerId, out var stats)) return;
+	if (!_state.PlayerCombat.TryGetValue(pair.PlayerId, out var stats)) return;
 	BroadcastPlayerAnim(pair.PlayerId, "attack", AttackAnimDurationMs);
 
 	bool hit = CombatRolls.RollHit(stats.Accuracy, stats.MeleeBonus, npc.Defence, npc.MeleeDefense, _combatRng);
@@ -2311,10 +2287,10 @@ private void ProcessPlayerHealing()
 			CurrentXpTenths = hitpointsXpTenths,
 		};
 
-		if (_playerCombat.TryGetValue(playerId, out var combat))
+		if (_state.PlayerCombat.TryGetValue(playerId, out var combat))
 		{
 			int newMaxHp = Math.Max(combat.MaxHp, hitpointsMax);
-			_playerCombat[playerId] = combat with
+			_state.PlayerCombat[playerId] = combat with
 			{
 				Accuracy = Math.Max(combat.Accuracy, accuracyLevel),
 				MaxHp = newMaxHp,
@@ -2324,13 +2300,13 @@ private void ProcessPlayerHealing()
 		}
 
 		_ = _db.Stats.AwardCombatXpAsync(playerId, damage, accuracyLevel, hitpointsMax);
-		if (_peerByPlayerId.TryGetValue(playerId, out long peerId))
+		if (_state.PeerByPlayerId.TryGetValue(playerId, out long peerId))
 			SendSkills(peerId);
 	}
 
 	private void ResolveNpcAttack(CombatPair pair, ActiveNpc npc)
 {
-	if (!_playerCombat.TryGetValue(pair.PlayerId, out var pd)) return;
+	if (!_state.PlayerCombat.TryGetValue(pair.PlayerId, out var pd)) return;
 	BroadcastNpcAnim(npc.Id, "attack", AttackAnimDurationMs);
 
 	bool hit = CombatRolls.RollHit(npc.Accuracy, npc.MeleeBonus, pd.Defence, pd.MeleeDefense, _combatRng);
@@ -2339,7 +2315,7 @@ private void ProcessPlayerHealing()
 	if (damage > 0)
 	{
 		int newHp = Math.Max(0, pd.CurrentHp - damage);
-		_playerCombat[pair.PlayerId] = pd with { CurrentHp = newHp };
+		_state.PlayerCombat[pair.PlayerId] = pd with { CurrentHp = newHp };
 		_ = _db.Stats.SetPlayerHpAsync(pair.PlayerId, newHp);
 		BroadcastPlayerHp(pair.PlayerId, newHp, pd.MaxHp);
 	}
@@ -2357,23 +2333,23 @@ private void ProcessPlayerHealing()
 		CancelPendingBankFor(playerId);
 
 		long peerId = -1;
-		foreach (var kv in _sessions) if (kv.Value.PlayerId == playerId) { peerId = kv.Key; break; }
+		foreach (var kv in _state.Sessions) if (kv.Value.PlayerId == playerId) { peerId = kv.Key; break; }
 		if (peerId < 0) return;
 
-		if (_combatByPlayer.TryGetValue(playerId, out var pair)) EndCombat(pair);
+		if (_state.CombatByPlayer.TryGetValue(playerId, out var pair)) EndCombat(pair);
 
 		// Clear all movement state so the player doesn't resume walking toward
 		// their last destination (or re-route to an NPC) from spawn position.
-		_intents.Remove(peerId);
-		_pendingEngage.Remove(playerId);
+		_state.Intents.Remove(peerId);
+		_state.PendingEngage.Remove(playerId);
 
 		var spawnPos = ComputeSpawnPosition(playerId);
-		_positions[playerId] = spawnPos;
+		_state.Positions[playerId] = spawnPos;
 
 		int hp = 10;
-		if (_playerCombat.TryGetValue(playerId, out var pd))
+		if (_state.PlayerCombat.TryGetValue(playerId, out var pd))
 		{
-			_playerCombat[playerId] = pd with { CurrentHp = pd.MaxHp };
+			_state.PlayerCombat[playerId] = pd with { CurrentHp = pd.MaxHp };
 			_ = _db.Stats.SetPlayerHpAsync(playerId, pd.MaxHp);
 			hp = pd.MaxHp;
 		}
@@ -2391,7 +2367,7 @@ private void ProcessPlayerHealing()
 
 	private bool ArePositionsAdjacent(long playerId, ActiveNpc npc)
 	{
-		if (!_positions.TryGetValue(playerId, out var ppos)) return false;
+		if (!_state.Positions.TryGetValue(playerId, out var ppos)) return false;
 		int px = (int)MathF.Round(ppos.X);
 		int py = (int)MathF.Round(ppos.Z);
 		int nx = (int)MathF.Round(npc.PosX);
@@ -2405,7 +2381,7 @@ private void ProcessPlayerHealing()
 
 	private int DistanceTiles(long playerId, ActiveNpc npc)
 	{
-		if (!_positions.TryGetValue(playerId, out var ppos)) return int.MaxValue;
+		if (!_state.Positions.TryGetValue(playerId, out var ppos)) return int.MaxValue;
 		int dx = (int)MathF.Round(ppos.X) - (int)MathF.Round(npc.PosX);
 		int dy = (int)MathF.Round(ppos.Z) - (int)MathF.Round(npc.PosZ);
 		return Math.Max(Math.Abs(dx), Math.Abs(dy));
@@ -2417,10 +2393,10 @@ private void ProcessPlayerHealing()
 /// </summary>
 private bool IsPlayerMoving(long playerId)
 {
-	foreach (var kv in _sessions)
+	foreach (var kv in _state.Sessions)
 	{
 		if (kv.Value.PlayerId != playerId) continue;
-		return _intents.TryGetValue(kv.Key, out var path) && path.Count > 0;
+		return _state.Intents.TryGetValue(kv.Key, out var path) && path.Count > 0;
 	}
 	return false;
 }
@@ -2435,11 +2411,11 @@ private int DistanceFromSpawn(ActiveNpc npc)
 	private bool MovePlayerAdjacentToNpc(long playerId, ActiveNpc npc)
 {
 	long peerId = -1;
-	foreach (var kv in _sessions) if (kv.Value.PlayerId == playerId) { peerId = kv.Key; break; }
+	foreach (var kv in _state.Sessions) if (kv.Value.PlayerId == playerId) { peerId = kv.Key; break; }
 	if (peerId < 0) return false;
-	if (_intents.ContainsKey(peerId)) return true;   // already walking — progress possible
+	if (_state.Intents.ContainsKey(peerId)) return true;   // already walking — progress possible
 
-	if (!_positions.TryGetValue(playerId, out var ppos)) return false;
+	if (!_state.Positions.TryGetValue(playerId, out var ppos)) return false;
 	int px = (int)MathF.Round(ppos.X);
 	int py = (int)MathF.Round(ppos.Z);
 	int nx = (int)MathF.Round(npc.PosX);
@@ -2455,7 +2431,7 @@ private int DistanceFromSpawn(ActiveNpc npc)
 			var cand = new Vector2I(px + d.X, py + d.Y);
 			if (IsValidTile(cand.X, cand.Y))
 			{
-				_intents[peerId] = new List<Vector2I> { cand };
+				_state.Intents[peerId] = new List<Vector2I> { cand };
 				return true;
 			}
 		}
@@ -2482,7 +2458,7 @@ private int RollQuantity((int Min, int Max) range)
 	private void ChatToPlayer(long playerId, string message)
 	{
 		long peerId = -1;
-		foreach (var kv in _sessions) if (kv.Value.PlayerId == playerId) { peerId = kv.Key; break; }
+		foreach (var kv in _state.Sessions) if (kv.Value.PlayerId == playerId) { peerId = kv.Key; break; }
 		if (peerId < 0) return;
 		Send(peerId, new { type = "private_message", text = message });
 	}
@@ -2503,10 +2479,10 @@ private int RollQuantity((int Min, int Max) range)
 	/// </summary>
 	private void NotifyNpcVisibilityChanged()
 	{
-		foreach (long peerId in _sessions.Keys.ToList())
+		foreach (long peerId in _state.Sessions.Keys.ToList())
 		{
-			if (!_sessions.TryGetValue(peerId, out var sess)) continue;
-			if (!_positions.TryGetValue(sess.PlayerId, out var pos)) continue;
+			if (!_state.Sessions.TryGetValue(peerId, out var sess)) continue;
+			if (!_state.Positions.TryGetValue(sess.PlayerId, out var pos)) continue;
 			int tx = (int)MathF.Round(pos.X);
 			int ty = (int)MathF.Round(pos.Z);
 			RefreshNpcVisibility(peerId, tx, ty);
@@ -2540,9 +2516,9 @@ private int RollQuantity((int Min, int Max) range)
 	internal void OpenNpcEditorForPlayer(long playerId, long npcId)
 	{
 		long peerId = -1;
-		foreach (var kv in _sessions) if (kv.Value.PlayerId == playerId) { peerId = kv.Key; break; }
+		foreach (var kv in _state.Sessions) if (kv.Value.PlayerId == playerId) { peerId = kv.Key; break; }
 		if (peerId < 0) return;
-		if (!_sessions[peerId].IsAdmin)
+		if (!_state.Sessions[peerId].IsAdmin)
 		{
 			ChatToPlayer(playerId, "Admin only.");
 			return;
@@ -2553,7 +2529,7 @@ private int RollQuantity((int Min, int Max) range)
 
 private void HandleNpcEditorGet(long peerId, JsonElement root)
 {
-	if (!_sessions.TryGetValue(peerId, out var session)) return;
+	if (!_state.Sessions.TryGetValue(peerId, out var session)) return;
 	if (!session.IsAdmin) return;
 	if (!root.TryGetProperty("npc_id", out var idEl) || !idEl.TryGetInt64(out long npcId)) return;
 	if (!_npcs.TryGetValue(npcId, out var npc)) return;
@@ -2595,7 +2571,7 @@ private void HandleNpcEditorGet(long peerId, JsonElement root)
 
 private void HandleNpcEditorSave(long peerId, JsonElement root)
 {
-	if (!_sessions.TryGetValue(peerId, out var session)) return;
+	if (!_state.Sessions.TryGetValue(peerId, out var session)) return;
 	if (!session.IsAdmin) return;
 	if (!root.TryGetProperty("npc_id", out var idEl) || !idEl.TryGetInt64(out long npcId)) return;
 	if (!_npcs.TryGetValue(npcId, out var npc)) return;
@@ -2684,12 +2660,12 @@ private void HandleNpcEditorSave(long peerId, JsonElement root)
 /// </summary>
 private void ProcessPendingEngage()
 {
-	if (_pendingEngage.Count == 0) return;
+	if (_state.PendingEngage.Count == 0) return;
 
 	var toRemove = new List<long>();
 	var toEngage = new List<(long playerId, long npcId)>();
 
-	foreach (var kv in _pendingEngage)
+	foreach (var kv in _state.PendingEngage)
 	{
 		long playerId = kv.Key;
 		long npcId = kv.Value;
@@ -2699,7 +2675,7 @@ private void ProcessPendingEngage()
 			toRemove.Add(playerId);
 			continue;
 		}
-		if (!_positions.ContainsKey(playerId))
+		if (!_state.Positions.ContainsKey(playerId))
 		{
 			toRemove.Add(playerId);
 			continue;
@@ -2718,7 +2694,7 @@ private void ProcessPendingEngage()
 		}
 	}
 
-	foreach (var p in toRemove) _pendingEngage.Remove(p);
+	foreach (var p in toRemove) _state.PendingEngage.Remove(p);
 	foreach (var (pid, nid) in toEngage) EngageNpc(pid, nid);
 }
 
@@ -2744,16 +2720,16 @@ private void ProcessHostility()
 		int bestDist = int.MaxValue;
 		int levelCap = npc.FinalLevel * 2;
 
-		foreach (var kv in _sessions)
+		foreach (var kv in _state.Sessions)
 		{
 			long playerId = kv.Value.PlayerId;
-			if (!_positions.ContainsKey(playerId)) continue;
-			if (_combatByPlayer.ContainsKey(playerId)) continue;
-			if (!_playerCombat.TryGetValue(playerId, out var pdata)) continue;
+			if (!_state.Positions.ContainsKey(playerId)) continue;
+			if (_state.CombatByPlayer.ContainsKey(playerId)) continue;
+			if (!_state.PlayerCombat.TryGetValue(playerId, out var pdata)) continue;
 			if (pdata.FinalLevel < 1 || pdata.FinalLevel > levelCap) continue;
 			if (pdata.CurrentHp <= 0) continue;
 
-			var ppos = _positions[playerId];
+			var ppos = _state.Positions[playerId];
 			int px = (int)MathF.Round(ppos.X);
 			int py = (int)MathF.Round(ppos.Z);
 			int dist = Math.Max(Math.Abs(px - nx), Math.Abs(py - ny));
@@ -2777,7 +2753,7 @@ private void ProcessHostility()
 
 internal string? GetSlotItemSlug(long playerId, int slot)
 {
-	if (!_inventoryByPlayer.TryGetValue(playerId, out var inv)) return null;
+	if (!_state.Inventories.TryGetValue(playerId, out var inv)) return null;
 	if (slot < 0 || slot >= 28) return null;
 	long packed = inv[slot];
 	if (packed == 0) return null;
@@ -2787,7 +2763,7 @@ internal string? GetSlotItemSlug(long playerId, int slot)
 
 internal int GetSlotQuantity(long playerId, int slot)
 {
-	if (!_inventoryByPlayer.TryGetValue(playerId, out var inv)) return 0;
+	if (!_state.Inventories.TryGetValue(playerId, out var inv)) return 0;
 	if (slot < 0 || slot >= 28) return 0;
 	long packed = inv[slot];
 	return packed == 0 ? 0 : ItemStack.Quantity(packed);
@@ -2796,7 +2772,7 @@ internal int GetSlotQuantity(long playerId, int slot)
 internal bool ConsumeInventorySlot(long playerId, int slot, int qty)
 {
 	if (IsTradeInventoryLocked(playerId)) return false;
-	if (!_inventoryByPlayer.TryGetValue(playerId, out var inv)) return false;
+	if (!_state.Inventories.TryGetValue(playerId, out var inv)) return false;
 	if (slot < 0 || slot >= 28) return false;
 	long packed = inv[slot];
 	if (packed == 0) return false;
@@ -2822,7 +2798,7 @@ internal bool GiveItem(long playerId, string itemSlug, int qty)
 	if (IsTradeInventoryLocked(playerId)) return false;
 	if (qty < 1) return false;
 	if (!_items.ContainsSlug(itemSlug)) return false;
-	if (!_inventoryByPlayer.ContainsKey(playerId)) return false;
+	if (!_state.Inventories.ContainsKey(playerId)) return false;
 	_ = GiveItemAsync(playerId, itemSlug, qty);
 	return true;
 }
@@ -2849,11 +2825,11 @@ internal async Task<bool> GiveItemAsync(long playerId, string itemSlug, int qty)
 
 	// `out var inv` here is the single declaration of `inv` for the whole
 	// function. Every use below relies on it.
-	if (!_inventoryByPlayer.TryGetValue(playerId, out var inv))
+	if (!_state.Inventories.TryGetValue(playerId, out var inv))
 	{
 		inv = await _db.Inventory.GetSlotsAsync(playerId);
 		if (inv == null) inv = new long[28];
-		_inventoryByPlayer[playerId] = inv;
+		_state.Inventories[playerId] = inv;
 	}
 
 	if (meta.Stackable)
@@ -2937,10 +2913,10 @@ internal async Task GiveLootTableAsync(long playerId, string lootSlug, bool forc
 
 internal void HealPlayer(long playerId, int amount)
 {
-	if (!_playerCombat.TryGetValue(playerId, out var pd)) return;
+	if (!_state.PlayerCombat.TryGetValue(playerId, out var pd)) return;
 	int newHp = Math.Min(pd.MaxHp, pd.CurrentHp + amount);
 	if (newHp == pd.CurrentHp) return;
-	_playerCombat[playerId] = pd with { CurrentHp = newHp };
+	_state.PlayerCombat[playerId] = pd with { CurrentHp = newHp };
 	_ = _db.Stats.SetPlayerHpAsync(playerId, newHp);
 	BroadcastPlayerHp(playerId, newHp, pd.MaxHp);
 }
@@ -2953,26 +2929,26 @@ internal void HealPlayer(long playerId, int amount)
 internal bool TryConsumeItem(long playerId, int slot, int healAmount)
 {
 	if (_lastConsumeTick.TryGetValue(playerId, out long lastTick)
-		&& _currentTick - lastTick < ConsumeCooldownTicks)
+		&& _state.CurrentTick - lastTick < ConsumeCooldownTicks)
 		return false;
 
 	if (!ConsumeInventorySlot(playerId, slot, 1)) return false;
 
-	_lastConsumeTick[playerId] = _currentTick;
+	_lastConsumeTick[playerId] = _state.CurrentTick;
 	if (healAmount > 0) HealPlayer(playerId, healAmount);
 	return true;
 }
 
 private void BroadcastInventory(long playerId)
 {
-	if (!_peerByPlayerId.TryGetValue(playerId, out long peerId)) return;
+	if (!_state.PeerByPlayerId.TryGetValue(playerId, out long peerId)) return;
 	SendInventory(peerId);
 }
 
 private void SendInventory(long peerId)
 {
-	if (!_sessions.TryGetValue(peerId, out var session)) return;
-	if (!_inventoryByPlayer.TryGetValue(session.PlayerId, out var inv)) return;
+	if (!_state.Sessions.TryGetValue(peerId, out var session)) return;
+	if (!_state.Inventories.TryGetValue(session.PlayerId, out var inv)) return;
 
 	var slots = new List<object>();
 	for (int i = 0; i < 28; i++)
@@ -3001,7 +2977,7 @@ private void SendInventory(long peerId)
 
 private void SendSkills(long peerId)
 {
-	if (!_sessions.TryGetValue(peerId, out var session)) return;
+	if (!_state.Sessions.TryGetValue(peerId, out var session)) return;
 	if (!_skillsByPlayer.TryGetValue(session.PlayerId, out var skills)) return;
 
 	var list = skills.Select(s =>
@@ -3009,7 +2985,7 @@ private void SendSkills(long peerId)
 		int level = Math.Clamp(s.Max, 1, SkillExperience.MaxLevel);
 		int displayedLevel = s.Level;
 		int displayedMax = s.Max;
-		if (s.Id == "hitpoints" && _playerCombat.TryGetValue(session.PlayerId, out var combat))
+		if (s.Id == "hitpoints" && _state.PlayerCombat.TryGetValue(session.PlayerId, out var combat))
 		{
 			displayedLevel = combat.CurrentHp;
 			displayedMax = combat.MaxHp;
@@ -3035,13 +3011,13 @@ private void SendSkills(long peerId)
 
 private void HandleInventorySwap(long peerId, JsonElement root)
 {
-	if (!_sessions.TryGetValue(peerId, out var session)) return;
+	if (!_state.Sessions.TryGetValue(peerId, out var session)) return;
 	if (IsTradeInventoryLocked(session.PlayerId)) return;
 	if (!root.TryGetProperty("slot_a", out var aEl) || !aEl.TryGetInt32(out int slotA)) return;
 	if (!root.TryGetProperty("slot_b", out var bEl) || !bEl.TryGetInt32(out int slotB)) return;
 	if (slotA == slotB) return;
 	if (slotA < 0 || slotA >= 28 || slotB < 0 || slotB >= 28) return;
-	if (!_inventoryByPlayer.TryGetValue(session.PlayerId, out var inv)) return;
+	if (!_state.Inventories.TryGetValue(session.PlayerId, out var inv)) return;
 
 	long tmp = inv[slotA];
 	inv[slotA] = inv[slotB];
@@ -3081,7 +3057,7 @@ internal bool DropGroundItem(long playerId, string itemSlug, int quantity)
 {
 	if (quantity < 1) return false;
 	if (!_items.ContainsSlug(itemSlug)) return false;
-	if (!_positions.TryGetValue(playerId, out var pos)) return false;
+	if (!_state.Positions.TryGetValue(playerId, out var pos)) return false;
 
 	int tx = (int)MathF.Round(pos.X);
 	int ty = (int)MathF.Round(pos.Z);
@@ -3107,7 +3083,7 @@ internal void RequestPickup(long playerId, long groundItemId)
 {
 	if (IsTradeInventoryLocked(playerId)) return;
 	if (!_groundItems.TryGetValue(groundItemId, out var item)) return;
-	if (!_positions.TryGetValue(playerId, out var pos)) return;
+	if (!_state.Positions.TryGetValue(playerId, out var pos)) return;
 
 	int px = (int)MathF.Round(pos.X);
 	int py = (int)MathF.Round(pos.Z);
@@ -3117,21 +3093,21 @@ internal void RequestPickup(long playerId, long groundItemId)
 		return;
 	}
 
-	_pendingPickup[playerId] = groundItemId;
+	_state.PendingPickup[playerId] = groundItemId;
 	MovePlayerToTile(playerId, item.TileX, item.TileY);
 	Diag.Log("diag_item", $"Player {playerId} approaching ground item {groundItemId}");
 }
 
 private void ProcessPendingPickup()
 {
-	if (_pendingPickup.Count == 0) return;
+	if (_state.PendingPickup.Count == 0) return;
 	var toRemove = new List<long>();
-	foreach (var kv in _pendingPickup)
+	foreach (var kv in _state.PendingPickup)
 	{
 		long playerId = kv.Key;
 		long itemId = kv.Value;
 		if (!_groundItems.TryGetValue(itemId, out var item)) { toRemove.Add(playerId); continue; }
-		if (!_positions.TryGetValue(playerId, out var pos)) { toRemove.Add(playerId); continue; }
+		if (!_state.Positions.TryGetValue(playerId, out var pos)) { toRemove.Add(playerId); continue; }
 		int px = (int)MathF.Round(pos.X);
 		int py = (int)MathF.Round(pos.Z);
 		if (px == item.TileX && py == item.TileY)
@@ -3140,16 +3116,16 @@ private void ProcessPendingPickup()
 			toRemove.Add(playerId);
 		}
 	}
-	foreach (var p in toRemove) _pendingPickup.Remove(p);
+	foreach (var p in toRemove) _state.PendingPickup.Remove(p);
 }
 
 private void MovePlayerAdjacentToTile(long playerId, int tx, int ty)
 {
 	long peerId = -1;
-	foreach (var kv in _sessions) if (kv.Value.PlayerId == playerId) { peerId = kv.Key; break; }
+	foreach (var kv in _state.Sessions) if (kv.Value.PlayerId == playerId) { peerId = kv.Key; break; }
 	if (peerId < 0) return;
-	if (_intents.ContainsKey(peerId)) return;
-	if (!_positions.TryGetValue(playerId, out var pos)) return;
+	if (_state.Intents.ContainsKey(peerId)) return;
+	if (!_state.Positions.TryGetValue(playerId, out var pos)) return;
 
 	int px = (int)MathF.Round(pos.X);
 	int py = (int)MathF.Round(pos.Z);
@@ -3163,7 +3139,7 @@ private void MovePlayerAdjacentToTile(long playerId, int tx, int ty)
 			var cand = new Vector2I(px + d.X, py + d.Y);
 			if (IsValidTile(cand.X, cand.Y))
 			{
-				_intents[peerId] = new List<Vector2I> { cand };
+				_state.Intents[peerId] = new List<Vector2I> { cand };
 				return;
 			}
 		}
@@ -3213,10 +3189,10 @@ private void ProcessGroundItemDespawn()
 
 private void BroadcastGroundItemToNearby(GroundItem item)
 {
-	foreach (long peerId in _sessions.Keys)
+	foreach (long peerId in _state.Sessions.Keys)
 	{
-		if (!_sessions.TryGetValue(peerId, out var sess)) continue;
-		if (!_positions.TryGetValue(sess.PlayerId, out var pos)) continue;
+		if (!_state.Sessions.TryGetValue(peerId, out var sess)) continue;
+		if (!_state.Positions.TryGetValue(sess.PlayerId, out var pos)) continue;
 		int pcx = ActiveNpc.FloorDiv((int)MathF.Round(pos.X), _world.ChunkSize);
 		int pcy = ActiveNpc.FloorDiv((int)MathF.Round(pos.Z), _world.ChunkSize);
 		int icx = ActiveNpc.FloorDiv(item.TileX, _world.ChunkSize);
@@ -3268,7 +3244,7 @@ private void RefreshGroundItemVisibility(long peerId, int tx, int ty)
 
 private void HandlePickupGroundItem(long peerId, JsonElement root)
 {
-	if (!_sessions.TryGetValue(peerId, out var session)) return;
+	if (!_state.Sessions.TryGetValue(peerId, out var session)) return;
 	if (!root.TryGetProperty("id", out var idEl) || !idEl.TryGetInt64(out long groundItemId)) return;
 	RequestPickup(session.PlayerId, groundItemId);
 }
@@ -3276,7 +3252,7 @@ private void HandlePickupGroundItem(long peerId, JsonElement root)
 internal bool TryDropFromSlot(long playerId, int slot, int qty)
 {
 	if (IsTradeInventoryLocked(playerId)) return false;
-	if (!_inventoryByPlayer.TryGetValue(playerId, out var inv)) return false;
+	if (!_state.Inventories.TryGetValue(playerId, out var inv)) return false;
 	if (slot < 0 || slot >= 28) return false;
 	long packed = inv[slot];
 	if (packed == 0) return false;
@@ -3295,10 +3271,10 @@ internal bool TryDropFromSlot(long playerId, int slot, int qty)
 private void MovePlayerToTile(long playerId, int tx, int ty)
 {
 	long peerId = -1;
-	foreach (var kv in _sessions) if (kv.Value.PlayerId == playerId) { peerId = kv.Key; break; }
+	foreach (var kv in _state.Sessions) if (kv.Value.PlayerId == playerId) { peerId = kv.Key; break; }
 	if (peerId < 0) return;
-	if (_intents.ContainsKey(peerId)) return;
-	if (!_positions.TryGetValue(playerId, out var pos)) return;
+	if (_state.Intents.ContainsKey(peerId)) return;
+	if (!_state.Positions.TryGetValue(playerId, out var pos)) return;
 
 	int px = (int)MathF.Round(pos.X);
 	int py = (int)MathF.Round(pos.Z);
