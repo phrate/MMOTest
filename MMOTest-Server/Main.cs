@@ -189,6 +189,16 @@ public partial class Main : Node
 				GD.Print($"[Server] DB tables: {string.Join(", ", tables)}");
 			}
 
+			// Ensure the canonical dev account exists before anything else.
+			// Cheap no-op when it already exists.
+			EnsureDevAccountSync("phrate", "12345678");
+
+			if (ResetPlayersOnStartup)
+			{
+				int wiped = _db.WipeAllPlayersExceptSync("phrate");
+				GD.Print($"[Server] Reset: wiped {wiped} player(s), preserved 'phrate'");
+			}
+
 			var items = _db.GetAllItemsSync().Result;
 			foreach (var it in items)
 			{
@@ -682,6 +692,19 @@ public partial class Main : Node
 	[Export] public bool DiagChat { get; set; } = false;
 	[Export] public bool DiagNpc { get; set; } = false;
 	[Export] public bool DiagRecipe { get; set; } = false;
+
+	// ============================================================================
+	// Player lifecycle
+	// ============================================================================
+	// ResetPlayersOnStartup: when true, wipes every player except the canonical
+	// dev account ('phrate') on boot. Useful for clearing accumulated test
+	// accounts without touching your primary dev character. Leave false in
+	// production.
+	//
+	// The canonical dev account is created (with fresh defaults) if missing on
+	// every startup regardless of this flag.
+
+	[Export] public bool ResetPlayersOnStartup { get; set; } = false;
 
 	// ---------- Connection events ----------
 
@@ -3466,4 +3489,35 @@ private static string CollapseSpaces(string text)
 	}
 	return sb.ToString();
 }
+
+	/// <summary>
+	/// Ensures the canonical dev account exists with admin flag set. If the
+	/// account is missing, creates it with fresh defaults (HP 10, all other
+	/// skills level 1, 0 credits, empty inventory, empty bank). If it exists
+	/// but isn't admin, elevates it. Does not touch existing player data.
+	/// </summary>
+	private void EnsureDevAccountSync(string username, string password)
+	{
+		var existing = _db.GetPlayerByUsernameAsync(username).Result;
+		if (existing != null)
+		{
+			if (!existing.IsAdmin)
+			{
+				_db.SetPlayerAdminSync(existing.Id, true);
+				GD.Print($"[Server] Elevated dev account '{username}' to admin");
+			}
+			return;
+		}
+
+		string hash = PasswordHasher.Hash(password);
+		var (created, playerId) = _db.TryCreatePlayerAsync(username, hash, isAdmin: true).Result;
+		if (!created)
+		{
+			GD.PrintErr($"[Server] Failed to create dev account '{username}'");
+			return;
+		}
+		_db.EnsurePlayerStatsAsync(playerId).Wait();
+		_db.EnsurePlayerInventoryAsync(playerId).Wait();
+		GD.Print($"[Server] Created dev account '{username}' (id {playerId})");
+	}
 }

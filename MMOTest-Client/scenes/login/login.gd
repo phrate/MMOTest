@@ -1,6 +1,7 @@
 extends Control
 
 const DEV_AUTO_LOGIN := true
+const DEV_USE_AUTO_REGISTER := false  # true = old random-account auto-register flow
 
 @onready var tabs: TabContainer = $Margin/VBox/Tabs
 @onready var login_form: LoginForm = $Margin/VBox/Tabs/Login
@@ -37,7 +38,10 @@ func _on_state_changed(state: int) -> void:
 	match state:
 		Network.State.CONNECTED:
 			if DEV_AUTO_LOGIN and OS.is_debug_build() and not Session.is_logged_in():
-				Network.debug_register_and_login()
+				if DEV_USE_AUTO_REGISTER:
+					Network.debug_register_and_login()
+				else:
+					Network.dev_auto_login()
 
 
 func _on_hello(_v: String, _t: int) -> void:

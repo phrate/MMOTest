@@ -35,7 +35,7 @@ public partial class NpcEditorBridge : Node
 		using var conn = Open();
 		using var cmd = conn.CreateCommand();
 		cmd.CommandText = @"
-			SELECT id, slug_id FROM combat_levels
+			SELECT id, slug_id FROM levels_combat
 			WHERE template_slug IS NULL AND slug_id LIKE 'npc\_%' ESCAPE '\'
 			ORDER BY slug_id;";
 		using var reader = cmd.ExecuteReader();
@@ -57,7 +57,7 @@ public partial class NpcEditorBridge : Node
 				   melee_bonus, ranged_bonus, ether_bonus,
 				   melee_defense, ranged_defense, ether_defense,
 				   attack_speed
-			FROM combat_levels WHERE id = $id;";
+			FROM levels_combat WHERE id = $id;";
 		cmd.Parameters.AddWithValue("$id", id);
 		using var r = cmd.ExecuteReader();
 		if (!r.Read()) return null;
@@ -96,7 +96,7 @@ public partial class NpcEditorBridge : Node
 			using var conn = Open();
 			using var cmd = conn.CreateCommand();
 			cmd.CommandText = @"
-				UPDATE combat_levels SET
+				UPDATE levels_combat SET
 					final_level   = $fl,
 					hitpoints     = $hp, max_hitpoints = $mhp,
 					accuracy      = $acc, max_accuracy  = $mac,
@@ -158,7 +158,7 @@ public partial class NpcEditorBridge : Node
 				   n.playing_animation, n.loot_table_name,
 				   n.is_dead, n.is_dying, n.spawn_timer,
 				   n.spawn_flags, n.ai_package_state, n.ai_action_state,
-				   n.attackable, n.combat_levels_id, n.render_slug, n.dialogue_script,
+				   n.attackable, n.levels_combat_id, n.render_slug, n.dialogue_script,
 				   n.aggressive, n.aggro_range,
 				   c.slug_id, c.template_slug, c.final_level,
 				   c.hitpoints, c.max_hitpoints,
@@ -169,7 +169,7 @@ public partial class NpcEditorBridge : Node
 				   c.melee_defense, c.ranged_defense, c.ether_defense,
 				   c.attack_speed
 			FROM npcs n
-			LEFT JOIN combat_levels c ON n.combat_levels_id = c.id
+			LEFT JOIN levels_combat c ON n.levels_combat_id = c.id
 			WHERE n.id = $id;";
 		cmd.Parameters.AddWithValue("$id", id);
 		using var r = cmd.ExecuteReader();
@@ -191,16 +191,16 @@ public partial class NpcEditorBridge : Node
 			["ai_package_state"] = r.GetString(12),
 			["ai_action_state"] = r.GetString(13),
 			["attackable"] = r.GetInt64(14) != 0,
-			["combat_levels_id"] = r.IsDBNull(15) ? 0L : r.GetInt64(15),
+			["levels_combat_id"] = r.IsDBNull(15) ? 0L : r.GetInt64(15),
 			["render_slug"] = r.IsDBNull(16) ? "" : r.GetString(16),
 			["dialogue_script"] = r.IsDBNull(17) ? "" : r.GetString(17),
 			["aggressive"] = r.GetInt64(18) != 0,
 			["aggro_range"] = r.GetInt32(19),
 		};
-		if (!r.IsDBNull(19))
+		if (!r.IsDBNull(15))
 		{
 			d["combat_slug"] = r.GetString(20);
-			d["template_slug"] = r.IsDBNull(21) ? "" : r.GetString(20);
+			d["template_slug"] = r.IsDBNull(21) ? "" : r.GetString(21);
 			d["final_level"] = r.GetInt32(22);
 			d["hitpoints"] = r.GetInt32(23);
 			d["max_hitpoints"] = r.GetInt32(24);
@@ -261,16 +261,18 @@ public partial class NpcEditorBridge : Node
 				cmd.Parameters.AddWithValue("$lt", GetString(d, "loot_table_name", "common_loot_1"));
 				cmd.Parameters.AddWithValue("$stimer", GetInt(d, "spawn_timer", 30));
 				cmd.Parameters.AddWithValue("$id", GetLong(d, "id"));
+				cmd.Parameters.AddWithValue("$dialogue_script", GetString(d, "dialogue_script", ""));
+				cmd.Parameters.AddWithValue("$is_banker", GetBool(d, "is_banker", false) ? 1 : 0);
 				cmd.ExecuteNonQuery();
 			}
 
-			long clId = GetLong(d, "combat_levels_id");
+			long clId = GetLong(d, "levels_combat_id");
 			if (clId > 0)
 			{
 				using var cmd = conn.CreateCommand();
 				cmd.Transaction = tx;
 				cmd.CommandText = @"
-					UPDATE combat_levels SET
+					UPDATE levels_combat SET
 						final_level = $fl,
 						hitpoints = $hp, max_hitpoints = $mhp,
 						accuracy = $ac, max_accuracy = $mac,

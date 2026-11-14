@@ -1,8 +1,0 @@
-res://editor/NpcEditorBridge.cs
-res://Main.cs
-res://editor/WorldEditor.cs
-res://Main.tscn
-res://editor/npc_editor_panel.tscn
-res://editor/npc_editor.tscn
-res://editor/world_editor.tscn
-res://Main.Trade.cs

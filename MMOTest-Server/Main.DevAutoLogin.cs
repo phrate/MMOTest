@@ -22,7 +22,7 @@ namespace MMOTest.Server;
 public partial class Main
 {
     private const bool DevAutoLoginEnabled = true;
-    private const string DevUsername = "abc";
+    private const string DevUsername = "phrate";
     private const string DevPassword = "12345678";
 
     // Keys resolved by the client from Data/Texts/account/dev_texts.json
@@ -39,58 +39,65 @@ public partial class Main
     }
 
     private async Task HandleDevAutoLoginAsync(long peerId)
+{
+    if (!DevAutoLoginAllowed(peerId))
     {
-        if (!DevAutoLoginAllowed(peerId))
-        {
-            GD.PrintErr($"[Server] Dev auto-login refused for peer {peerId}");
-            SendError(peerId, "login_result", DevDisabledKey);
-            return;
-        }
-        if (_sessions.ContainsKey(peerId))
-        {
-            SendError(peerId, "login_result", ErrorKeys.LoginAlreadyLoggedIn);
-            return;
-        }
-        if (!_authInProgress.Add(peerId))
-        {
-            SendError(peerId, "login_result", ErrorKeys.RequestInProgress);
-            return;
-        }
-
-        try
-        {
-            PlayerRecord player = await _db.GetFirstAdminAsync();
-
-            if (player == null)
-            {
-                player = await _db.GetPlayerByUsernameAsync(DevUsername);
-
-                if (player == null)
-                {
-                    GD.Print($"[Server] DEV: no admin found, creating admin '{DevUsername}'");
-                    string hash = await PasswordHasher.HashAsync(DevPassword);
-                    await _db.TryCreateDevAdminAsync(DevUsername, hash);
-                    player = await _db.GetPlayerByUsernameAsync(DevUsername);
-                }
-                else if (!await PasswordHasher.VerifyAsync(DevPassword, player.PasswordHash))
-                {
-                    SendError(peerId, "login_result", DevAccountWrongPasswordKey, new { username = DevUsername });
-                    return;
-                }
-            }
-
-            if (player == null)
-            {
-                SendError(peerId, "login_result", DevFailedKey);
-                return;
-            }
-
-            GD.Print($"[Server] DEV: auto-login as '{player.Username}'");
-            await CompleteLoginAsync(peerId, player);
-        }
-        finally
-        {
-            _authInProgress.Remove(peerId);
-        }
+        GD.PrintErr($"[Server] Dev auto-login refused for peer {peerId}");
+        SendError(peerId, "login_result", DevDisabledKey);
+        return;
     }
+    if (_sessions.ContainsKey(peerId))
+    {
+        SendError(peerId, "login_result", ErrorKeys.LoginAlreadyLoggedIn);
+        return;
+    }
+    if (!_authInProgress.Add(peerId))
+    {
+        SendError(peerId, "login_result", ErrorKeys.RequestInProgress);
+        return;
+    }
+
+    try
+    {
+        PlayerRecord player = await _db.GetPlayerByUsernameAsync(DevUsername);
+
+        if (player == null)
+        {
+            // EnsureDevAccountSync on startup should have created this. Be
+            // defensive in case the account was deleted mid-session.
+            GD.Print($"[Server] DEV: '{DevUsername}' missing; creating on demand");
+            string hash = await PasswordHasher.HashAsync(DevPassword);
+            await _db.TryCreateDevAdminAsync(DevUsername, hash);
+            player = await _db.GetPlayerByUsernameAsync(DevUsername);
+            if (player != null)
+            {
+                await _db.EnsurePlayerStatsAsync(player.Id);
+                await _db.EnsurePlayerInventoryAsync(player.Id);
+            }
+        }
+        else if (!await PasswordHasher.VerifyAsync(DevPassword, player.PasswordHash))
+        {
+            SendError(peerId, "login_result", DevAccountWrongPasswordKey, new { username = DevUsername });
+            return;
+        }
+
+        if (player == null)
+        {
+            SendError(peerId, "login_result", DevFailedKey);
+            return;
+        }
+        if (!player.IsAdmin)
+        {
+            SendError(peerId, "login_result", DevFailedKey);
+            return;
+        }
+
+        GD.Print($"[Server] DEV: auto-login as '{player.Username}'");
+        await CompleteLoginAsync(peerId, player);
+    }
+    finally
+    {
+        _authInProgress.Remove(peerId);
+    }
+}
 }

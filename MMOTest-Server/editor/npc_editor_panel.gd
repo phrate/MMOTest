@@ -124,6 +124,11 @@ func _process(_delta: float) -> void:
 	_update_camera_orbit()
 
 
+func _as_bool(v) -> bool:
+	if typeof(v) == TYPE_BOOL: return v
+	if typeof(v) == TYPE_INT or typeof(v) == TYPE_FLOAT: return v != 0
+	if typeof(v) == TYPE_STRING: return not v.is_empty()
+	return false
 # ============================================================
 # Item loading
 # ============================================================
@@ -1122,7 +1127,7 @@ func _add_field(spec: Dictionary) -> void:
 			row.add_child(l)
 		"readonly_bool":
 			var l := Label.new()
-			l.text = "yes" if bool(value) else "no"
+			l.text = "yes" if (typeof(value) == TYPE_BOOL and value) else "no"
 			l.modulate = Color(0.75, 0.75, 0.75)
 			l.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 			row.add_child(l)
@@ -1143,7 +1148,7 @@ func _add_field(spec: Dictionary) -> void:
 			row.add_child(sb)
 		"bool":
 			var cb := CheckBox.new()
-			cb.button_pressed = bool(value)
+			cb.button_pressed = value if typeof(value) == TYPE_BOOL else false
 			cb.toggled.connect(func(p): _current_data[key] = p)
 			row.add_child(cb)
 		"text":
