@@ -71,6 +71,7 @@ public partial class Main : Node
 	private ChatSystem _chat;
 	private AuthSystem _auth;
 	private WorldFileSystem _worldFiles;
+	private GfsIntegration _gfsIntegration;
 
 	public override void _Ready()
 	{
@@ -158,14 +159,14 @@ public partial class Main : Node
 				return (false, false);
 			});
 			
-
-			if (File.Exists(TooltipsFileCandidates[0]) || File.Exists(TooltipsFileCandidates[1]))
+			if (File.Exists(GfsIntegration.TooltipsFileCandidates[0])
+				|| File.Exists(GfsIntegration.TooltipsFileCandidates[1]))
 				GD.Print("[Server] Tooltips: available");
 			else
 				GD.PrintErr("[Server] Tooltips: not found (right-click menus will be empty)");
 
 
-			_gfs = new Gfs.GfsManager(GfsScriptDirs, GfsTooltipsFileCandidates);
+			_gfs = new Gfs.GfsManager(GfsIntegration.GfsScriptDirs, GfsIntegration.TooltipsFileCandidates);
 			_gfs.InitialLoad();
 			_gfsFns = new Gfs.FunctionRegistry();
 			Gfs.Utils.TilesUtils.Register(_gfsFns, this);
@@ -175,7 +176,6 @@ public partial class Main : Node
 			Gfs.Utils.DialogueUtils.Register(_gfsFns, this);
 			Gfs.Utils.BankUtils.Register(_gfsFns, this);
 			_perTick = new Gfs.PerTickManager(_gfsFns);
-			_gfs.ScriptsChanged += OnGfsScriptsChanged;
 			_outbound = new OutboundChannel(_state, _items, SendBytes);
 			_coordinator = new Coordinator();
 			_movement = new MovementSystem(_state, _world, _outbound, _pathfinder);
@@ -207,6 +207,8 @@ public partial class Main : Node
 				_combatRng);
 			
 			_worldFiles = new WorldFileSystem(_state, _world, _outbound);
+
+			_gfsIntegration = new GfsIntegration(_state, _outbound, _world, _gfs, _gfsFns, _perTick, _coordinator);
 			
 			_recipe = new RecipeSystem(this, _state, _items, _db.Recipes, _db.Inventory, _db.Stats, _gfs, _gfsFns, _world, _outbound);
 			_recipe.LoadRecipes();
@@ -352,40 +354,6 @@ public partial class Main : Node
 	}
 
 
-	
-
-	
-
-
-
-	// ---------- World file updates ----------
-
-	
-
-	private static readonly string[] TooltipsFileCandidates =
-	{
-		ProjectSettings.GlobalizePath("user://tooltips.json"),
-		ProjectSettings.GlobalizePath("res://data/tooltips.json"),
-	};
-
-	private static readonly string[] TooltipsScriptDirs =
-	{
-		ProjectSettings.GlobalizePath("user://data/scripts/gfs/tooltips"),
-		ProjectSettings.GlobalizePath("res://data/scripts/gfs/tooltips"),
-	};
-
-	private static readonly string[] GfsScriptDirs =
-	{
-		ProjectSettings.GlobalizePath("user://data/scripts/gfs"),
-		ProjectSettings.GlobalizePath("res://data/scripts/gfs"),
-	};
-
-	private static readonly string[] GfsTooltipsFileCandidates =
-	{
-		ProjectSettings.GlobalizePath("user://tooltips.json"),
-		ProjectSettings.GlobalizePath("res://data/tooltips.json"),
-	};
-
 	// ============================================================================
 	// Diagnostics
 	// ============================================================================
@@ -511,9 +479,9 @@ public partial class Main : Node
 				case "ping":         HandlePing(peerId, root); break;
 				case "dev_shutdown": HandleDevShutdown(peerId); break;
 				case "chat_send": _chat.HandleChatSend(peerId, root); break;
-				case "tooltips_info": HandleTooltipsInfo(peerId); break;
-				case "gfs_info":    HandleGfsInfo(peerId); break;
-				case "run_action":  HandleRunAction(peerId, root); break;
+				case "tooltips_info": _gfsIntegration.HandleTooltipsInfo(peerId); break;
+				case "gfs_info":    _gfsIntegration.HandleGfsInfo(peerId); break;
+				case "run_action":  _gfsIntegration.HandleRunAction(peerId, root); break;
 				case "npc_render_info_request": _npc.HandleNpcRenderInfo(peerId); break;
 				case "npc_render_fetch":        _npc.HandleNpcRenderFetch(peerId, root); break;
 				case "pickup_ground_item": _ground.HandlePickupGroundItem(peerId, root); break;
@@ -544,188 +512,6 @@ public partial class Main : Node
 	}
 
 	private bool _shuttingDown = false;
-
-	private void HandleTooltipsInfo(long peerId)
-	{
-		if (!_state.Sessions.ContainsKey(peerId))
-		{
-			SendError(peerId, "tooltips_info_result", ErrorKeys.WorldNotLoggedIn);
-			return;
-		}
-
-		string tooltipsText = null;
-		foreach (string path in TooltipsFileCandidates)
-		{
-			if (File.Exists(path)) { tooltipsText = File.ReadAllText(path); break; }
-		}
-		if (tooltipsText == null)
-		{
-			SendError(peerId, "tooltips_info_result", ErrorKeys.WorldUnavailable);
-			return;
-		}
-
-		try
-		{
-			using var doc = JsonDocument.Parse(tooltipsText);
-			var root = doc.RootElement;
-			if (!root.TryGetProperty("format_version", out JsonElement fmt) ||
-				!root.TryGetProperty("version", out JsonElement ver) ||
-				!root.TryGetProperty("entries", out JsonElement entries) ||
-				entries.ValueKind != JsonValueKind.Object)
-			{
-				SendError(peerId, "tooltips_info_result", ErrorKeys.WorldUnavailable);
-				return;
-			}
-
-			// Entries from tooltips.json: entity_type -> script filename.
-			var entriesDict = new Dictionary<string, string>();
-			foreach (JsonProperty entry in entries.EnumerateObject())
-			{
-				if (entry.Value.ValueKind != JsonValueKind.String) continue;
-				string scriptName = entry.Value.GetString();
-				if (string.IsNullOrEmpty(scriptName)) continue;
-				entriesDict[entry.Name] = scriptName;
-			}
-
-			// Enumerate every .gfs file in both script directories. user:// takes
-			// precedence over res:// on a name collision, matching Godot's loading order.
-			var scriptsDict = new Dictionary<string, string>();
-			foreach (string dir in TooltipsScriptDirs)
-			{
-				if (!Directory.Exists(dir)) continue;
-				foreach (string file in Directory.GetFiles(dir, "*.gfs"))
-				{
-					string name = Path.GetFileName(file);
-					if (scriptsDict.ContainsKey(name)) continue;
-					try { scriptsDict[name] = File.ReadAllText(file); }
-					catch (Exception e) { GD.PrintErr($"[Server] Cannot read {file}: {e.Message}"); }
-				}
-			}
-
-			if (OS.IsDebugBuild())
-			{
-				GD.Print($"[Server] Tooltips: entries={entriesDict.Count}, scripts={scriptsDict.Count}");
-				foreach (var kv in scriptsDict)
-					GD.Print($"[Server]   script: {kv.Key} ({kv.Value.Length} bytes)");
-			}
-
-			Send(peerId, new
-			{
-				type = "tooltips_info_result",
-				ok = true,
-				version = ver.GetInt32(),
-				format_version = fmt.GetInt32(),
-				entries = entriesDict,
-				scripts = scriptsDict
-			});
-		}
-		catch (Exception e)
-		{
-			GD.PrintErr($"[Server] tooltips_info error: {e.Message}");
-			SendError(peerId, "tooltips_info_result", ErrorKeys.WorldUnavailable);
-		}
-	}
-
-	private void HandleGfsInfo(long peerId)
-	{
-		if (!_state.Sessions.ContainsKey(peerId))
-		{
-			SendError(peerId, "gfs_info_result", ErrorKeys.WorldNotLoggedIn);
-			return;
-		}
-		var bundle = _gfs.BuildBundle();
-		bundle["type"] = "gfs_info_result";
-		bundle["ok"] = true;
-		Send(peerId, bundle);
-	}
-
-	private void OnGfsScriptsChanged(Dictionary<string, Dictionary<string, object>> changed, int version)
-	{
-		if (_state.Sessions.Count == 0) return;
-		Broadcast(new
-		{
-			type = "gfs_updated",
-			version,
-			scripts = changed
-		});
-		GD.Print($"[Server] GFS: broadcast {changed.Count} changed script(s), version {version}");
-	}
-
-	private void HandleRunAction(long peerId, JsonElement root)
-	{
-		if (!_state.Sessions.TryGetValue(peerId, out PlayerSession session)) { GD.Print("[DIAG] run_action: no session"); return; }
-		if (!root.TryGetProperty("script", out var scriptEl)) { GD.Print("[DIAG] run_action: no script"); return; }
-		string scriptPath = scriptEl.GetString() ?? "";
-		var ast = _gfs.GetAst(scriptPath);
-		//GD.Print($"[DIAG] run_action from {peerId}: script={scriptPath} target={(root.TryGetProperty("target_id", out var t) ? t.ToString() : "none")} ast={(ast == null ? "NULL" : "ok")}");
-		if (ast == null)
-		{
-			SendError(peerId, "run_action_result", ErrorKeys.GfsScriptNotFound);
-			return;
-		}
-
-		var args = new Dictionary<string, object>();
-		if (root.TryGetProperty("args", out var argsEl) && argsEl.ValueKind == JsonValueKind.Object)
-		{
-			foreach (var prop in argsEl.EnumerateObject())
-			{
-				args[prop.Name] = prop.Value.ValueKind switch
-				{
-					JsonValueKind.String => prop.Value.GetString(),
-					JsonValueKind.Number => prop.Value.TryGetInt64(out long l) ? l : prop.Value.GetDouble(),
-					JsonValueKind.True => true,
-					JsonValueKind.False => false,
-					_ => null
-				};
-			}
-		}
-		int targetId = 0;
-		if (root.TryGetProperty("target_id", out var tidEl) && tidEl.TryGetInt32(out int tid)) targetId = tid;
-
-		var system = new Dictionary<string, object>
-		{
-			["SELF_ID"] = session.PlayerId,
-			["PLAYER_ID"] = targetId,
-			["SELF_USERNAME"] = session.Username,
-		};
-
-		var ctx = new Gfs.CallContext
-		{
-			System = system,
-			Args = args,
-			Locals = new Dictionary<string, object>(),
-			SelfPlayerId = session.PlayerId,
-			ScriptPath = scriptPath,
-			TaskLookup = _gfs.GetTask,
-		};
-		ctx.RunScript = (s, a) => RunScriptFromGfs(session.PlayerId, s, a, ctx);
-
-		List<Dictionary<string, object>> effects;
-		try { effects = Gfs.Interpreter.Run(ast, ctx, _gfsFns); }
-		catch (Exception e)
-		{
-			Diag.Error("diag_gfs", $"run_action error: {e.Message}");
-			SendError(peerId, "run_action_result", ErrorKeys.GfsRuntimeError);
-			return;
-		}
-		//GD.Print($"[DIAG] after run: effects={effects.Count} endReq={ctx.EndScriptRequested} tags=[{string.Join(",", ast.Tags)}]");
-
-		if (_state.Positions.TryGetValue(session.PlayerId, out var pos))
-		{
-			int cx = (int)MathF.Floor((float)MathF.Round(pos.X) / _world.ChunkSize);
-			int cy = (int)MathF.Floor((float)MathF.Round(pos.Z) / _world.ChunkSize);
-			RouteChatEffects(session.PlayerId, session.Username, cx, cy, effects, peerId);
-		}
-
-		if (ast.Tags.Contains(Gfs.GfsTags.OncePerTick) && !ctx.EndScriptRequested)
-		{
-			if (scriptPath.EndsWith("follow_player.gfs"))
-				_coordinator.OnFollowStarted(session.PlayerId);
-			_perTick.Start(session.PlayerId, scriptPath, ast, ctx);
-		}
-
-		Send(peerId, new { type = "run_action_result", ok = true, effects });
-	}
 
 	private void HandlePing(long peerId, JsonElement root)
 	{
@@ -1001,25 +787,6 @@ public partial class Main : Node
 
 	internal bool EndPerTickScript(long playerId, string stem) =>
 		_perTick != null && _perTick.EndByStem(playerId, stem);
-
-	private void RunScriptFromGfs(long playerId, string stem, Dictionary<string, object> args, Gfs.CallContext parentCtx)
-	{
-		if (stem == "follow_player")
-			_coordinator.OnFollowStarted(playerId);
-		var (path, ast) = _gfs.ResolveByStem(stem);
-		if (ast == null) { GD.PrintErr($"[Server] RUN: script not found: {stem}"); return; }
-		var newCtx = new Gfs.CallContext
-		{
-			System = new Dictionary<string, object>(parentCtx.System),
-			Args = args,
-			Locals = new Dictionary<string, object>(),
-			SelfPlayerId = playerId,
-			ScriptPath = path,
-			TaskLookup = _gfs.GetTask
-		};
-		newCtx.RunScript = (s, a) => RunScriptFromGfs(playerId, s, a, newCtx);
-		_perTick.Start(playerId, path, ast, newCtx);
-	}
 
 
 	internal List<Vector2I> PathfindToNearest(long selfPlayerId, int goalX, int goalY)
