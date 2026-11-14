@@ -2,7 +2,7 @@
     "version": "2.0.0",
     "tasks": [
         {
-            "label": "Build MMO Server",
+            "label": "build",
             "type": "shell",
             "command": "dotnet build MMOTest-Server.csproj",
             "group": {

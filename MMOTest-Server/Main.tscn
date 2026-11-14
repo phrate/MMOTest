@@ -6,4 +6,5 @@
 script = ExtResource("1_main")
 NpcViewChunkRadius = 7
 DiagNpcWander = true
+DiagVerbose = true
 ResetPlayersOnStartup = true

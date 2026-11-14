@@ -186,7 +186,7 @@ public partial class Main : Node
 			_ground = new GroundItemSystem(_state, _world, _outbound, _items, _inv, _trade, _db.Inventory, _pathfinder, NpcViewChunkRadius);
 
 			_combat = new CombatSystem(_state, _world, _outbound, _coordinator, _movement, _pathfinder,
-    _db.Stats, _perTick, _npc, _inv, _ground, _lootTablesBySlug, _creditsLootBySlug, _combatRng);
+	_db.Stats, _perTick, _npc, _inv, _ground, _lootTablesBySlug, _creditsLootBySlug, _combatRng);
 			_dialogue = new DialogueSystem(_state, _gfs, _gfsFns, _perTick, _outbound, _coordinator, _npc, _movement, _combat);
 			_bank     = new BankSystem(_state, _items, _db.Bank, _db.Inventory, _perTick, _outbound, _coordinator, _npc, _movement, _combat, _dialogue);
 
@@ -204,6 +204,9 @@ public partial class Main : Node
 
 			_recipe = new RecipeSystem(_state, _items, _db.Recipes, _db.Inventory, _db.Stats, _gfs, _gfsFns, _world, _outbound);
 			_recipe.LoadRecipes();
+
+			_worldFiles = new WorldFileSystem(_state, _world, _outbound);
+			_gfsIntegration = new GfsIntegration(_state, _outbound, _world, _gfs, _gfsFns, _perTick, _coordinator);
 
 			Gfs.Utils.TilesUtils.Register(_gfsFns, _state, _world);
 			Gfs.Utils.PlayerUtils.Register(_gfsFns, _state, _world, _pathfinder, _perTick);
@@ -248,10 +251,8 @@ public partial class Main : Node
 
 	public override void _Process(double delta)
 	{
-		if (_gfs == null || _perTick == null || _npc == null)
+		if (_gfs == null || _perTick == null || _npc == null || _worldFiles == null)
 		{
-			// _Ready hasn't finished (or failed). Don't spam errors while we wait
-			// for the real diagnostic to surface.
 			return;
 		}
 
