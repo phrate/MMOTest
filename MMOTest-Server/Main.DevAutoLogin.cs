@@ -52,7 +52,7 @@ public partial class Main
         SendError(peerId, "login_result", ErrorKeys.LoginAlreadyLoggedIn);
         return;
     }
-    if (!_authInProgress.Add(peerId))
+    if (!_auth.TryBeginAuth(peerId))
     {
         SendError(peerId, "login_result", ErrorKeys.RequestInProgress);
         return;
@@ -126,7 +126,7 @@ public partial class Main
     }
     finally
     {
-        _authInProgress.Remove(peerId);
+        _auth.EndAuth(peerId);
     }
 }
 

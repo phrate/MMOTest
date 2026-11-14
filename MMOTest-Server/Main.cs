@@ -5,7 +5,6 @@ using System.IO;
 using System.Linq;
 using System.Text;
 using System.Text.Json;
-using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 
 namespace MMOTest.Server;
@@ -14,10 +13,6 @@ public partial class Main : Node
 {
 	private const int Port = 9999;
 	private const int MaxClients = 64;
-	private const int MinUsernameLength = 3;
-	private const int MaxUsernameLength = 20;
-	private const int MinPasswordLength = 8;
-	private const int MaxPasswordLength = 128;
 	private const int MaxChatLength = 60;
 
 	private const double TickIntervalSeconds = 0.3;
@@ -34,7 +29,6 @@ public partial class Main : Node
 		ProjectSettings.GlobalizePath("res://data/world.json"),
 	};
 
-	private static readonly Regex UsernameRegex = new($"^[A-Za-z0-9_]{{{MinUsernameLength},{MaxUsernameLength}}}$");
 
 
 	private Database _db;
@@ -42,7 +36,6 @@ public partial class Main : Node
 	private ENetMultiplayerPeer _enet;
 	internal readonly ServerState _state = new();
 	private readonly HashSet<long> _connectedPeers = new();
-	private readonly HashSet<long> _authInProgress = new();
 
 
 	private double _npcVisRefreshAccum;
@@ -72,9 +65,6 @@ public partial class Main : Node
 	private double _worldCheckAccumulator = 0.0;
 	private int _lastBroadcastVersion = -1;
 
-	private string _dummyHash;
-
-
 
 	private Gfs.GfsManager _gfs;
 	private Gfs.FunctionRegistry _gfsFns;
@@ -93,6 +83,7 @@ public partial class Main : Node
 	private ItemSystem _inv;
 	private GroundItemSystem _ground;
 	private ChatSystem _chat;
+	private AuthSystem _auth;
 
 	public override void _Ready()
 	{
@@ -158,7 +149,6 @@ public partial class Main : Node
 			// will live in a separate collection later and be exempt from this.
 			GD.Print($"[Server] Ground items: in-memory only (0 at startup; player/npc drops cleared on restart)");
 
-			_dummyHash = PasswordHasher.Hash("dummy-password-for-timing");
 			GD.Print($"[Server] SQLite {_db.GetSqliteVersion()} ready at {dbPath}");
 
 			int respawned = _db.Npcs.RespawnAllDeadSync();
@@ -221,6 +211,8 @@ public partial class Main : Node
 			_inv = new ItemSystem(_state, _outbound, _items, _db.Inventory, _db.Stats, _trade, _combatRng);
 			_ground = new GroundItemSystem(_state, _world, _outbound, _items, _inv, _trade, _db.Inventory, _pathfinder, NpcViewChunkRadius);
 			_chat = new ChatSystem(_state, _outbound, _world, MaxChatLength);
+			_auth = new AuthSystem(_state, _outbound, _world, _db, _npc, _bank, _inv,
+				_connectedPeers, _lootTablesBySlug, _creditsLootBySlug);
 			
 			_recipe = new RecipeSystem(this, _state, _items, _db.Recipes, _db.Inventory, _db.Stats, _gfs, _gfsFns, _world, _outbound);
 			_recipe.LoadRecipes();
@@ -460,6 +452,9 @@ public partial class Main : Node
 
 	// ---------- Connection events ----------
 
+	internal Task CompleteLoginAsync(long peerId, PlayerRecord player) =>
+		_auth.CompleteLoginAsync(peerId, player);
+
 	private void OnPeerConnected(long peerId)
 	{
 		_connectedPeers.Add(peerId);
@@ -471,7 +466,7 @@ public partial class Main : Node
 		if (_state.Sessions.TryGetValue(peerId, out var departingSession))
 			_coordinator.OnPlayerDisconnected(departingSession.PlayerId);
 		_connectedPeers.Remove(peerId);
-		_authInProgress.Remove(peerId);
+		_auth.ClearAuthInProgress(peerId);
 		_state.Intents.Remove(peerId);
 
 		if (_state.Sessions.Remove(peerId, out PlayerSession session))
@@ -524,16 +519,16 @@ public partial class Main : Node
 
 			switch (type)
 			{
-				case "hello":       await HandleHelloAsync(peerId); break;
+				case "hello":       await _auth.HandleHelloAsync(peerId); break;
 				case "register":
 				{
 					bool isDev = OS.IsDebugBuild()
 						&& root.TryGetProperty("is_dev", out var devEl)
 						&& devEl.ValueKind == JsonValueKind.True;
-					await HandleRegisterAsync(peerId, GetString(root, "username"), GetString(root, "password"), isDev);
+					await _auth.HandleRegisterAsync(peerId, GetString(root, "username"), GetString(root, "password"), isDev);
 					break;
 				}
-				case "login":       await HandleLoginAsync(peerId, GetString(root, "username"), GetString(root, "password"), GetString(root, "reason")); break;
+				case "login":       await _auth.HandleLoginAsync(peerId, GetString(root, "username"), GetString(root, "password"), GetString(root, "reason")); break;
 				case "world_info":  HandleWorldInfo(peerId); break;
 				case "world_fetch": HandleWorldFetch(peerId); break;
 				case "npc_editor_get":  _npc.HandleNpcEditorGet(peerId, root); break;
@@ -854,224 +849,6 @@ public partial class Main : Node
 		_state.Intents[peerId] = path;
 	}
 
-
-
-	// ---------- Auth ----------
-
-	private async Task HandleHelloAsync(long peerId)
-	{
-		string version = await _db.GetSqliteVersionAsync();
-		long total = await _db.Players.CountAsync();
-		Send(peerId, new { type = "hello_ok", sqlite_version = version, total_players = total });
-	}
-
-	private async Task HandleRegisterAsync(long peerId, string username, string password, bool isDev = false)
-	{
-		if (!UsernameRegex.IsMatch(username))
-		{ SendError(peerId, "register_result", ErrorKeys.RegisterUsernameInvalid, new { min = MinUsernameLength, max = MaxUsernameLength }); return; }
-		if (password.Length < MinPasswordLength || password.Length > MaxPasswordLength)
-		{ SendError(peerId, "register_result", ErrorKeys.RegisterPasswordLength, new { min = MinPasswordLength, max = MaxPasswordLength }); return; }
-		if (!_authInProgress.Add(peerId))
-		{ SendError(peerId, "register_result", ErrorKeys.RequestInProgress); return; }
-
-		try
-		{
-			string hash = await PasswordHasher.HashAsync(password);
-			bool makeAdmin = isDev && OS.IsDebugBuild();
-			var (created, playerId) = await _db.Players.TryCreateAsync(username, hash, makeAdmin);
-			if (!created) { SendError(peerId, "register_result", ErrorKeys.RegisterUsernameTaken); return; }
-			GD.Print($"[Server] Registered: {username} (id {playerId}{(makeAdmin ? ", dev admin" : "")})");
-			await _db.Stats.EnsureStatsAsync(playerId);
-			await _db.Stats.EnsureInventoryAsync(playerId);
-
-			if (makeAdmin)
-			{
-				// Dev trade-testing kit. forceAll=true means every loot entry is
-				// given (with its rolled quantity), not a single random pick.
-				await _inv.GiveLootTableAsync(playerId, "trade_testing", _lootTablesBySlug, forceAll: true);
-
-				// Roll starting credits. Written straight to the DB; the player
-				// is not yet in _state.Credits (that cache is populated on
-				// login in CompleteLoginAsync), so we can't route through
-				// GivePlayerCredits here.
-				if (_creditsLootBySlug.TryGetValue("trade_testing_credits", out var creditRange))
-				{
-					int amount = _combatRng.Next(creditRange.Min, creditRange.Max + 1);
-					if (amount > 0) await _db.Players.SetCreditsAsync(playerId, amount);
-					GD.Print($"[Server] Dev trade-testing kit: rolled {amount} credits for {username}");
-				}
-				else
-				{
-					GD.PrintErr($"[Server] Dev trade-testing kit: credits_loot 'trade_testing_credits' missing");
-				}
-
-				GD.Print($"[Server] Dev trade-testing kit for {username}");
-			}
-
-			Send(peerId, new { type = "register_result", ok = true, username });
-		}
-		finally { _authInProgress.Remove(peerId); }
-	}
-
-	private async Task HandleLoginAsync(long peerId, string username, string password, string reason = "")
-	{
-		GD.Print($"[Server] Got login from peer {peerId}: user='{username}'");
-		if (_state.Sessions.ContainsKey(peerId))
-		{ SendError(peerId, "login_result", ErrorKeys.LoginAlreadyLoggedIn); return; }
-		if (!_authInProgress.Add(peerId))
-		{ SendError(peerId, "login_result", ErrorKeys.RequestInProgress); return; }
-
-		try
-		{
-			PlayerRecord player = await _db.Players.GetByUsernameAsync(username);
-			bool passwordOk = await PasswordHasher.VerifyAsync(password, player?.PasswordHash ?? _dummyHash);
-			if (player == null || !passwordOk)
-			{
-				Diag.Log("diag_login", $"Failed login for '{username}' from peer {peerId}");
-				SendError(peerId, "login_result", ErrorKeys.LoginInvalidCredentials);
-				return;
-			}
-			if (reason == "world_update")
-				Diag.Log("diag_login", $"Hotfix reconnect: {player.Username} (id {player.Id})");
-			await CompleteLoginAsync(peerId, player);
-		}
-		finally { _authInProgress.Remove(peerId); }
-	}
-
-private async Task CompleteLoginAsync(long peerId, PlayerRecord player)
-{
-	long loginCount = await _db.Players.RecordLoginAsync(player.Id);
-	long totalPlayers = await _db.Players.CountAsync();
-	if (!_connectedPeers.Contains(peerId)) return;
-
-	if (!await _db.Stats.EnsureStatsAsync(player.Id))
-	{
-		GD.PrintErr($"[Server] Failed to ensure stats for {player.Username} (id {player.Id}); login aborted");
-		SendError(peerId, "login_result", ErrorKeys.LoginStatsInitFailed);
-		return;
-	}
-
-	if (!await _db.Stats.EnsureInventoryAsync(player.Id))
-	{
-		GD.PrintErr($"[Server] Failed to ensure inventory/bank for {player.Username} (id {player.Id}); login aborted");
-		SendError(peerId, "login_result", ErrorKeys.LoginStatsInitFailed);
-		return;
-	}
-
-	var combatData = await _db.Stats.GetCombatAsync(player.Id);
-	_state.PlayerCombat[player.Id] = combatData ?? new PlayerCombatData(1, 1, 1, 0, 0, 10, 10, 1);
-
-	var inv = await _db.Inventory.GetSlotsAsync(player.Id);
-	if (inv == null) inv = new long[28];
-	_state.Inventories[player.Id] = inv;
-
-	_bank.LoadForPlayer(player.Id);
-
-	int credits = await _db.Players.GetCreditsAsync(player.Id);
-	_state.Credits[player.Id] = credits;
-
-
-	_state.SkillsByPlayer[player.Id] = await _db.Stats.GetSkillsAsync(player.Id);
-
-	// Compute spawn position and publish it BEFORE the session. Any concurrent
-	// EnterWorld (from another player logging in) reads _state.Positions to build
-	// world_state — the position must be set before the peer becomes visible.
-	PlayerPosition spawnPos;
-	var saved = await _db.Players.GetTileAsync(player.Id);
-	if (saved.HasValue)
-	{
-		if (IsValidTile(saved.Value.X, saved.Value.Y))
-		{
-			var info = _world.GetTileInfo(saved.Value.X, saved.Value.Y);
-			spawnPos = new PlayerPosition(saved.Value.X, info.Z, saved.Value.Y, 0f);
-			GD.Print($"[Server] Resuming {player.Username} at tile ({saved.Value.X}, {saved.Value.Y})");
-		}
-		else
-		{
-			spawnPos = FindNearestValidTile(saved.Value.X, saved.Value.Y);
-			GD.Print($"[Server] Saved tile ({saved.Value.X}, {saved.Value.Y}) for {player.Username} is invalid; spawned at ({spawnPos.X}, {spawnPos.Z})");
-		}
-	}
-	else
-	{
-		spawnPos = ComputeSpawnPosition(player.Id);
-	}
-	_state.Positions[player.Id] = spawnPos;
-
-	// Session published after position. No awaits between these lines, so the
-	// pair is atomic from the perspective of other ticks.
-	long sid = Random.Shared.NextInt64(1, long.MaxValue);
-	_ = _db.Players.SetSidAsync(player.Id, sid);
-	var session = new PlayerSession(player.Id, player.Username, player.IsAdmin, sid);
-	_state.Sessions[peerId] = session;
-	_state.PeerByPlayerId[player.Id] = peerId;
-
-	GD.Print($"[Server] Login: {player.Username} (id {player.Id}, count {loginCount}{(player.IsAdmin ? ", admin" : "")})");
-	Send(peerId, new
-	{
-		type = "login_result",
-		ok = true,
-		player_id = player.Id,
-		username = player.Username,
-		is_admin = player.IsAdmin,
-		login_count = loginCount,
-		total_players = totalPlayers,
-		credits = credits,
-		hitpoints = combatData?.CurrentHp ?? 10,
-		max_hitpoints = combatData?.MaxHp ?? 10,
-		spawn = new { x = spawnPos.X, y = spawnPos.Y, z = spawnPos.Z, yaw = spawnPos.Yaw }
-	});
-
-	SendInventory(peerId);
-	SendSkills(peerId);
-
-	EnterWorld(peerId, session, spawnPos);
-}
-	
-internal PlayerPosition ComputeSpawnPosition(long playerId)
-{
-    int pid = (int)Math.Max(playerId, 1);
-    int sx = (pid * 3) % 16 - 8;
-    int sz = (pid * 7) % 16 - 8;
-    return FindNearestValidTile(sx, sz);
-}
-	private void EnterWorld(long peerId, PlayerSession session, PlayerPosition spawnPos)
-{
-	var others = new List<object>();
-	foreach (var (otherPeerId, other) in _state.Sessions)
-	{
-		if (otherPeerId == peerId) continue;
-		if (!_state.Positions.TryGetValue(other.PlayerId, out var pos)) continue;
-		others.Add(new
-		{
-			player_id = other.PlayerId,
-			username = other.Username,
-			is_admin = other.IsAdmin,
-			x = pos.X, y = pos.Y, z = pos.Z, yaw = pos.Yaw,
-			sid = other.Sid,
-		});
-	}
-
-	Send(peerId, new { type = "world_state", players = others });
-
-	Broadcast(new
-	{
-		type = "player_joined",
-		player_id = session.PlayerId,
-		username = session.Username,
-		is_admin = session.IsAdmin,
-		x = spawnPos.X, y = spawnPos.Y, z = spawnPos.Z, yaw = spawnPos.Yaw,
-		sid = session.Sid,
-	}, exceptPeerId: peerId);
-
-	int tx = (int)MathF.Round(spawnPos.X);
-	int ty = (int)MathF.Round(spawnPos.Z);
-	_lastPlayerChunk[peerId] = new Vector2I(
-		ActiveNpc.FloorDiv(tx, _world.ChunkSize),
-		ActiveNpc.FloorDiv(ty, _world.ChunkSize));
-	_npc.RefreshNpcVisibility(peerId, tx, ty);
-}
-
 	// ---------- World file ----------
 
 	private void HandleWorldInfo(long peerId)
@@ -1130,42 +907,6 @@ internal PlayerPosition ComputeSpawnPosition(long playerId)
 		credits = 0;
 		return _state.Credits.TryGetValue(playerId, out credits);
 	}
-
-	/// <summary>
-	/// Walks outward in expanding rings until a valid walkable tile is found.
-	/// Returns the start tile if it's already valid. Falls back to the start
-	/// tile (with a safe Z) if nothing is found within 32 tiles.
-	/// </summary>
-	private PlayerPosition FindNearestValidTile(int startX, int startY)
-	{
-		if (IsValidTile(startX, startY))
-		{
-			var info = _world.GetTileInfo(startX, startY);
-			return new PlayerPosition(startX, info.Z, startY, 0f);
-		}
-		for (int radius = 1; radius <= 32; radius++)
-		{
-			for (int dx = -radius; dx <= radius; dx++)
-			{
-				for (int dy = -radius; dy <= radius; dy++)
-				{
-					if (Math.Abs(dx) != radius && Math.Abs(dy) != radius) continue;
-					int nx = startX + dx;
-					int ny = startY + dy;
-					if (IsValidTile(nx, ny))
-					{
-						var info = _world.GetTileInfo(nx, ny);
-						return new PlayerPosition(nx, info.Z, ny, 0f);
-					}
-				}
-			}
-		}
-		var fallbackZ = _world.GetTileInfo(startX, startY).Z;
-		return new PlayerPosition(startX, fallbackZ, startY, 0f);
-	}
-
-
-
 
 	internal int ChunkSize => _world.ChunkSize;
 
@@ -1236,12 +977,15 @@ internal PlayerPosition ComputeSpawnPosition(long playerId)
 
 	internal void HandlePlayerDeath(long playerId) =>
 		_combat.HandlePlayerDeath(playerId);
+	
+	internal PlayerPosition ComputeSpawnPosition(long playerId) =>
+		_auth.ComputeSpawnPosition(playerId);
 
 	internal bool ArePositionsAdjacent(long playerId, ActiveNpc npc) =>
 		_movement.ArePositionsAdjacent(playerId, npc);
 
 	internal bool MovePlayerAdjacentToNpc(long playerId, ActiveNpc npc) =>
-    _movement.MovePlayerAdjacentToNpc(playerId, npc);
+	_movement.MovePlayerAdjacentToNpc(playerId, npc);
 
 	internal void CancelBankForPlayer(long playerId, string errorKey) =>
 		_bank.CancelBankForPlayer(playerId, errorKey);
@@ -1272,6 +1016,12 @@ internal PlayerPosition ComputeSpawnPosition(long playerId)
 
 	internal void HandleChatSend(long peerId, JsonElement root) =>
 		_chat.HandleChatSend(peerId, root);
+	
+	internal Task HandleHelloAsync(long peerId) => _auth.HandleHelloAsync(peerId);
+	internal Task HandleRegisterAsync(long peerId, string username, string password, bool isDev = false) =>
+		_auth.HandleRegisterAsync(peerId, username, password, isDev);
+	internal Task HandleLoginAsync(long peerId, string username, string password, string reason = "") =>
+		_auth.HandleLoginAsync(peerId, username, password, reason);
 
 	internal bool IsPlayerInBank(long playerId) =>
 		_bank.IsPlayerInBank(playerId);
