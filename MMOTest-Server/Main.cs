@@ -212,7 +212,13 @@ public partial class Main : Node
 			_ground = new GroundItemSystem(_state, _world, _outbound, _items, _inv, _trade, _db.Inventory, _pathfinder, NpcViewChunkRadius);
 			_chat = new ChatSystem(_state, _outbound, _world, MaxChatLength);
 			_auth = new AuthSystem(_state, _outbound, _world, _db, _npc, _bank, _inv,
-				_connectedPeers, _lootTablesBySlug, _creditsLootBySlug);
+				_connectedPeers, _lootTablesBySlug, _creditsLootBySlug,
+				peerId =>
+				{
+					var addr = _enet?.GetPeer((int)peerId)?.GetRemoteAddress();
+					return addr == "127.0.0.1" || addr == "::1";
+				},
+				_combatRng);
 			
 			_recipe = new RecipeSystem(this, _state, _items, _db.Recipes, _db.Inventory, _db.Stats, _gfs, _gfsFns, _world, _outbound);
 			_recipe.LoadRecipes();
@@ -452,9 +458,6 @@ public partial class Main : Node
 
 	// ---------- Connection events ----------
 
-	internal Task CompleteLoginAsync(long peerId, PlayerRecord player) =>
-		_auth.CompleteLoginAsync(peerId, player);
-
 	private void OnPeerConnected(long peerId)
 	{
 		_connectedPeers.Add(peerId);
@@ -533,7 +536,7 @@ public partial class Main : Node
 				case "world_fetch": HandleWorldFetch(peerId); break;
 				case "npc_editor_get":  _npc.HandleNpcEditorGet(peerId, root); break;
 				case "npc_editor_save": _npc.HandleNpcEditorSave(peerId, root); break;
-				case "dev_auto_login": await HandleDevAutoLoginAsync(peerId); break;
+				case "dev_auto_login": await _auth.HandleDevAutoLoginAsync(peerId); break;
 				case "player_walk": HandlePlayerWalkBuffered(peerId, root); break;
 				case "inventory_swap": _inv.HandleInventorySwap(peerId, root); break;
 				case "ping":         HandlePing(peerId, root); break;

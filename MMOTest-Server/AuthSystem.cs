@@ -37,11 +37,24 @@ internal sealed class AuthSystem
     private readonly HashSet<long> _authInProgress = new();
     private readonly string _dummyHash;
 
+    private readonly Func<long, bool> _isLoopback;
+    private readonly Random _combatRng;
+
+    private const bool DevAutoLoginEnabled = true;
+    private const string DevUsername = "phrate";
+    private const string DevPassword = "12345678";
+    private const string DevDisabledKey = "account.dev.error.disabled";
+    private const string DevAccountWrongPasswordKey = "account.dev.error.account_wrong_password";
+    private const string DevFailedKey = "account.dev.error.failed";
+    private readonly HashSet<string> _devUsernameClaims = new();
+
     public AuthSystem(ServerState state, OutboundChannel outbound, WorldService world,
-                      Database db, NpcSystem npc, BankSystem bank, ItemSystem inv,
-                      HashSet<long> connectedPeers,
-                      Dictionary<string, Dictionary<string, (int Min, int Max)>> lootTables,
-                      Dictionary<string, (int Min, int Max)> creditsLoot)
+                    Database db, NpcSystem npc, BankSystem bank, ItemSystem inv,
+                    HashSet<long> connectedPeers,
+                    Dictionary<string, Dictionary<string, (int Min, int Max)>> lootTables,
+                    Dictionary<string, (int Min, int Max)> creditsLoot,
+                    Func<long, bool> isLoopback,
+                    Random combatRng)
     {
         _state = state;
         _outbound = outbound;
@@ -54,12 +67,11 @@ internal sealed class AuthSystem
         _lootTables = lootTables;
         _creditsLoot = creditsLoot;
         _dummyHash = PasswordHasher.Hash("dummy-password-for-timing");
+        _isLoopback = isLoopback;
+        _combatRng = combatRng;
     }
 
     internal void ClearAuthInProgress(long peerId) => _authInProgress.Remove(peerId);
-
-    internal bool TryBeginAuth(long peerId) => _authInProgress.Add(peerId);
-    internal void EndAuth(long peerId) => _authInProgress.Remove(peerId);
 
     // ============================================================
     // Hello
@@ -215,7 +227,7 @@ internal sealed class AuthSystem
         }
     }
 
-    internal async Task CompleteLoginAsync(long peerId, PlayerRecord player)
+    private async Task CompleteLoginAsync(long peerId, PlayerRecord player)
     {
         long loginCount = await _db.Players.RecordLoginAsync(player.Id);
         long totalPlayers = await _db.Players.CountAsync();
@@ -310,6 +322,137 @@ internal sealed class AuthSystem
 
         EnterWorld(peerId, session, spawnPos);
     }
+
+    // ============================================================
+    // Dev auto-login (TEMP-DEV: delete this block, the constants above,
+    // and the "dev_auto_login" case in Main.cs before any real deployment)
+    // ============================================================
+
+    private bool IsDevAutoLoginAllowed(long peerId)
+        => DevAutoLoginEnabled && OS.IsDebugBuild() && _isLoopback(peerId);
+
+    internal async Task HandleDevAutoLoginAsync(long peerId)
+    {
+        if (!IsDevAutoLoginAllowed(peerId))
+        {
+            GD.PrintErr($"[Server] Dev auto-login refused for peer {peerId}");
+            SendError(peerId, "login_result", DevDisabledKey);
+            return;
+        }
+        if (_state.Sessions.ContainsKey(peerId))
+        {
+            SendError(peerId, "login_result", ErrorKeys.LoginAlreadyLoggedIn);
+            return;
+        }
+        if (!_authInProgress.Add(peerId))
+        {
+            SendError(peerId, "login_result", ErrorKeys.RequestInProgress);
+            return;
+        }
+
+        try
+        {
+            bool alreadyInSession = false;
+            foreach (var kv in _state.Sessions)
+            {
+                if (kv.Value.Username.Equals(DevUsername, StringComparison.OrdinalIgnoreCase))
+                { alreadyInSession = true; break; }
+            }
+
+            bool alreadyClaimed = !alreadyInSession && !_devUsernameClaims.Add(DevUsername);
+
+            if (alreadyInSession || alreadyClaimed)
+            {
+                GD.Print($"[Server] DEV: '{DevUsername}' already in use; generating fallback account");
+                await CreateFallbackDevAccountAsync(peerId);
+                return;
+            }
+
+            try
+            {
+                PlayerRecord player = await _db.Players.GetByUsernameAsync(DevUsername);
+
+                if (player == null)
+                {
+                    GD.Print($"[Server] DEV: '{DevUsername}' missing; creating on demand");
+                    string hash = await PasswordHasher.HashAsync(DevPassword);
+                    await _db.Players.TryCreateDevAdminAsync(DevUsername, hash);
+                    player = await _db.Players.GetByUsernameAsync(DevUsername);
+                    if (player != null)
+                    {
+                        await _db.Stats.EnsureStatsAsync(player.Id);
+                        await _db.Stats.EnsureInventoryAsync(player.Id);
+                    }
+                }
+                else if (!await PasswordHasher.VerifyAsync(DevPassword, player.PasswordHash))
+                {
+                    SendError(peerId, "login_result", DevAccountWrongPasswordKey,
+                              new { username = DevUsername });
+                    return;
+                }
+
+                if (player == null || !player.IsAdmin)
+                {
+                    SendError(peerId, "login_result", DevFailedKey);
+                    return;
+                }
+
+                GD.Print($"[Server] DEV: auto-login as '{player.Username}'");
+                await CompleteLoginAsync(peerId, player);
+            }
+            finally
+            {
+                _devUsernameClaims.Remove(DevUsername);
+            }
+        }
+        finally
+        {
+            _authInProgress.Remove(peerId);
+        }
+    }
+
+    private async Task CreateFallbackDevAccountAsync(long peerId)
+    {
+        string username = "dev_" + Guid.NewGuid().ToString("N").Substring(0, 8);
+        string password = Guid.NewGuid().ToString("N");
+
+        string hash = await PasswordHasher.HashAsync(password);
+        var (created, playerId) = await _db.Players.TryCreateAsync(username, hash, isAdmin: true);
+        if (!created)
+        {
+            SendError(peerId, "login_result", DevFailedKey);
+            return;
+        }
+
+        await _db.Stats.EnsureStatsAsync(playerId);
+        await _db.Stats.EnsureInventoryAsync(playerId);
+        await _inv.GiveLootTableAsync(playerId, "trade_testing", _lootTables, forceAll: true);
+
+        if (_creditsLoot.TryGetValue("trade_testing_credits", out var range))
+        {
+            int amount = _combatRng.Next(range.Min, range.Max + 1);
+            if (amount > 0) await _db.Players.SetCreditsAsync(playerId, amount);
+        }
+
+        var player = await _db.Players.GetByUsernameAsync(username);
+        if (player == null)
+        {
+            SendError(peerId, "login_result", DevFailedKey);
+            return;
+        }
+
+        GD.Print($"[Server] DEV: fallback account '{username}' (id {playerId}) created and logged in");
+        await CompleteLoginAsync(peerId, player);
+    }
+
+    private void SendError(long peerId, string type, string errorKey, object? errorParams = null)
+        => _outbound.Send(peerId, new
+        {
+            type,
+            ok = false,
+            error_key = errorKey,
+            error_params = errorParams ?? new { },
+        });
 
     private void EnterWorld(long peerId, PlayerSession session, PlayerPosition spawnPos)
     {
