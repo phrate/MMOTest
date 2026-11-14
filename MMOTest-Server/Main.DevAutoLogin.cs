@@ -145,7 +145,7 @@ public partial class Main
 
         await _db.Stats.EnsureStatsAsync(playerId);
         await _db.Stats.EnsureInventoryAsync(playerId);
-        await GiveLootTableAsync(playerId, "trade_testing", forceAll: true);
+        await _inv.GiveLootTableAsync(playerId, "trade_testing", _lootTablesBySlug, forceAll: true);
 
         if (_creditsLootBySlug.TryGetValue("trade_testing_credits", out var range))
         {

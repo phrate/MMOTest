@@ -58,41 +58,12 @@ public partial class Main : Node
 	[Export] public int NpcViewChunkRadius { get; set; } = 10;
 	[Export] public bool DiagNpcWander { get; set; } = false;
 
-	// ---------- Combat state ----------
-
-	// ---------- Ground items ----------
-	internal sealed class GroundItem
-	{
-		public long Id { get; init; }
-		public string ItemSlug { get; init; } = "";
-		public int Quantity { get; init; }
-		public int TileX { get; init; }
-		public int TileY { get; init; }
-		public int TileZ { get; init; }
-		public long SpawnedAtMs { get; init; }
-		/// <summary>
-		/// True for designer-placed items (from a future map editor). Static items
-		/// are exempt from the 90s despawn sweep and persist across server restarts
-		/// once persistence lands. False for player/npc drops.
-		/// </summary>
-		public bool IsStatic { get; init; } = false;
-	}
-
-	private readonly Dictionary<long, GroundItem> _groundItems = new();
-	private readonly Dictionary<long, HashSet<long>> _visibleGroundItems = new();
-	private long _nextGroundItemId = 1;
-	private const long GroundItemDespawnMs = 90 * 1000;  // 90s — player/npc drops only
 	private readonly ItemLookup _items = new();
 	private readonly Dictionary<string, Dictionary<string, (int Min, int Max)>> _lootTablesBySlug = new();
 
 	private readonly Dictionary<string, (int Min, int Max)> _creditsLootBySlug = new();
 	private readonly Random _combatRng = new();
-	// Tracks the last tick on which a player consumed a consumable. Enforces "one
-	// consume per tick" as described in the item tick-gating design. A food/
-	// elixir split will add a second dict when food items exist; both categories
-	// will be independently gated at that time.
-	private readonly Dictionary<long, long> _lastConsumeTick = new();
-	private const int ConsumeCooldownTicks = 1;
+
 
 	private readonly Dictionary<long, Vector2I> _lastPlayerChunk = new();   // peerId -> chunk
 
@@ -121,6 +92,8 @@ public partial class Main : Node
 	private MovementSystem _movement;
 	private CombatSystem _combat;
 	private NpcSystem _npc;
+	private ItemSystem _inv;
+	private GroundItemSystem _ground;
 
 	public override void _Ready()
 	{
@@ -184,7 +157,7 @@ public partial class Main : Node
 			// Ground items are in-memory only. Anything on the ground when the server
 			// stops is gone on restart — no persistence. Designer-placed static items
 			// will live in a separate collection later and be exempt from this.
-			GD.Print($"[Server] Ground items: in-memory only ({_groundItems.Count} at startup; player/npc drops cleared on restart)");
+			GD.Print($"[Server] Ground items: in-memory only (0 at startup; player/npc drops cleared on restart)");
 
 			_dummyHash = PasswordHasher.Hash("dummy-password-for-timing");
 			GD.Print($"[Server] SQLite {_db.GetSqliteVersion()} ready at {dbPath}");
@@ -246,6 +219,8 @@ public partial class Main : Node
 
 			_npc = new NpcSystem(_state, _world, _outbound, _db.Npcs, _gfs, _npcRender, _pathfinder, NpcViewChunkRadius, DiagNpcWander);
 			_npc.LoadAll();
+			_inv = new ItemSystem(_state, _outbound, _items, _db.Inventory, _db.Stats, _trade, _combatRng);
+			_ground = new GroundItemSystem(_state, _world, _outbound, _items, _inv, _trade, _db.Inventory, _pathfinder, NpcViewChunkRadius);
 			
 			_recipe = new RecipeSystem(this, _state, _items, _db.Recipes, _db.Inventory, _db.Stats, _gfs, _gfsFns, _world, _outbound);
 			_recipe.LoadRecipes();
@@ -330,8 +305,8 @@ public partial class Main : Node
 		// 2b. NPC respawn sweep
 		_npc.CheckNpcRespawns();
 
-		ProcessGroundItemDespawn();
-		ProcessPendingPickup();
+		_ground.ProcessGroundItemDespawn();
+		_ground.ProcessPendingPickup();
 		_trade.ProcessTradeQueues();
 		_trade.ProcessTradeIntents();
 		_bank.ProcessBankIntents();
@@ -390,7 +365,7 @@ public partial class Main : Node
 			if (playerChunkChanged || periodicNpcRefresh)
 			{
 				_npc.RefreshNpcVisibility(peerId, tx, ty);
-				RefreshGroundItemVisibility(peerId, tx, ty);
+				_ground.RefreshGroundItemVisibility(peerId, tx, ty);
 			}
 		}
 	}
@@ -505,7 +480,7 @@ public partial class Main : Node
 
 			_combat.ClearPlayer(session.PlayerId);
 			_state.PlayerCombat.Remove(session.PlayerId);
-			_lastConsumeTick.Remove(session.PlayerId);
+			_inv.ClearPlayer(session.PlayerId);
 			_state.Inventories.Remove(session.PlayerId);
 			_state.Credits.Remove(session.PlayerId);
 			_state.SkillsByPlayer.Remove(session.PlayerId);
@@ -513,7 +488,7 @@ public partial class Main : Node
 			_state.PeerByPlayerId.Remove(session.PlayerId);
 			_state.PendingPickup.Remove(session.PlayerId);
 			_trade.ClearPendingFor(session.PlayerId);
-			_visibleGroundItems.Remove(peerId);
+			_ground.ClearPeer(peerId);
 			_state.DialogueByPlayer.Remove(session.PlayerId);
 			_dialogue.ClearPendingFor(session.PlayerId);
 			_bank.ClearPlayer(session.PlayerId);
@@ -565,7 +540,7 @@ public partial class Main : Node
 				case "npc_editor_save": _npc.HandleNpcEditorSave(peerId, root); break;
 				case "dev_auto_login": await HandleDevAutoLoginAsync(peerId); break;
 				case "player_walk": HandlePlayerWalkBuffered(peerId, root); break;
-				case "inventory_swap": HandleInventorySwap(peerId, root); break;
+				case "inventory_swap": _inv.HandleInventorySwap(peerId, root); break;
 				case "ping":         HandlePing(peerId, root); break;
 				case "dev_shutdown": HandleDevShutdown(peerId); break;
 				case "chat_send": HandleChatSend(peerId, root); break;
@@ -574,7 +549,7 @@ public partial class Main : Node
 				case "run_action":  HandleRunAction(peerId, root); break;
 				case "npc_render_info_request": _npc.HandleNpcRenderInfo(peerId); break;
 				case "npc_render_fetch":        _npc.HandleNpcRenderFetch(peerId, root); break;
-				case "pickup_ground_item": HandlePickupGroundItem(peerId, root); break;
+				case "pickup_ground_item": _ground.HandlePickupGroundItem(peerId, root); break;
 				case "trade_invite_accept": _trade.HandleTradeInviteResponse(peerId, root, accept: true); break;
 				case "trade_invite_decline": _trade.HandleTradeInviteResponse(peerId, root, accept: false); break;
 				case "trade_offer_add": _trade.HandleTradeOfferAdd(peerId, root); break;
@@ -960,7 +935,7 @@ public partial class Main : Node
 			{
 				// Dev trade-testing kit. forceAll=true means every loot entry is
 				// given (with its rolled quantity), not a single random pick.
-				await GiveLootTableAsync(playerId, "trade_testing", forceAll: true);
+				await _inv.GiveLootTableAsync(playerId, "trade_testing", _lootTablesBySlug, forceAll: true);
 
 				// Roll starting credits. Written straight to the DB; the player
 				// is not yet in _state.Credits (that cache is populated on
@@ -1306,6 +1281,22 @@ internal PlayerPosition ComputeSpawnPosition(long playerId)
 	internal void RequestBank(long playerId, long npcId) =>
 		_bank.RequestBank(playerId, npcId);
 
+	internal string? GetSlotItemSlug(long playerId, int slot) => _inv.GetSlotItemSlug(playerId, slot);
+	internal int GetSlotQuantity(long playerId, int slot) => _inv.GetSlotQuantity(playerId, slot);
+	internal bool ConsumeInventorySlot(long playerId, int slot, int qty) => _inv.ConsumeInventorySlot(playerId, slot, qty);
+	internal bool GiveItem(long playerId, string itemSlug, int qty) => _inv.GiveItem(playerId, itemSlug, qty);
+	internal Task<bool> GiveItemAsync(long playerId, string itemSlug, int qty) => _inv.GiveItemAsync(playerId, itemSlug, qty);
+	internal bool TryConsumeItem(long playerId, int slot, int healAmount) => _inv.TryConsumeItem(playerId, slot, healAmount);
+	internal void HealPlayer(long playerId, int amount) => _inv.HealPlayer(playerId, amount);
+	internal bool SpawnGroundItemAt(string itemSlug, int quantity, int tileX, int tileY, int tileZ) =>
+		_ground.SpawnGroundItemAt(itemSlug, quantity, tileX, tileY, tileZ);
+	internal bool DropGroundItem(long playerId, string itemSlug, int quantity) =>
+		_ground.DropGroundItem(playerId, itemSlug, quantity);
+	internal void RequestPickup(long playerId, long groundItemId) =>
+		_ground.RequestPickup(playerId, groundItemId);
+	internal bool TryDropFromSlot(long playerId, int slot, int qty) =>
+		_ground.TryDropFromSlot(playerId, slot, qty);
+
 	internal void RequestEngage(long playerId, long npcId) =>
 		_combat.RequestEngage(playerId, npcId);
 
@@ -1322,8 +1313,7 @@ internal PlayerPosition ComputeSpawnPosition(long playerId)
 		_movement.ArePositionsAdjacent(playerId, npc);
 
 	internal bool MovePlayerAdjacentToNpc(long playerId, ActiveNpc npc) =>
-		_movement.MovePlayerAdjacentToNpc(playerId, npc);
-
+    _movement.MovePlayerAdjacentToNpc(playerId, npc);
 
 	internal void CancelBankForPlayer(long playerId, string errorKey) =>
 		_bank.CancelBankForPlayer(playerId, errorKey);
@@ -1466,22 +1456,20 @@ private void RollNpcDeathLoot(ActiveNpc npc, long killerPlayerId)
 	var tileInfo = _world.GetTileInfo(deathX, deathY);
 	int deathZ = tileInfo.Z;
 
-	// Item drop
 	if (!string.IsNullOrEmpty(npc.LootTableName)
 		&& _lootTablesBySlug.TryGetValue(npc.LootTableName, out var bag)
 		&& bag.Count > 0)
 	{
 		var keys = new List<string>(bag.Keys);
 		string itemSlug = keys[_combatRng.Next(keys.Count)];
-		int qty = RollQuantity(bag[itemSlug]);
+		int qty = _inv.RollQuantity(bag[itemSlug]);
 		if (qty > 0)
 		{
-			SpawnGroundItemAt(itemSlug, qty, deathX, deathY, deathZ);
+			_ground.SpawnGroundItemAt(itemSlug, qty, deathX, deathY, deathZ);
 			Diag.Log("diag_item", $"NPC {npc.Name} dropped {itemSlug} x{qty} at ({deathX},{deathY})");
 		}
 	}
 
-	// Credits
 	if (killerPlayerId > 0
 		&& !string.IsNullOrEmpty(npc.CreditsTableName)
 		&& _creditsLootBySlug.TryGetValue(npc.CreditsTableName, out var range)
@@ -1496,25 +1484,6 @@ private void RollNpcDeathLoot(ActiveNpc npc, long killerPlayerId)
 	}
 }
 
-internal bool SpawnGroundItemAt(string itemSlug, int quantity, int tileX, int tileY, int tileZ)
-{
-	if (quantity < 1) return false;
-	if (!_items.ContainsSlug(itemSlug)) return false;
-
-	var item = new GroundItem
-	{
-		Id = _nextGroundItemId++,
-		ItemSlug = itemSlug,
-		Quantity = quantity,
-		TileX = tileX,
-		TileY = tileY,
-		TileZ = tileZ,
-		SpawnedAtMs = (long)Time.GetTicksMsec(),
-	};
-	_groundItems[item.Id] = item;
-	BroadcastGroundItemToNearby(item);
-	return true;
-}
 
 internal void GivePlayerCredits(long playerId, int amount)
 {
@@ -1534,62 +1503,6 @@ private void BroadcastCredits(long playerId)
 	Send(peerId, new { type = "credits_updated", credits = c });
 }
 
-	// ---------- Combat orchestration ----------
-
-	
-
-	/// <summary>
-/// Public entry point — called when the player clicks Attack on an NPC.
-/// If already adjacent, engages immediately. Otherwise records a pending
-/// pursuit. The NPC is not informed (no combat pair registered) until the
-/// player actually reaches them.
-/// </summary>
-
-
-
-/// <summary>
-/// Called only when the player is already adjacent. Registers the pair and
-/// begins combat. The NPC becomes aware of the player from this moment.
-/// </summary>
-
-
-	
-
-	
-
-
-
-
-
-	
-
-	
-
-	
-
-	
-
-	
-
-	
-
-	/// <summary>
-/// True if the player has an active movement intent (auto-path or manual click).
-/// Used to gate auto-retaliate: swings only happen when standing still.
-/// </summary>
-
-
-
-
-	
-
-
-private int RollQuantity((int Min, int Max) range)
-{
-	if (range.Min <= 0 && range.Max <= 0) return 0;
-	if (range.Min == range.Max) return range.Min;
-	return _combatRng.Next(range.Min, range.Max + 1);
-}
 
 	internal ActiveNpc? GetNpcById(long npcId) => _npc.GetNpcById(npcId);
 	internal IEnumerable<ActiveNpc> AllNpcs() => _npc.All();
@@ -1637,479 +1550,11 @@ private int RollQuantity((int Min, int Max) range)
 	}
 
 
-
-// ---------- Inventory ----------
-
-internal string? GetSlotItemSlug(long playerId, int slot)
-{
-	if (!_state.Inventories.TryGetValue(playerId, out var inv)) return null;
-	if (slot < 0 || slot >= 28) return null;
-	long packed = inv[slot];
-	if (packed == 0) return null;
-	int itemId = ItemStack.ItemId(packed);
-	return _items.TryGetById(itemId, out var meta) ? meta.Slug : null;
-}
-
-internal int GetSlotQuantity(long playerId, int slot)
-{
-	if (!_state.Inventories.TryGetValue(playerId, out var inv)) return 0;
-	if (slot < 0 || slot >= 28) return 0;
-	long packed = inv[slot];
-	return packed == 0 ? 0 : ItemStack.Quantity(packed);
-}
-
-internal bool ConsumeInventorySlot(long playerId, int slot, int qty)
-{
-	if (_trade.IsTradeInventoryLocked(playerId)) return false;
-	if (!_state.Inventories.TryGetValue(playerId, out var inv)) return false;
-	if (slot < 0 || slot >= 28) return false;
-	long packed = inv[slot];
-	if (packed == 0) return false;
-	int currentQty = ItemStack.Quantity(packed);
-	if (currentQty < qty) return false;
-	int itemId = ItemStack.ItemId(packed);
-	int newQty = currentQty - qty;
-	inv[slot] = newQty > 0 ? ItemStack.Encode(itemId, newQty) : 0;
-	_db.Inventory.SaveSlotSync(playerId, slot, inv[slot]);
-	BroadcastInventory(playerId);
-	return true;
-}
-
-// ---------- Item giving ----------
-
-/// <summary>
-/// Sync wrapper for GFS scripts: fires the async give and returns optimistically.
-/// Pre-validates inputs so callers get a real `false` for bad arguments, but
-/// inventory-full failures are silent (use GiveItemAsync to observe those).
-/// </summary>
-internal bool GiveItem(long playerId, string itemSlug, int qty)
-{
-	if (_trade.IsTradeInventoryLocked(playerId)) return false;
-	if (qty < 1) return false;
-	if (!_items.ContainsSlug(itemSlug)) return false;
-	if (!_state.Inventories.ContainsKey(playerId)) return false;
-	_ = GiveItemAsync(playerId, itemSlug, qty);
-	return true;
-}
-
-/// <summary>
-/// Awaits the DB save before returning, so a subsequent read from the DB sees
-/// the item. Used by loot giving during registration, where the inventory is
-/// loaded fresh at login and a fire-and-forget save could race.
-/// </summary>
-internal async Task<bool> GiveItemAsync(long playerId, string itemSlug, int qty)
-{
-	if (_trade.IsTradeInventoryLocked(playerId)) return false;
-	if (qty < 1) return false;
-	if (!_items.TryGetIdBySlug(itemSlug, out long itemId))
-	{
-		GD.PrintErr($"[GiveItem] Unknown slug '{itemSlug}' (player {playerId})");
-		return false;
-	}
-	if (!_items.TryGetById(itemId, out var meta))
-	{
-		GD.PrintErr($"[GiveItem] Item id {itemId} ('{itemSlug}') missing from _itemsById");
-		return false;
-	}
-
-	// `out var inv` here is the single declaration of `inv` for the whole
-	// function. Every use below relies on it.
-	if (!_state.Inventories.TryGetValue(playerId, out var inv))
-	{
-		inv = await _db.Inventory.GetSlotsAsync(playerId);
-		if (inv == null) inv = new long[28];
-		_state.Inventories[playerId] = inv;
-	}
-
-	if (meta.Stackable)
-	{
-		// Stackable: merge into an existing slot first.
-		for (int i = 0; i < 28; i++)
-		{
-			long packed = inv[i];
-			if (packed == 0) continue;
-			if (ItemStack.ItemId(packed) != itemId) continue;
-			int newQty = ItemStack.Quantity(packed) + qty;
-			inv[i] = ItemStack.Encode((int)itemId, newQty);
-			_db.Inventory.SaveSlotSync(playerId, i, inv[i]);
-			BroadcastInventory(playerId);
-			return true;
-		}
-		// Otherwise the first empty slot.
-		for (int i = 0; i < 28; i++)
-		{
-			if (inv[i] != 0) continue;
-			inv[i] = ItemStack.Encode((int)itemId, qty);
-			_db.Inventory.SaveSlotSync(playerId, i, inv[i]);
-			BroadcastInventory(playerId);
-			return true;
-		}
-		return false;
-	}
-	else
-	{
-		// Non-stackable: every unit gets its own slot, quantity 1.
-		int placed = 0;
-		for (int i = 0; i < 28 && placed < qty; i++)
-		{
-			if (inv[i] != 0) continue;
-			inv[i] = ItemStack.Encode((int)itemId, 1);
-			_db.Inventory.SaveSlotSync(playerId, i, inv[i]);
-			placed++;
-		}
-		if (placed > 0) BroadcastInventory(playerId);
-		return placed == qty;
-	}
-}
-
-/// <summary>
-/// Give every item in the loot table (forceAll=true), or roll one random entry
-/// and give its full quantity (forceAll=false).
-/// </summary>
-internal async Task GiveLootTableAsync(long playerId, string lootSlug, bool forceAll = false)
-{
-	if (!_lootTablesBySlug.TryGetValue(lootSlug, out var table))
-	{
-		GD.PrintErr($"[GiveLootTable] Loot table '{lootSlug}' not loaded (was the server restarted after DB insert?)");
-		return;
-	}
-	if (table.Count == 0)
-	{
-		GD.PrintErr($"[GiveLootTable] Loot table '{lootSlug}' is empty");
-		return;
-	}
-
-	if (forceAll)
-	{
-		foreach (var kv in table)
-		{
-			int qty = RollQuantity(kv.Value);
-			if (qty <= 0) continue;
-			bool ok = await GiveItemAsync(playerId, kv.Key, qty);
-			if (!ok) GD.PrintErr($"[GiveLootTable] Failed to give '{kv.Key}' x{qty} from '{lootSlug}'");
-		}
-		Diag.Log("diag_login", $"Gave full loot table '{lootSlug}' to player {playerId}");
-	}
-	else
-	{
-		var keys = new List<string>(table.Keys);
-		string pick = keys[_combatRng.Next(keys.Count)];
-		int qty = RollQuantity(table[pick]);
-		if (qty > 0) await GiveItemAsync(playerId, pick, qty);
-		Diag.Log("diag_login", $"Rolled '{pick}' x{qty} from loot table '{lootSlug}' for player {playerId}");
-	}
-}
-
-internal void HealPlayer(long playerId, int amount)
-{
-	if (!_state.PlayerCombat.TryGetValue(playerId, out var pd)) return;
-	int newHp = Math.Min(pd.MaxHp, pd.CurrentHp + amount);
-	if (newHp == pd.CurrentHp) return;
-	_state.PlayerCombat[playerId] = pd with { CurrentHp = newHp };
-	_ = _db.Stats.SetPlayerHpAsync(playerId, newHp);
-	BroadcastPlayerHp(playerId, newHp, pd.MaxHp);
-}
-
-/// <summary>
-/// Atomic consume: tick gate → decrement slot → heal. Returns true only if
-/// something was actually consumed. Caller (GFS script) usually prints a
-/// message on success and stays silent on failure.
-/// </summary>
-internal bool TryConsumeItem(long playerId, int slot, int healAmount)
-{
-	if (_lastConsumeTick.TryGetValue(playerId, out long lastTick)
-		&& _state.CurrentTick - lastTick < ConsumeCooldownTicks)
-		return false;
-
-	if (!ConsumeInventorySlot(playerId, slot, 1)) return false;
-
-	_lastConsumeTick[playerId] = _state.CurrentTick;
-	if (healAmount > 0) HealPlayer(playerId, healAmount);
-	return true;
-}
-
 	internal void BroadcastInventory(long playerId) => _outbound.BroadcastInventory(playerId);
 
 	private void SendInventory(long peerId) => _outbound.SendInventory(peerId);
 
 	internal void SendSkills(long peerId) => _outbound.SendSkills(peerId);
-
-private void HandleInventorySwap(long peerId, JsonElement root)
-{
-	if (!_state.Sessions.TryGetValue(peerId, out var session)) return;
-	if (_trade.IsTradeInventoryLocked(session.PlayerId)) return;
-	if (!root.TryGetProperty("slot_a", out var aEl) || !aEl.TryGetInt32(out int slotA)) return;
-	if (!root.TryGetProperty("slot_b", out var bEl) || !bEl.TryGetInt32(out int slotB)) return;
-	if (slotA == slotB) return;
-	if (slotA < 0 || slotA >= 28 || slotB < 0 || slotB >= 28) return;
-	if (!_state.Inventories.TryGetValue(session.PlayerId, out var inv)) return;
-
-	long tmp = inv[slotA];
-	inv[slotA] = inv[slotB];
-	inv[slotB] = tmp;
-
-	_db.Inventory.SaveSlotSync(session.PlayerId, slotA, inv[slotA]);
-	_db.Inventory.SaveSlotSync(session.PlayerId, slotB, inv[slotB]);
-	BroadcastInventory(session.PlayerId);
-	Diag.Log("diag_item", $"Swap player {session.PlayerId}: slot {slotA} <-> {slotB}");
-}
-
-// ---------- Ground items ----------
-
-private object GroundItemToPacket(GroundItem item)
-{
-	string display = "";
-	bool isCert = false;
-	if (_items.TryGetIdBySlug(item.ItemSlug, out long iid) && _items.TryGetById(iid, out var meta))
-	{
-		display = meta.Display;
-		isCert = !string.IsNullOrEmpty(meta.CertOfSlug);
-	}
-	return new
-	{
-		id = item.Id,
-		slug = item.ItemSlug,
-		display = display,
-		is_cert = isCert,
-		quantity = item.Quantity,
-		x = item.TileX,
-		y = item.TileZ,
-		z = item.TileY,
-	};
-}
-
-internal bool DropGroundItem(long playerId, string itemSlug, int quantity)
-{
-	if (quantity < 1) return false;
-	if (!_items.ContainsSlug(itemSlug)) return false;
-	if (!_state.Positions.TryGetValue(playerId, out var pos)) return false;
-
-	int tx = (int)MathF.Round(pos.X);
-	int ty = (int)MathF.Round(pos.Z);
-	int tz = (int)MathF.Round(pos.Y);
-
-	var item = new GroundItem
-	{
-		Id = _nextGroundItemId++,
-		ItemSlug = itemSlug,
-		Quantity = quantity,
-		TileX = tx,
-		TileY = ty,
-		TileZ = tz,
-		SpawnedAtMs = (long)Time.GetTicksMsec(),
-	};
-	_groundItems[item.Id] = item;
-	BroadcastGroundItemToNearby(item);
-	Diag.Log("diag_item", $"Dropped {itemSlug} x{quantity} (id {item.Id}) at ({tx},{ty})");
-	return true;
-}
-
-internal void RequestPickup(long playerId, long groundItemId)
-{
-	if (_trade.IsTradeInventoryLocked(playerId)) return;
-	if (!_groundItems.TryGetValue(groundItemId, out var item)) return;
-	if (!_state.Positions.TryGetValue(playerId, out var pos)) return;
-
-	int px = (int)MathF.Round(pos.X);
-	int py = (int)MathF.Round(pos.Z);
-	if (px == item.TileX && py == item.TileY)
-	{
-		ExecutePickup(playerId, item);
-		return;
-	}
-
-	_state.PendingPickup[playerId] = groundItemId;
-	MovePlayerToTile(playerId, item.TileX, item.TileY);
-	Diag.Log("diag_item", $"Player {playerId} approaching ground item {groundItemId}");
-}
-
-private void ProcessPendingPickup()
-{
-	if (_state.PendingPickup.Count == 0) return;
-	var toRemove = new List<long>();
-	foreach (var kv in _state.PendingPickup)
-	{
-		long playerId = kv.Key;
-		long itemId = kv.Value;
-		if (!_groundItems.TryGetValue(itemId, out var item)) { toRemove.Add(playerId); continue; }
-		if (!_state.Positions.TryGetValue(playerId, out var pos)) { toRemove.Add(playerId); continue; }
-		int px = (int)MathF.Round(pos.X);
-		int py = (int)MathF.Round(pos.Z);
-		if (px == item.TileX && py == item.TileY)
-		{
-			ExecutePickup(playerId, item);
-			toRemove.Add(playerId);
-		}
-	}
-	foreach (var p in toRemove) _state.PendingPickup.Remove(p);
-}
-
-private void MovePlayerAdjacentToTile(long playerId, int tx, int ty)
-{
-	long peerId = -1;
-	foreach (var kv in _state.Sessions) if (kv.Value.PlayerId == playerId) { peerId = kv.Key; break; }
-	if (peerId < 0) return;
-	if (_state.Intents.ContainsKey(peerId)) return;
-	if (!_state.Positions.TryGetValue(playerId, out var pos)) return;
-
-	int px = (int)MathF.Round(pos.X);
-	int py = (int)MathF.Round(pos.Z);
-
-	if (px == tx && py == ty)
-	{
-		Vector2I[] dirs = { new(1,0), new(-1,0), new(0,1), new(0,-1),
-							new(1,1), new(1,-1), new(-1,1), new(-1,-1) };
-		foreach (var d in dirs)
-		{
-			var cand = new Vector2I(px + d.X, py + d.Y);
-			if (IsValidTile(cand.X, cand.Y))
-			{
-				_state.Intents[peerId] = new List<Vector2I> { cand };
-				return;
-			}
-		}
-		return;
-	}
-
-	var route = PathfindToNearest(playerId, tx, ty);
-	if (route.Count == 0) return;
-	var goal = new Vector2I(tx, ty);
-	if (route[^1] == goal) route.RemoveAt(route.Count - 1);
-	if (route.Count == 0) return;
-	SetIntent(playerId, route);
-}
-
-
-private void ExecutePickup(long playerId, GroundItem item)
-{
-	if (_trade.IsTradeInventoryLocked(playerId)) return;
-	if (!_groundItems.Remove(item.Id)) return;
-	foreach (var kv in _visibleGroundItems)
-	{
-		if (kv.Value.Remove(item.Id))
-			Send(kv.Key, new { type = "ground_item_removed", id = item.Id });
-	}
-	Diag.Log("diag_item", $"Player {playerId} picked up {item.ItemSlug} x{item.Quantity}");
-	_ = GiveItemAsync(playerId, item.ItemSlug, item.Quantity);
-}
-
-private void ProcessGroundItemDespawn()
-{
-	long now = (long)Time.GetTicksMsec();
-	var toRemove = new List<long>();
-	foreach (var kv in _groundItems)
-	{
-		if (kv.Value.IsStatic) continue;
-		if (now - kv.Value.SpawnedAtMs >= GroundItemDespawnMs)
-			toRemove.Add(kv.Key);
-	}
-	foreach (var id in toRemove)
-	{
-		_groundItems.Remove(id);
-		foreach (var vis in _visibleGroundItems)
-			if (vis.Value.Remove(id))
-				Send(vis.Key, new { type = "ground_item_removed", id = id });
-	}
-}
-
-private void BroadcastGroundItemToNearby(GroundItem item)
-{
-	foreach (long peerId in _state.Sessions.Keys)
-	{
-		if (!_state.Sessions.TryGetValue(peerId, out var sess)) continue;
-		if (!_state.Positions.TryGetValue(sess.PlayerId, out var pos)) continue;
-		int pcx = ActiveNpc.FloorDiv((int)MathF.Round(pos.X), _world.ChunkSize);
-		int pcy = ActiveNpc.FloorDiv((int)MathF.Round(pos.Z), _world.ChunkSize);
-		int icx = ActiveNpc.FloorDiv(item.TileX, _world.ChunkSize);
-		int icy = ActiveNpc.FloorDiv(item.TileY, _world.ChunkSize);
-		if (Math.Abs(pcx - icx) > NpcViewChunkRadius) continue;
-		if (Math.Abs(pcy - icy) > NpcViewChunkRadius) continue;
-
-		Send(peerId, new { type = "ground_item_dropped", item = GroundItemToPacket(item) });
-		if (!_visibleGroundItems.TryGetValue(peerId, out var set))
-		{
-			set = new HashSet<long>();
-			_visibleGroundItems[peerId] = set;
-		}
-		set.Add(item.Id);
-	}
-}
-
-private void RefreshGroundItemVisibility(long peerId, int tx, int ty)
-{
-	if (!_visibleGroundItems.TryGetValue(peerId, out var oldSet))
-	{
-		oldSet = new HashSet<long>();
-		_visibleGroundItems[peerId] = oldSet;
-	}
-	var newSet = new HashSet<long>();
-	int pcx = ActiveNpc.FloorDiv(tx, _world.ChunkSize);
-	int pcy = ActiveNpc.FloorDiv(ty, _world.ChunkSize);
-	foreach (var item in _groundItems.Values)
-	{
-		int icx = ActiveNpc.FloorDiv(item.TileX, _world.ChunkSize);
-		int icy = ActiveNpc.FloorDiv(item.TileY, _world.ChunkSize);
-		if (Math.Abs(pcx - icx) > NpcViewChunkRadius) continue;
-		if (Math.Abs(pcy - icy) > NpcViewChunkRadius) continue;
-		newSet.Add(item.Id);
-	}
-	foreach (var id in newSet)
-	{
-		if (oldSet.Contains(id)) continue;
-		if (!_groundItems.TryGetValue(id, out var item)) continue;
-		Send(peerId, new { type = "ground_item_dropped", item = GroundItemToPacket(item) });
-	}
-	foreach (var id in oldSet)
-	{
-		if (newSet.Contains(id)) continue;
-		Send(peerId, new { type = "ground_item_removed", id = id });
-	}
-	_visibleGroundItems[peerId] = newSet;
-}
-
-private void HandlePickupGroundItem(long peerId, JsonElement root)
-{
-	if (!_state.Sessions.TryGetValue(peerId, out var session)) return;
-	if (!root.TryGetProperty("id", out var idEl) || !idEl.TryGetInt64(out long groundItemId)) return;
-	RequestPickup(session.PlayerId, groundItemId);
-}
-
-internal bool TryDropFromSlot(long playerId, int slot, int qty)
-{
-	if (_trade.IsTradeInventoryLocked(playerId)) return false;
-	if (!_state.Inventories.TryGetValue(playerId, out var inv)) return false;
-	if (slot < 0 || slot >= 28) return false;
-	long packed = inv[slot];
-	if (packed == 0) return false;
-	int currentQty = ItemStack.Quantity(packed);
-	if (currentQty < qty) return false;
-	int itemId = ItemStack.ItemId(packed);
-	if (!_items.TryGetById(itemId, out var meta)) return false;
-
-	int newQty = currentQty - qty;
-	inv[slot] = newQty > 0 ? ItemStack.Encode(itemId, newQty) : 0;
-	_db.Inventory.SaveSlotSync(playerId, slot, inv[slot]);
-	BroadcastInventory(playerId);
-	return DropGroundItem(playerId, meta.Slug, qty);
-}
-
-private void MovePlayerToTile(long playerId, int tx, int ty)
-{
-	long peerId = -1;
-	foreach (var kv in _state.Sessions) if (kv.Value.PlayerId == playerId) { peerId = kv.Key; break; }
-	if (peerId < 0) return;
-	if (_state.Intents.ContainsKey(peerId)) return;
-	if (!_state.Positions.TryGetValue(playerId, out var pos)) return;
-
-	int px = (int)MathF.Round(pos.X);
-	int py = (int)MathF.Round(pos.Z);
-	if (px == tx && py == ty) return;
-
-	var route = PathfindToNearest(playerId, tx, ty);
-	if (route.Count == 0) return;
-	// Keep the goal tile in the route — pickup requires standing on it.
-	SetIntent(playerId, route);
-}
 
 private static string CollapseSpaces(string text)
 {
