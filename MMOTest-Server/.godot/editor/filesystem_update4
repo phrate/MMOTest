@@ -1,5 +1,4 @@
+res://editor/npc_editor_panel.tscn
+res://editor/npc_editor.tscn
 res://editor/world_editor.tscn
-res://tools/files_to_give.gd
-res://Main.cs
-res://editor/NpcEditorBridge.cs
-res://editor/WorldEditor.cs
+res://Main.tscn

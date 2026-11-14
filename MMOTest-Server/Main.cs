@@ -14,29 +14,22 @@ public partial class Main : Node
 	private const int Port = 9999;
 	private const int MaxClients = 64;
 	private const int MaxChatLength = 60;
-
 	private const double TickIntervalSeconds = 0.3;
 	private const float WalkSpeed = 2.0f;
 	private WorldService _world;
 	internal bool TileWalkable(int x, int y) => _world.IsWalkable(x, y);
 	private bool IsValidTile(int x, int y) => _world.IsWalkable(x, y);
 	private bool IsWalkableTile(int x, int y) => _world.IsWalkable(x, y);
-	private const double WorldCheckIntervalSeconds = 1.0;
-
 	private static readonly string[] WorldFileCandidates =
 	{
 		ProjectSettings.GlobalizePath("user://world.json"),
 		ProjectSettings.GlobalizePath("res://data/world.json"),
 	};
-
-
-
 	private Database _db;
 	private SceneMultiplayer _mp;
 	private ENetMultiplayerPeer _enet;
 	internal readonly ServerState _state = new();
 	private readonly HashSet<long> _connectedPeers = new();
-
 
 	private double _npcVisRefreshAccum;
 	private const double NpcVisRefreshIntervalSeconds = 1.5;
@@ -55,16 +48,9 @@ public partial class Main : Node
 	private readonly Dictionary<string, (int Min, int Max)> _creditsLootBySlug = new();
 	private readonly Random _combatRng = new();
 
-
 	private readonly Dictionary<long, Vector2I> _lastPlayerChunk = new();   // peerId -> chunk
 
-
-
 	private double _tickAccumulator = 0.0;
-
-	private double _worldCheckAccumulator = 0.0;
-	private int _lastBroadcastVersion = -1;
-
 
 	private Gfs.GfsManager _gfs;
 	private Gfs.FunctionRegistry _gfsFns;
@@ -84,6 +70,7 @@ public partial class Main : Node
 	private GroundItemSystem _ground;
 	private ChatSystem _chat;
 	private AuthSystem _auth;
+	private WorldFileSystem _worldFiles;
 
 	public override void _Ready()
 	{
@@ -158,7 +145,6 @@ public partial class Main : Node
 			_world = new WorldService(WorldFileCandidates, GD.PrintErr);
 			if (_world.EnsureLoaded())
 			{
-				_lastBroadcastVersion = _world.Version;
 				GD.Print($"[Server] World ready: v{_world.Version} format {_world.FormatVersion}, {_world.TileCount} tiles ({_world.Path})");
 			}
 			else
@@ -220,6 +206,8 @@ public partial class Main : Node
 				},
 				_combatRng);
 			
+			_worldFiles = new WorldFileSystem(_state, _world, _outbound);
+			
 			_recipe = new RecipeSystem(this, _state, _items, _db.Recipes, _db.Inventory, _db.Stats, _gfs, _gfsFns, _world, _outbound);
 			_recipe.LoadRecipes();
 
@@ -275,12 +263,7 @@ public partial class Main : Node
 			RunTick();
 		}
 
-		_worldCheckAccumulator += delta;
-		if (_worldCheckAccumulator >= WorldCheckIntervalSeconds)
-		{
-			_worldCheckAccumulator = 0;
-			CheckWorldForUpdates();
-		}
+		_worldFiles.Tick(delta);
 
 		_npc.PollRenderBundles();
 		_npc.TickWander(delta);
@@ -377,21 +360,7 @@ public partial class Main : Node
 
 	// ---------- World file updates ----------
 
-	private void CheckWorldForUpdates()
-	{
-		if (!_world.EnsureLoaded()) return;
-		if (_world.Version == _lastBroadcastVersion) return;
-
-		_lastBroadcastVersion = _world.Version;
-		Diag.Log("diag_world", $"World hotfix: v{_world.Version}, notifying {_state.Sessions.Count} client(s)");
-
-		Broadcast(new
-		{
-			type = "world_updated",
-			world_version = _world.Version,
-			format_version = _world.FormatVersion
-		});
-	}
+	
 
 	private static readonly string[] TooltipsFileCandidates =
 	{
@@ -532,8 +501,8 @@ public partial class Main : Node
 					break;
 				}
 				case "login":       await _auth.HandleLoginAsync(peerId, GetString(root, "username"), GetString(root, "password"), GetString(root, "reason")); break;
-				case "world_info":  HandleWorldInfo(peerId); break;
-				case "world_fetch": HandleWorldFetch(peerId); break;
+				case "world_info":  _worldFiles.HandleWorldInfo(peerId); break;
+				case "world_fetch": _worldFiles.HandleWorldFetch(peerId); break;
 				case "npc_editor_get":  _npc.HandleNpcEditorGet(peerId, root); break;
 				case "npc_editor_save": _npc.HandleNpcEditorSave(peerId, root); break;
 				case "dev_auto_login": await _auth.HandleDevAutoLoginAsync(peerId); break;
@@ -850,24 +819,6 @@ public partial class Main : Node
 		if (!_movement.ValidateWalkPath(session.PlayerId, path)) return;
 
 		_state.Intents[peerId] = path;
-	}
-
-	// ---------- World file ----------
-
-	private void HandleWorldInfo(long peerId)
-	{
-		if (!_state.Sessions.ContainsKey(peerId)) { SendError(peerId, "world_info_result", ErrorKeys.WorldNotLoggedIn); return; }
-		if (!_world.EnsureLoaded())         { SendError(peerId, "world_info_result", ErrorKeys.WorldUnavailable); return; }
-		Send(peerId, new { type = "world_info_result", ok = true, world_version = _world.Version, format_version = _world.FormatVersion });
-	}
-
-	private void HandleWorldFetch(long peerId)
-	{
-		if (!_state.Sessions.ContainsKey(peerId)) { SendError(peerId, "world_data", ErrorKeys.WorldNotLoggedIn); return; }
-		if (!_world.EnsureLoaded())         { SendError(peerId, "world_data", ErrorKeys.WorldUnavailable); return; }
-		var root = _world.GetRootElement();
-		if (root == null) { SendError(peerId, "world_data", ErrorKeys.WorldUnavailable); return; }
-		Send(peerId, new { type = "world_data", ok = true, world_version = _world.Version, format_version = _world.FormatVersion, data = root.Value });
 	}
 
 	// ---------- Outbound ----------

@@ -34,6 +34,15 @@ internal sealed class OutboundChannel
         _sendBytes(peerId, JsonSerializer.SerializeToUtf8Bytes(message), channel, mode);
     }
 
+    public void SendError(long peerId, string type, string errorKey, object? errorParams = null)
+    => Send(peerId, new
+    {
+        type,
+        ok = false,
+        error_key = errorKey,
+        error_params = errorParams ?? new { },
+    });
+
     public void Broadcast(object message, long exceptPeerId = 0, int channel = 0,
         MultiplayerPeer.TransferModeEnum mode = MultiplayerPeer.TransferModeEnum.Reliable)
     {
