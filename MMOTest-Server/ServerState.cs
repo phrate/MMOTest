@@ -63,6 +63,7 @@ internal sealed class ServerState
     public readonly Dictionary<long, long[]> Inventories = new();
     public readonly Dictionary<long, int> Credits = new();
     public readonly Dictionary<long, CombatPair> CombatByPlayer = new();
+    public readonly Dictionary<long, CombatPair> CombatByNpc = new();
     public readonly Dictionary<long, long> PendingEngage = new();
     public readonly Dictionary<long, PlayerCombatData> PlayerCombat = new();
     public readonly Dictionary<long, List<SkillLevel>> SkillsByPlayer = new();

@@ -57,6 +57,38 @@ internal sealed class OutboundChannel
             SendInventory(peerId);
     }
 
+    public void BroadcastPlayerHp(long playerId, int hp, int maxHp)
+    {
+        Broadcast(new
+        {
+            type = "player_hp_updated",
+            player_id = playerId,
+            hitpoints = hp,
+            max_hitpoints = maxHp
+        });
+    }
+
+    public void BroadcastNpcHp(long npcId, int hp, int maxHp)
+    {
+        Broadcast(new
+        {
+            type = "npc_hp_updated",
+            npc_id = npcId,
+            hitpoints = hp,
+            max_hitpoints = maxHp
+        });
+    }
+
+    public void BroadcastPlayerAnim(long playerId, string anim, int durationMs)
+    {
+        Broadcast(new { type = "anim_changed", player_id = playerId, anim, duration_ms = durationMs });
+    }
+
+    public void BroadcastNpcAnim(long npcId, string anim, int durationMs)
+    {
+        Broadcast(new { type = "npc_anim_changed", npc_id = npcId, anim, duration_ms = durationMs });
+    }
+
     public void SendInventory(long peerId)
     {
         if (!_state.Sessions.TryGetValue(peerId, out var session)) return;

@@ -21,12 +21,14 @@ internal sealed class MovementSystem
     private readonly ServerState _state;
     private readonly WorldService _world;
     private readonly OutboundChannel _outbound;
+    private readonly Pathfinder _pathfinder;
 
-    public MovementSystem(ServerState state, WorldService world, OutboundChannel outbound)
+    public MovementSystem(ServerState state, WorldService world, OutboundChannel outbound, Pathfinder pathfinder)
     {
         _state = state;
         _world = world;
         _outbound = outbound;
+        _pathfinder = pathfinder;
     }
 
     /// <summary>
@@ -147,5 +149,62 @@ internal sealed class MovementSystem
         var endpoint = new PlayerPosition(x, tinfo.Z, z, yaw);
         bool finished = path.Count == 0;
         return (endpoint, finished, lastWaypoint, lastWaypointYaw);
+    }
+
+    public bool ArePositionsAdjacent(long playerId, ActiveNpc npc)
+    {
+        if (!_state.Positions.TryGetValue(playerId, out var ppos)) return false;
+        int px = (int)MathF.Round(ppos.X);
+        int py = (int)MathF.Round(ppos.Z);
+        int nx = (int)MathF.Round(npc.PosX);
+        int ny = (int)MathF.Round(npc.PosZ);
+        int dx = Math.Abs(px - nx);
+        int dy = Math.Abs(py - ny);
+        if (dx > 1 || dy > 1) return false;
+        if (dx == 0 && dy == 0) return false;
+        return true;
+    }
+
+    public bool MovePlayerAdjacentToNpc(long playerId, ActiveNpc npc)
+    {
+        long peerId = -1;
+        foreach (var kv in _state.Sessions) if (kv.Value.PlayerId == playerId) { peerId = kv.Key; break; }
+        if (peerId < 0) return false;
+        if (_state.Intents.ContainsKey(peerId)) return true;
+
+        if (!_state.Positions.TryGetValue(playerId, out var ppos)) return false;
+        int px = (int)MathF.Round(ppos.X);
+        int py = (int)MathF.Round(ppos.Z);
+        int nx = (int)MathF.Round(npc.PosX);
+        int ny = (int)MathF.Round(npc.PosZ);
+
+        if (px == nx && py == ny)
+        {
+            Vector2I[] dirs = { new(1,0), new(-1,0), new(0,1), new(0,-1),
+                                new(1,1), new(1,-1), new(-1,1), new(-1,-1) };
+            foreach (var d in dirs)
+            {
+                var cand = new Vector2I(px + d.X, py + d.Y);
+                if (_world.IsWalkable(cand.X, cand.Y))
+                {
+                    _state.Intents[peerId] = new List<Vector2I> { cand };
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        var route = _pathfinder.FindPath(px, py, nx, ny);
+        if (route.Count == 0) return false;
+        var goal = new Vector2I(nx, ny);
+        if (route[^1] == goal) route.RemoveAt(route.Count - 1);
+        if (route.Count == 0) return false;
+        _state.Intents[peerId] = route;
+        return true;
+    }
+
+    public void RemoveIntentForPlayer(long playerId)
+    {
+        if (_state.PeerByPlayerId.TryGetValue(playerId, out long peerId)) _state.Intents.Remove(peerId);
     }
 }
