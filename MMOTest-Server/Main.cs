@@ -17,9 +17,7 @@ public partial class Main : Node
 	private const double TickIntervalSeconds = 0.3;
 	private const float WalkSpeed = 2.0f;
 	private WorldService _world;
-	internal bool TileWalkable(int x, int y) => _world.IsWalkable(x, y);
-	private bool IsValidTile(int x, int y) => _world.IsWalkable(x, y);
-	private bool IsWalkableTile(int x, int y) => _world.IsWalkable(x, y);
+	
 	private static readonly string[] WorldFileCandidates =
 	{
 		ProjectSettings.GlobalizePath("user://world.json"),
@@ -169,21 +167,11 @@ public partial class Main : Node
 			_gfs = new Gfs.GfsManager(GfsIntegration.GfsScriptDirs, GfsIntegration.TooltipsFileCandidates);
 			_gfs.InitialLoad();
 			_gfsFns = new Gfs.FunctionRegistry();
-			Gfs.Utils.TilesUtils.Register(_gfsFns, this);
-			Gfs.Utils.PlayerUtils.Register(_gfsFns, this);
-			Gfs.Utils.CombatUtils.Register(_gfsFns, this);
-			Gfs.Utils.ItemUtils.Register(_gfsFns, this);
-			Gfs.Utils.DialogueUtils.Register(_gfsFns, this);
-			Gfs.Utils.BankUtils.Register(_gfsFns, this);
 			_perTick = new Gfs.PerTickManager(_gfsFns);
 			_outbound = new OutboundChannel(_state, _items, SendBytes);
 			_coordinator = new Coordinator();
 			_movement = new MovementSystem(_state, _world, _outbound, _pathfinder);
-			_trade = new TradeSystem(this, _state, _items, _db.Inventory, _perTick, _outbound, _coordinator);
-			_dialogue = new DialogueSystem(this, _state, _gfs, _gfsFns, _perTick, _outbound, _coordinator);
-			_bank = new BankSystem(this, _state, _items, _db.Bank, _db.Inventory, _perTick, _outbound, _coordinator);
-			_coordinator.Wire(_trade, _dialogue, _bank);
-			_combat = new CombatSystem(this, _state, _world, _outbound, _coordinator, _movement, _db.Stats, _perTick, _combatRng);
+			_trade    = new TradeSystem(_state, _items, _db.Inventory, _perTick, _outbound, _coordinator);
 
 			_npcRender = new NpcRenderManager(new[]
 			{
@@ -194,8 +182,16 @@ public partial class Main : Node
 
 			_npc = new NpcSystem(_state, _world, _outbound, _db.Npcs, _gfs, _npcRender, _pathfinder, NpcViewChunkRadius, DiagNpcWander);
 			_npc.LoadAll();
-			_inv = new ItemSystem(_state, _outbound, _items, _db.Inventory, _db.Stats, _trade, _combatRng);
+			_inv = new ItemSystem(_state, _outbound, _items, _db.Inventory, _db.Stats, _trade, _combatRng, _db.Players);
 			_ground = new GroundItemSystem(_state, _world, _outbound, _items, _inv, _trade, _db.Inventory, _pathfinder, NpcViewChunkRadius);
+
+			_combat = new CombatSystem(_state, _world, _outbound, _coordinator, _movement, _pathfinder,
+    _db.Stats, _perTick, _npc, _inv, _ground, _lootTablesBySlug, _creditsLootBySlug, _combatRng);
+			_dialogue = new DialogueSystem(_state, _gfs, _gfsFns, _perTick, _outbound, _coordinator, _npc, _movement, _combat);
+			_bank     = new BankSystem(_state, _items, _db.Bank, _db.Inventory, _perTick, _outbound, _coordinator, _npc, _movement, _combat, _dialogue);
+
+			_coordinator.Wire(_trade, _dialogue, _bank);
+
 			_chat = new ChatSystem(_state, _outbound, _world, MaxChatLength);
 			_auth = new AuthSystem(_state, _outbound, _world, _db, _npc, _bank, _inv,
 				_connectedPeers, _lootTablesBySlug, _creditsLootBySlug,
@@ -205,15 +201,16 @@ public partial class Main : Node
 					return addr == "127.0.0.1" || addr == "::1";
 				},
 				_combatRng);
-			
-			_worldFiles = new WorldFileSystem(_state, _world, _outbound);
 
-			_gfsIntegration = new GfsIntegration(_state, _outbound, _world, _gfs, _gfsFns, _perTick, _coordinator);
-			
-			_recipe = new RecipeSystem(this, _state, _items, _db.Recipes, _db.Inventory, _db.Stats, _gfs, _gfsFns, _world, _outbound);
+			_recipe = new RecipeSystem(_state, _items, _db.Recipes, _db.Inventory, _db.Stats, _gfs, _gfsFns, _world, _outbound);
 			_recipe.LoadRecipes();
 
-
+			Gfs.Utils.TilesUtils.Register(_gfsFns, _state, _world);
+			Gfs.Utils.PlayerUtils.Register(_gfsFns, _state, _world, _pathfinder, _perTick);
+			Gfs.Utils.CombatUtils.Register(_gfsFns, _combat, _trade, _npc);
+			Gfs.Utils.ItemUtils.Register(_gfsFns, _inv, _ground, _state);
+			Gfs.Utils.DialogueUtils.Register(_gfsFns, _dialogue);
+			Gfs.Utils.BankUtils.Register(_gfsFns, _bank);
 
 			var peer = new ENetMultiplayerPeer();
 			Error err = peer.CreateServer(Port, MaxClients);
@@ -322,7 +319,7 @@ public partial class Main : Node
 				foreach (var kv in _state.Sessions)
 					if (kv.Value.PlayerId == pid) { username = kv.Value.Username; selfPeer = kv.Key; break; }
 
-				RouteChatEffects(pid, username, pcx, pcy, effects, selfPeer);
+				_outbound.RouteChatEffects(pid, username, pcx, pcy, effects, selfPeer);
 			}
 		}
 
@@ -352,7 +349,6 @@ public partial class Main : Node
 			}
 		}
 	}
-
 
 	// ============================================================================
 	// Diagnostics
@@ -439,7 +435,7 @@ public partial class Main : Node
 			_state.Positions.Remove(session.PlayerId);
 			_lastPlayerChunk.Remove(peerId);
 
-			Broadcast(
+			_outbound.Broadcast(
 				new { type = "player_left", player_id = session.PlayerId, username = session.Username },
 				exceptPeerId: peerId);
 		}
@@ -517,7 +513,7 @@ public partial class Main : Node
 	{
 		if (!_state.Sessions.ContainsKey(peerId)) return;
 		if (!root.TryGetProperty("t", out JsonElement tEl) || !tEl.TryGetInt64(out long clientT)) return;
-		Send(peerId, new { type = "pong", t = clientT });
+		_outbound.Send(peerId, new { type = "pong", t = clientT });
 	}
 
 	/// <summary>
@@ -555,7 +551,7 @@ public partial class Main : Node
 		_shuttingDown = true;
 		GD.Print($"[Server] Graceful shutdown: notifying {_state.Sessions.Count} client(s)");
 
-		Broadcast(new
+		_outbound.Broadcast(new
 		{
 			type = "shutdown",
 			reason = "restart",
@@ -609,167 +605,17 @@ public partial class Main : Node
 
 	// ---------- Outbound ----------
 
-	private void SendError(long peerId, string type, string errorKey, object errorParams = null)
-		=> Send(peerId, new { type, ok = false, error_key = errorKey, error_params = errorParams ?? new { } });
-
-	internal void Send(long peerId, object message, int channel = 0,
-		MultiplayerPeer.TransferModeEnum mode = MultiplayerPeer.TransferModeEnum.Reliable)
-		=> _outbound.Send(peerId, message, channel, mode);
-
-	internal void RouteChatEffects(long pid, string username, int cx, int cy,
-	List<Dictionary<string, object>> effects, long selfPeer)
-	=> _outbound.RouteChatEffects(pid, username, cx, cy, effects, selfPeer);
-
-	private void Broadcast(object message, long exceptPeerId = 0, int channel = 0,
-		MultiplayerPeer.TransferModeEnum mode = MultiplayerPeer.TransferModeEnum.Reliable)
-		=> _outbound.Broadcast(message, exceptPeerId, channel, mode);
 
 	private void SendBytes(long peerId, byte[] bytes, int channel, MultiplayerPeer.TransferModeEnum mode)
 	{
 		if (!_connectedPeers.Contains(peerId)) return;
 		_mp.SendBytes(bytes, (int)peerId, mode, channel);
 	}
-	
-	
 
 	internal bool TryGetPosition(long playerId, out PlayerPosition pos) =>
 		_state.Positions.TryGetValue(playerId, out pos);
 
-	internal bool TryGetTileInfo(int x, int y, out TileInfo info)
-	{
-		if (_world.TryGetTile(x, y, out info)) return true;
-		info = new TileInfo(100, true);
-		return false;
-	}
-
-	internal bool TryGetCredits(long playerId, out int credits)
-	{
-		credits = 0;
-		return _state.Credits.TryGetValue(playerId, out credits);
-	}
-
 	internal int ChunkSize => _world.ChunkSize;
-
-	internal void SetIntent(long playerId, List<Vector2I> route)
-	{
-		long peerId = -1;
-		foreach (var kv in _state.Sessions) if (kv.Value.PlayerId == playerId) { peerId = kv.Key; break; }
-		if (peerId >= 0) _state.Intents[peerId] = new List<Vector2I>(route);
-	}
-
-	internal void RequestTrade(long requesterId, long targetPlayerId) =>
-		_trade.RequestTrade(requesterId, targetPlayerId);
-
-	internal void CancelTradeForPlayer(long playerId, string errorKey) =>
-		_trade.CancelTradeForPlayer(playerId, errorKey);
-
-	internal void CancelTradeQueuesForPlayer(long playerId, string errorKey) =>
-		_trade.CancelTradeQueuesForPlayer(playerId, errorKey);
-
-	internal void RequestTalk(long playerId, long npcId) =>
-		_dialogue.RequestTalk(playerId, npcId);
-
-	internal void CancelDialogueForPlayer(long playerId, string errorKey) =>
-		_dialogue.CancelDialogueForPlayer(playerId, errorKey);
-
-	internal void CancelPendingTalkFor(long playerId) =>
-		_dialogue.CancelPendingTalkFor(playerId);
-
-	internal void ProcessPendingTalk() =>
-		_dialogue.ProcessPendingTalk();
-
-	internal void HandleDialogueChoose(long peerId, JsonElement root) =>
-		_dialogue.HandleDialogueChoose(peerId, root);
-
-	internal bool HasDialogueScript(ActiveNpc npc) =>
-		_dialogue.HasDialogueScript(npc);
-
-	internal void ClearDialoguePendingFor(long playerId) =>
-		_dialogue.ClearPendingFor(playerId);
-
-	internal void RequestBank(long playerId, long npcId) =>
-		_bank.RequestBank(playerId, npcId);
-
-	internal string? GetSlotItemSlug(long playerId, int slot) => _inv.GetSlotItemSlug(playerId, slot);
-	internal int GetSlotQuantity(long playerId, int slot) => _inv.GetSlotQuantity(playerId, slot);
-	internal bool ConsumeInventorySlot(long playerId, int slot, int qty) => _inv.ConsumeInventorySlot(playerId, slot, qty);
-	internal bool GiveItem(long playerId, string itemSlug, int qty) => _inv.GiveItem(playerId, itemSlug, qty);
-	internal Task<bool> GiveItemAsync(long playerId, string itemSlug, int qty) => _inv.GiveItemAsync(playerId, itemSlug, qty);
-	internal bool TryConsumeItem(long playerId, int slot, int healAmount) => _inv.TryConsumeItem(playerId, slot, healAmount);
-	internal void HealPlayer(long playerId, int amount) => _inv.HealPlayer(playerId, amount);
-	internal bool SpawnGroundItemAt(string itemSlug, int quantity, int tileX, int tileY, int tileZ) =>
-		_ground.SpawnGroundItemAt(itemSlug, quantity, tileX, tileY, tileZ);
-	internal bool DropGroundItem(long playerId, string itemSlug, int quantity) =>
-		_ground.DropGroundItem(playerId, itemSlug, quantity);
-	internal void RequestPickup(long playerId, long groundItemId) =>
-		_ground.RequestPickup(playerId, groundItemId);
-	internal bool TryDropFromSlot(long playerId, int slot, int qty) =>
-		_ground.TryDropFromSlot(playerId, slot, qty);
-
-	internal void RequestEngage(long playerId, long npcId) =>
-		_combat.RequestEngage(playerId, npcId);
-
-	internal void EngageNpc(long playerId, long npcId, bool initiatedByPlayer = true) =>
-		_combat.EngageNpc(playerId, npcId, initiatedByPlayer);
-
-	internal void EndCombat(CombatPair pair) =>
-		_combat.EndCombat(pair);
-
-	internal void HandlePlayerDeath(long playerId) =>
-		_combat.HandlePlayerDeath(playerId);
-	
-	internal PlayerPosition ComputeSpawnPosition(long playerId) =>
-		_auth.ComputeSpawnPosition(playerId);
-
-	internal bool ArePositionsAdjacent(long playerId, ActiveNpc npc) =>
-		_movement.ArePositionsAdjacent(playerId, npc);
-
-	internal bool MovePlayerAdjacentToNpc(long playerId, ActiveNpc npc) =>
-	_movement.MovePlayerAdjacentToNpc(playerId, npc);
-
-	internal void CancelBankForPlayer(long playerId, string errorKey) =>
-		_bank.CancelBankForPlayer(playerId, errorKey);
-
-	internal void CancelPendingBankFor(long playerId) =>
-		_bank.CancelPendingBankFor(playerId);
-
-	internal void ProcessPendingBank() =>
-		_bank.ProcessPendingBank();
-
-	internal void ProcessBankIntents() =>
-		_bank.ProcessBankIntents();
-
-	internal void HandleBankDeposit(long peerId, JsonElement root) =>
-		_bank.HandleBankDeposit(peerId, root);
-
-	internal void HandleBankWithdraw(long peerId, JsonElement root) =>
-		_bank.HandleBankWithdraw(peerId, root);
-
-	internal void HandleBankMove(long peerId, JsonElement root) =>
-		_bank.HandleBankMove(peerId, root);
-
-	internal void HandleBankClose(long peerId, JsonElement root) =>
-		_bank.HandleBankClose(peerId, root);
-
-	internal void HandleBankCertMode(long peerId, JsonElement root) =>
-		_bank.HandleBankCertMode(peerId, root);
-
-	internal void HandleChatSend(long peerId, JsonElement root) =>
-		_chat.HandleChatSend(peerId, root);
-	
-	internal Task HandleHelloAsync(long peerId) => _auth.HandleHelloAsync(peerId);
-	internal Task HandleRegisterAsync(long peerId, string username, string password, bool isDev = false) =>
-		_auth.HandleRegisterAsync(peerId, username, password, isDev);
-	internal Task HandleLoginAsync(long peerId, string username, string password, string reason = "") =>
-		_auth.HandleLoginAsync(peerId, username, password, reason);
-
-	internal bool IsPlayerInBank(long playerId) =>
-		_bank.IsPlayerInBank(playerId);
-	
-	internal void RemovePlayerIntent(long playerId)
-	{
-		if (_state.PeerByPlayerId.TryGetValue(playerId, out long peerId)) _state.Intents.Remove(peerId);
-	}
 
 	private static int CountInventoryOfItem(long[] inventory, int itemId)
 	{
@@ -781,184 +627,6 @@ public partial class Main : Node
 		}
 		return total;
 	}
-
-	internal Dictionary<string, object>? GetActiveScriptArgs(long playerId, string stem) =>
-		_perTick?.GetArgsForActive(playerId, stem);
-
-	internal bool EndPerTickScript(long playerId, string stem) =>
-		_perTick != null && _perTick.EndByStem(playerId, stem);
-
-
-	internal List<Vector2I> PathfindToNearest(long selfPlayerId, int goalX, int goalY)
-	{
-		if (!_state.Positions.TryGetValue(selfPlayerId, out var pos)) return new();
-		return PathfindBetween((int)MathF.Round(pos.X), (int)MathF.Round(pos.Z), goalX, goalY);
-	}
-
-	internal List<Vector2I> PathfindBetween(int startX, int startY, int goalX, int goalY)
-		=> _pathfinder.FindPath(startX, startY, goalX, goalY);
-
-	internal List<Vector2I> FindAdjacentWalkablePath(int x, int y)
-		=> _pathfinder.FindAdjacentWalkable(x, y);
-	
-	internal void MoveNpcTo(long npcId, int tileX, int tileY) =>
-		_npc.MoveNpcTo(npcId, tileX, tileY);
-	
-	internal long GetPeerIdForPlayer(long playerId)
-	{
-		if (_state.PeerByPlayerId.TryGetValue(playerId, out var peerId)) return peerId;
-		return -1;
-	}
-
-	internal void OpenNpcEditorForPlayer(long playerId, long npcId) =>
-		_npc.OpenNpcEditorForPlayer(playerId, npcId);
-
-	internal void SnapAndFaceForDialogue(long playerId, ActiveNpc npc) =>
-		_npc.SnapAndFaceForDialogue(playerId, npc);
-
-	// ====================================================================
-	// TEMP-DEV: debug NPC wander. Delete when real AI packages are wired in.
-	// Set DiagNpcWander=true in the scene inspector to enable.
-	// ====================================================================
-	
-
-	// ---------- NPC death / respawn ----------
-	internal void KillNpc(long npcId, long killerPlayerId = 0)
-{
-	if (!_npc.TryGetNpcById(npcId, out var npc)) return;
-	if (npc.IsDead) return;
-
-	// Resolve the killer if not explicitly passed. Combat pairs set it to the
-	// attacking player; admin-kill scripts pass it directly.
-	if (killerPlayerId == 0 && _state.CombatByNpc.TryGetValue(npcId, out var killerPair))
-		killerPlayerId = killerPair.PlayerId;
-
-	RollNpcDeathLoot(npc, killerPlayerId);
-
-	npc.IsDead = true;
-	npc.DiedAtMs = (long)Time.GetTicksMsec();
-	npc.Path.Clear();
-	npc.Hitpoints = 0;
-	_ = _db.Npcs.MarkDeadAsync(npc.Id);
-
-	if (_state.CombatByNpc.TryGetValue(npcId, out var owner)) _combat.EndCombat(owner);
-	Diag.Log("diag_npc", $"NPC {npc.Name} (id {npc.Id}) killed; respawns in {npc.SpawnTimerSeconds}s");
-	_npc.NotifyNpcVisibilityChanged();
-}
-
-	
-
-
-// ---------- Loot + credits ----------
-
-private void RollNpcDeathLoot(ActiveNpc npc, long killerPlayerId)
-{
-	int deathX = (int)MathF.Round(npc.PosX);
-	int deathY = (int)MathF.Round(npc.PosZ);
-	var tileInfo = _world.GetTileInfo(deathX, deathY);
-	int deathZ = tileInfo.Z;
-
-	if (!string.IsNullOrEmpty(npc.LootTableName)
-		&& _lootTablesBySlug.TryGetValue(npc.LootTableName, out var bag)
-		&& bag.Count > 0)
-	{
-		var keys = new List<string>(bag.Keys);
-		string itemSlug = keys[_combatRng.Next(keys.Count)];
-		int qty = _inv.RollQuantity(bag[itemSlug]);
-		if (qty > 0)
-		{
-			_ground.SpawnGroundItemAt(itemSlug, qty, deathX, deathY, deathZ);
-			Diag.Log("diag_item", $"NPC {npc.Name} dropped {itemSlug} x{qty} at ({deathX},{deathY})");
-		}
-	}
-
-	if (killerPlayerId > 0
-		&& !string.IsNullOrEmpty(npc.CreditsTableName)
-		&& _creditsLootBySlug.TryGetValue(npc.CreditsTableName, out var range)
-		&& _state.Positions.ContainsKey(killerPlayerId))
-	{
-		int amount = _combatRng.Next(range.Min, range.Max + 1);
-		if (amount > 0)
-		{
-			GivePlayerCredits(killerPlayerId, amount);
-			Diag.Log("diag_item", $"NPC {npc.Name} awarded {amount} credits to player {killerPlayerId}");
-		}
-	}
-}
-
-
-internal void GivePlayerCredits(long playerId, int amount)
-{
-	if (_trade.IsTradeInventoryLocked(playerId)) return;
-	if (amount <= 0) return;
-	if (!_state.Credits.TryGetValue(playerId, out int current)) return;
-	int newTotal = current + amount;
-	_state.Credits[playerId] = newTotal;
-	_db.Players.SetCreditsSync(playerId, newTotal);
-	BroadcastCredits(playerId);
-}
-
-private void BroadcastCredits(long playerId)
-{
-	if (!_state.PeerByPlayerId.TryGetValue(playerId, out long peerId)) return;
-	if (!_state.Credits.TryGetValue(playerId, out int c)) return;
-	Send(peerId, new { type = "credits_updated", credits = c });
-}
-
-
-	internal ActiveNpc? GetNpcById(long npcId) => _npc.GetNpcById(npcId);
-	internal IEnumerable<ActiveNpc> AllNpcs() => _npc.All();
-
-	internal bool TryGetNpcById(long npcId, out ActiveNpc npc) => _npc.TryGetNpcById(npcId, out npc);
-
-	internal bool IsNpcInCombat(long npcId) => _npc.IsNpcInCombat(npcId);
-
-
-	internal void ChatToPlayer(long playerId, string message) =>
-		_outbound.ChatToPlayer(playerId, message);
-
-	private void BroadcastPlayerAnim(long playerId, string anim, int durationMs)
-	{
-		Broadcast(new { type = "anim_changed", player_id = playerId, anim = anim, duration_ms = durationMs });
-	}
-
-	private void BroadcastNpcAnim(long npcId, string anim, int durationMs)
-	{
-		Broadcast(new { type = "npc_anim_changed", npc_id = npcId, anim = anim, duration_ms = durationMs });
-	}
-
-
-
-	private void BroadcastNpcHp(ActiveNpc npc)
-	{
-		Broadcast(new
-		{
-			type = "npc_hp_updated",
-			npc_id = npc.Id,
-			hitpoints = npc.Hitpoints,
-			max_hitpoints = npc.MaxHitpoints
-		});
-	}
-
-	private void BroadcastPlayerHp(long playerId, int hp, int maxHp)
-	{
-		Broadcast(new
-		{
-			type = "player_hp_updated",
-			player_id = playerId,
-			hitpoints = hp,
-			max_hitpoints = maxHp
-		});
-	}
-
-
-	internal void BroadcastInventory(long playerId) => _outbound.BroadcastInventory(playerId);
-
-	private void SendInventory(long peerId) => _outbound.SendInventory(peerId);
-
-	internal void SendSkills(long peerId) => _outbound.SendSkills(peerId);
-
-
 
 	/// <summary>
 	/// Ensures the canonical dev account exists with admin flag set. If the
@@ -990,7 +658,4 @@ private void BroadcastCredits(long playerId)
 		_db.Stats.EnsureInventoryAsync(playerId).Wait();
 		GD.Print($"[Server] Created dev account '{username}' (id {playerId})");
 	}
-
-
-
 }

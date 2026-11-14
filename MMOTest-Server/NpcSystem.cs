@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading.Tasks;
 using Godot;
 
 namespace MMOTest.Server;
@@ -231,6 +232,9 @@ internal sealed class NpcSystem
         Diag.Log("diag_npc", $"NPC {npc.Name} (id {npc.Id}) respawned with {npc.Hitpoints} HP");
     }
 
+    internal Task MarkDeadAsync(long npcId) => _npcRepo.MarkDeadAsync(npcId);
+
+
     // ============================================================
     // Visibility
     // ============================================================
@@ -402,6 +406,8 @@ internal sealed class NpcSystem
         }
         _npcLookAt.Clear();
     }
+
+
 
     // ============================================================
     // Render bundles

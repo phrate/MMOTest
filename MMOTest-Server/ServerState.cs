@@ -10,7 +10,7 @@ namespace MMOTest.Server;
 
 internal record PlayerSession(long PlayerId, string Username, bool IsAdmin, long Sid);
 
-internal record PlayerPosition(float X, float Y, float Z, float Yaw);
+public record PlayerPosition(float X, float Y, float Z, float Yaw);
 
 internal sealed class CombatPair
 {

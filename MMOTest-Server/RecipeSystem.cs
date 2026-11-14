@@ -22,7 +22,6 @@ internal sealed class RecipeSystem
         public int SlotB { get; init; }
     }
 
-    private readonly Main _main;
     private readonly ServerState _state;
     private readonly ItemLookup _items;
     private readonly RecipeRepository _recipes;
@@ -36,13 +35,12 @@ internal sealed class RecipeSystem
     private readonly Dictionary<string, RecipeRecord> _recipesByPair = new();
     private readonly Dictionary<long, List<RecipeIntent>> _pendingRecipeIntents = new();
 
-    public RecipeSystem(Main main, ServerState state, ItemLookup items,
+    public RecipeSystem(ServerState state, ItemLookup items,
                         RecipeRepository recipes, InventoryRepository inventory,
                         PlayerStatsRepository stats, Gfs.GfsManager gfs,
                         Gfs.FunctionRegistry gfsFns, WorldService world,
                         OutboundChannel outbound)
     {
-        _main = main;
         _state = state;
         _items = items;
         _recipes = recipes;

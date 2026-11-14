@@ -1,11 +1,10 @@
 using System;
-using System.Collections.Generic;
 
 namespace MMOTest.Server.Gfs.Utils;
 
-public static class CombatUtils
+internal static class CombatUtils
 {
-    public static void Register(FunctionRegistry reg, Main main)
+    public static void Register(FunctionRegistry reg, CombatSystem combat, TradeSystem trade, NpcSystem npc)
     {
         reg.Register("KillNpc", (ctx, args) =>
         {
@@ -13,7 +12,7 @@ public static class CombatUtils
             long npcId;
             try { npcId = Convert.ToInt64(args[0]); } catch { return null; }
             if (npcId <= 0) return null;
-            main.KillNpc(npcId, ctx.SelfPlayerId);
+            combat.KillNpc(npcId, ctx.SelfPlayerId);
             return null;
         });
 
@@ -23,7 +22,7 @@ public static class CombatUtils
             long npcId;
             try { npcId = Convert.ToInt64(args[0]); } catch { return null; }
             if (npcId <= 0) return null;
-            main.RequestEngage(ctx.SelfPlayerId, npcId);
+            combat.RequestEngage(ctx.SelfPlayerId, npcId);
             return null;
         });
 
@@ -33,7 +32,7 @@ public static class CombatUtils
             long targetId;
             try { targetId = Convert.ToInt64(args[0]); } catch { return null; }
             if (targetId <= 0) return null;
-            main.RequestTrade(ctx.SelfPlayerId, targetId);
+            trade.RequestTrade(ctx.SelfPlayerId, targetId);
             return null;
         });
 
@@ -43,7 +42,7 @@ public static class CombatUtils
             long npcId;
             try { npcId = Convert.ToInt64(args[0]); } catch { return null; }
             if (npcId <= 0) return null;
-            main.OpenNpcEditorForPlayer(ctx.SelfPlayerId, npcId);
+            npc.OpenNpcEditorForPlayer(ctx.SelfPlayerId, npcId);
             return null;
         });
     }

@@ -66,6 +66,12 @@ internal sealed class OutboundChannel
             SendInventory(peerId);
     }
 
+    public void BroadcastCredits(long playerId, int credits)
+    {
+        if (_state.PeerByPlayerId.TryGetValue(playerId, out long peerId))
+            Send(peerId, new { type = "credits_updated", credits });
+    }
+
     public void BroadcastPlayerHp(long playerId, int hp, int maxHp)
     {
         Broadcast(new

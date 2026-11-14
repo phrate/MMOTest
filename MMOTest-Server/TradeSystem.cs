@@ -55,7 +55,6 @@ internal sealed class TradeSystem
         public int Quantity { get; init; }
     }
 
-    private readonly Main _main;
     private readonly ServerState _state;
     private readonly ItemLookup _items;
     private readonly InventoryRepository _inventory;
@@ -68,11 +67,10 @@ internal sealed class TradeSystem
     private readonly Dictionary<long, long> _lastTradeRequestTick = new();
     private readonly Dictionary<long, List<TradeIntent>> _pendingTradeIntents = new();
 
-    public TradeSystem(Main main, ServerState state, ItemLookup items,
-                       InventoryRepository inventory, Gfs.PerTickManager perTick,
-                       OutboundChannel outbound, Coordinator coordinator)
+    public TradeSystem(ServerState state, ItemLookup items,
+                    InventoryRepository inventory, Gfs.PerTickManager perTick,
+                    OutboundChannel outbound, Coordinator coordinator)
     {
-        _main = main;
         _state = state;
         _items = items;
         _inventory = inventory;

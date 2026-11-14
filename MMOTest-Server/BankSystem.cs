@@ -42,7 +42,9 @@ internal sealed class BankSystem
         public bool CertMode { get; init; }
     }
 
-    private readonly Main _main;
+    private readonly NpcSystem _npc;
+    private readonly MovementSystem _movement;
+    private readonly CombatSystem _combat;
     private readonly ServerState _state;
     private readonly ItemLookup _items;
     private readonly BankRepository _bankRepo;
@@ -50,6 +52,7 @@ internal sealed class BankSystem
     private readonly Gfs.PerTickManager _perTick;
     private readonly OutboundChannel _outbound;
     private readonly Coordinator _coordinator;
+    private readonly DialogueSystem _dialogue;
 
     private readonly Dictionary<long, List<BankEntry?>> _bankByPlayer = new();
     private readonly Dictionary<long, int> _bankCapacityByPlayer = new();
@@ -57,12 +60,13 @@ internal sealed class BankSystem
     private readonly Dictionary<long, long> _pendingBank = new();
     private readonly Dictionary<long, List<BankIntent>> _pendingBankIntents = new();
 
-    public BankSystem(Main main, ServerState state, ItemLookup items,
-                      BankRepository bankRepo, InventoryRepository inventory,
-                      Gfs.PerTickManager perTick, OutboundChannel outbound,
-                      Coordinator coordinator)
+    public BankSystem(ServerState state, ItemLookup items,
+                    BankRepository bankRepo, InventoryRepository inventory,
+                    Gfs.PerTickManager perTick, OutboundChannel outbound,
+                    Coordinator coordinator,
+                    NpcSystem npc, MovementSystem movement, CombatSystem combat,
+                    DialogueSystem dialogue)
     {
-        _main = main;
         _state = state;
         _items = items;
         _bankRepo = bankRepo;
@@ -70,6 +74,10 @@ internal sealed class BankSystem
         _perTick = perTick;
         _outbound = outbound;
         _coordinator = coordinator;
+        _npc = npc;
+        _movement = movement;
+        _combat = combat;
+        _dialogue = dialogue;
     }
 
     internal bool IsPlayerInBank(long playerId) => _bankSessionByPlayer.ContainsKey(playerId);
@@ -163,7 +171,7 @@ internal sealed class BankSystem
 
     internal void RequestBank(long playerId, long npcId)
     {
-        if (!_main.TryGetNpcById(npcId, out var npc)) return;
+        if (!_npc.TryGetNpcById(npcId, out var npc)) return;
         if (npc.IsDead) return;
         if (!npc.IsBanker) { _outbound.ChatToPlayer(playerId, "They are not a banker."); return; }
         if (!_state.PeerByPlayerId.ContainsKey(playerId) || !_state.Positions.ContainsKey(playerId)) return;
@@ -172,13 +180,13 @@ internal sealed class BankSystem
         _state.PendingEngage.Remove(playerId);
         _state.PendingPickup.Remove(playerId);
         _perTick?.EndByStem(playerId, "follow_player");
-        _main.RemovePlayerIntent(playerId);
-        _main.CancelDialogueForPlayer(playerId, "");
+        _movement.RemoveIntentForPlayer(playerId);
+        _coordinator.OnBankOpened(playerId);
         CancelBankForPlayer(playerId, "");
 
         _pendingBank[playerId] = npcId;
-        if (!_main.ArePositionsAdjacent(playerId, npc))
-            _main.MovePlayerAdjacentToNpc(playerId, npc);
+        if (!_movement.ArePositionsAdjacent(playerId, npc))
+            _movement.MovePlayerAdjacentToNpc(playerId, npc);
     }
 
     internal void CancelPendingBankFor(long playerId) => _pendingBank.Remove(playerId);
@@ -195,19 +203,19 @@ internal sealed class BankSystem
             long playerId = kv.Key;
             long npcId = kv.Value;
 
-            if (!_main.TryGetNpcById(npcId, out var npc) || npc.IsDead || !npc.IsBanker)
+            if (!_npc.TryGetNpcById(npcId, out var npc) || npc.IsDead || !npc.IsBanker)
             { toRemove.Add(playerId); continue; }
             if (!_state.Positions.ContainsKey(playerId)
                 || !_state.PeerByPlayerId.TryGetValue(playerId, out var peerId))
             { toRemove.Add(playerId); continue; }
             if (_state.CombatByPlayer.ContainsKey(playerId)) { toRemove.Add(playerId); continue; }
-            if (_main.ArePositionsAdjacent(playerId, npc))
+            if (_movement.ArePositionsAdjacent(playerId, npc))
             {
                 toRemove.Add(playerId);
                 toOpen.Add((playerId, npcId));
                 continue;
             }
-            if (!_main.MovePlayerAdjacentToNpc(playerId, npc))
+            if (!_movement.MovePlayerAdjacentToNpc(playerId, npc))
             {
                 toRemove.Add(playerId);
                 _outbound.ChatToPlayer(playerId, "I can't seem to reach that.");
@@ -220,19 +228,19 @@ internal sealed class BankSystem
 
     internal void OpenBank(long playerId, long npcId)
     {
-        if (!_main.TryGetNpcById(npcId, out var npc)) return;
+        if (!_npc.TryGetNpcById(npcId, out var npc)) return;
         if (!npc.IsBanker || npc.IsDead) return;
         if (!_bankByPlayer.ContainsKey(playerId)) return;
 
         _coordinator.OnBankOpened(playerId);
         _perTick?.EndByStem(playerId, "follow_player");
-        _main.RemovePlayerIntent(playerId);
+        _movement.RemoveIntentForPlayer(playerId);
         _state.PendingPickup.Remove(playerId);
         _state.PendingEngage.Remove(playerId);
         if (_state.CombatByPlayer.TryGetValue(playerId, out var pair) && !pair.StateAnnounced)
-            _main.EndCombat(pair);
+            _combat.EndCombat(pair);
 
-        _main.SnapAndFaceForDialogue(playerId, npc);
+        _npc.SnapAndFaceForDialogue(playerId, npc);
 
         var session = new BankSession
         {

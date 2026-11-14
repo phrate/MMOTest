@@ -4,9 +4,10 @@ using System.Collections.Generic;
 
 namespace MMOTest.Server.Gfs.Utils;
 
-public static class PlayerUtils
+internal static class PlayerUtils
 {
-    public static void Register(FunctionRegistry reg, Main main)
+    public static void Register(FunctionRegistry reg, ServerState state, WorldService world,
+                                Pathfinder pathfinder, Gfs.PerTickManager perTick)
     {
         reg.Register("Player.MoveToNearestTile", (ctx, args) =>
         {
@@ -18,30 +19,34 @@ public static class PlayerUtils
                 return new List<object?>();
             }
 
-            // Same-tile case: step aside to an adjacent walkable tile so adjacency
-            // checks (trade, follow, combat) can pass on the next tick.
-            if (main.TryGetPosition(ctx.SelfPlayerId, out var curPos))
+            if (state.Positions.TryGetValue(ctx.SelfPlayerId, out var curPos))
             {
                 int cx = (int)Math.Round(curPos.X);
                 int cy = (int)Math.Round(curPos.Z);
                 if (cx == tile.Value.X && cy == tile.Value.Y)
                 {
-                    var adjRoute = main.FindAdjacentWalkablePath(cx, cy);
+                    var adjRoute = pathfinder.FindAdjacentWalkable(cx, cy);
                     var outAdj = new List<object?>();
                     foreach (var t in adjRoute) outAdj.Add(new List<object?> { (long)t.X, (long)t.Y });
                     ctx.System["SELF_PATHFINDING_ROUTE"] = outAdj;
-                    if (adjRoute.Count > 0) main.SetIntent(ctx.SelfPlayerId, adjRoute);
+                    if (adjRoute.Count > 0) SetIntent(state, ctx.SelfPlayerId, adjRoute);
                     return outAdj;
                 }
             }
 
-            var route = main.PathfindToNearest(ctx.SelfPlayerId, tile.Value.X, tile.Value.Y);
+            List<Vector2I> route = new();
+            if (state.Positions.TryGetValue(ctx.SelfPlayerId, out var pos))
+            {
+                int rx = (int)Math.Round(pos.X);
+                int ry = (int)Math.Round(pos.Z);
+                route = pathfinder.FindPath(rx, ry, tile.Value.X, tile.Value.Y);
+            }
             var goal = new Vector2I(tile.Value.X, tile.Value.Y);
             if (route.Count > 0 && route[^1] == goal) route.RemoveAt(route.Count - 1);
             var outList = new List<object?>();
             foreach (var t in route) outList.Add(new List<object?> { (long)t.X, (long)t.Y });
             ctx.System["SELF_PATHFINDING_ROUTE"] = outList;
-            if (route.Count > 0) main.SetIntent(ctx.SelfPlayerId, route);
+            if (route.Count > 0) SetIntent(state, ctx.SelfPlayerId, route);
             return outList;
         });
 
@@ -50,7 +55,7 @@ public static class PlayerUtils
             if (args.Count == 0) { ctx.EndScriptRequested = true; return null; }
             string stem = ExtractStem(args[0], ctx.CurrentCall);
             if (string.IsNullOrEmpty(stem)) return null;
-            main.EndPerTickScript(ctx.SelfPlayerId, stem);
+            perTick.EndByStem(ctx.SelfPlayerId, stem);
             var current = ctx.ScriptPath;
             int slash = current.LastIndexOf('/');
             var currentName = slash >= 0 ? current.Substring(slash + 1) : current;
@@ -58,14 +63,12 @@ public static class PlayerUtils
             return null;
         });
 
-
-        // GetPlayerFollowingActive(player_id) -> player_id currently being followed, or null.
         reg.Register("GetPlayerFollowingActive", (ctx, args) =>
         {
             long pid = args.Count >= 1 && args[0] != null
                 ? Convert.ToInt64(args[0])
                 : ctx.SelfPlayerId;
-            var a = main.GetActiveScriptArgs(pid, "follow_player");
+            var a = perTick.GetArgsForActive(pid, "follow_player");
             if (a == null) return null;
             if (a.TryGetValue("target_id", out var t1)) return t1;
             if (a.TryGetValue("follow_id", out var t2)) return t2;
@@ -77,18 +80,23 @@ public static class PlayerUtils
             if (args.Count < 1) return false;
             var tile = AsTile(args[0]);
             if (tile == null) return false;
-            if (!main.TryGetPosition(ctx.SelfPlayerId, out var pos)) return false;
+            if (!state.Positions.TryGetValue(ctx.SelfPlayerId, out var pos)) return false;
             int sx = (int)Math.Round(pos.X);
             int sy = (int)Math.Round(pos.Z);
             int dx = Math.Abs(sx - tile.Value.X);
             int dy = Math.Abs(sy - tile.Value.Y);
             if (dx > 1 || dy > 1) return false;
             if (dx == 0 && dy == 0) return false;
-            // Diagonal: not adjacent if the corner is blocked.
-            if (dx == 1 && dy == 1 && IsCornerCut(sx, sy, tile.Value.X, tile.Value.Y, main))
+            if (dx == 1 && dy == 1 && IsCornerCut(sx, sy, tile.Value.X, tile.Value.Y, world))
                 return false;
             return true;
         });
+    }
+
+    private static void SetIntent(ServerState state, long playerId, List<Vector2I> route)
+    {
+        if (state.PeerByPlayerId.TryGetValue(playerId, out long peerId))
+            state.Intents[peerId] = new List<Vector2I>(route);
     }
 
     private static string ExtractStem(object? value, CallNode? call)
@@ -117,13 +125,13 @@ public static class PlayerUtils
         return null;
     }
 
-    private static bool IsCornerCut(int fromX, int fromY, int toX, int toY, Main main)
+    private static bool IsCornerCut(int fromX, int fromY, int toX, int toY, WorldService world)
     {
         int dx = toX - fromX;
         int dy = toY - fromY;
         if (Math.Abs(dx) != 1 || Math.Abs(dy) != 1) return false;
-        if (!main.TileWalkable(fromX + dx, fromY)) return true;
-        if (!main.TileWalkable(fromX, fromY + dy)) return true;
+        if (!world.IsWalkable(fromX + dx, fromY)) return true;
+        if (!world.IsWalkable(fromX, fromY + dy)) return true;
         return false;
     }
 }

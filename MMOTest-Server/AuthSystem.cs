@@ -277,7 +277,7 @@ internal sealed class AuthSystem
         var saved = await _db.Players.GetTileAsync(player.Id);
         if (saved.HasValue)
         {
-            if (IsValidTile(saved.Value.X, saved.Value.Y))
+            if (_world.IsWalkable(saved.Value.X, saved.Value.Y))
             {
                 var info = _world.GetTileInfo(saved.Value.X, saved.Value.Y);
                 spawnPos = new PlayerPosition(saved.Value.X, info.Z, saved.Value.Y, 0f);
@@ -285,13 +285,13 @@ internal sealed class AuthSystem
             }
             else
             {
-                spawnPos = FindNearestValidTile(saved.Value.X, saved.Value.Y);
+                spawnPos = _world.FindNearestValidTile(saved.Value.X, saved.Value.Y);
                 GD.Print($"[Server] Saved tile ({saved.Value.X}, {saved.Value.Y}) for {player.Username} is invalid; spawned at ({spawnPos.X}, {spawnPos.Z})");
             }
         }
         else
         {
-            spawnPos = ComputeSpawnPosition(player.Id);
+            spawnPos = _world.ComputeSpawnPosition(player.Id);
         }
         _state.Positions[player.Id] = spawnPos;
 
@@ -488,45 +488,4 @@ internal sealed class AuthSystem
         _npc.RefreshNpcVisibility(peerId, tx, ty);
     }
 
-    // ============================================================
-    // Spawn helpers
-    // ============================================================
-
-    internal PlayerPosition ComputeSpawnPosition(long playerId)
-    {
-        int pid = (int)Math.Max(playerId, 1);
-        int sx = (pid * 3) % 16 - 8;
-        int sz = (pid * 7) % 16 - 8;
-        return FindNearestValidTile(sx, sz);
-    }
-
-    private PlayerPosition FindNearestValidTile(int startX, int startY)
-    {
-        if (IsValidTile(startX, startY))
-        {
-            var info = _world.GetTileInfo(startX, startY);
-            return new PlayerPosition(startX, info.Z, startY, 0f);
-        }
-        for (int radius = 1; radius <= 32; radius++)
-        {
-            for (int dx = -radius; dx <= radius; dx++)
-            {
-                for (int dy = -radius; dy <= radius; dy++)
-                {
-                    if (Math.Abs(dx) != radius && Math.Abs(dy) != radius) continue;
-                    int nx = startX + dx;
-                    int ny = startY + dy;
-                    if (IsValidTile(nx, ny))
-                    {
-                        var info = _world.GetTileInfo(nx, ny);
-                        return new PlayerPosition(nx, info.Z, ny, 0f);
-                    }
-                }
-            }
-        }
-        var fallbackZ = _world.GetTileInfo(startX, startY).Z;
-        return new PlayerPosition(startX, fallbackZ, startY, 0f);
-    }
-
-    private bool IsValidTile(int x, int y) => _world.IsWalkable(x, y);
 }

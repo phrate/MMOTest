@@ -1,11 +1,10 @@
 using System;
-using System.Collections.Generic;
 
 namespace MMOTest.Server.Gfs.Utils;
 
-public static class BankUtils
+internal static class BankUtils
 {
-    public static void Register(FunctionRegistry reg, Main main)
+    public static void Register(FunctionRegistry reg, BankSystem bank)
     {
         reg.Register("RequestBank", (ctx, args) =>
         {
@@ -13,7 +12,7 @@ public static class BankUtils
             long npcId;
             try { npcId = Convert.ToInt64(args[0]); } catch { return null; }
             if (npcId <= 0) return null;
-            main.RequestBank(ctx.SelfPlayerId, npcId);
+            bank.RequestBank(ctx.SelfPlayerId, npcId);
             return null;
         });
     }

@@ -2,16 +2,15 @@ using System;
 
 namespace MMOTest.Server.Gfs.Utils;
 
-public static class TilesUtils
+internal static class TilesUtils
 {
-    public static void Register(FunctionRegistry reg, Main main)
+    public static void Register(FunctionRegistry reg, ServerState state, WorldService world)
     {
-        // GetPlayerTile(id) -> [x, y] tile array, or null if the player isn't online.
         reg.Register("GetPlayerTile", (ctx, args) =>
         {
             if (args.Count < 1 || args[0] == null) return null;
             long pid = System.Convert.ToInt64(args[0]);
-            if (!main.TryGetPosition(pid, out var pos)) return null;
+            if (!state.Positions.TryGetValue(pid, out var pos)) return null;
             return new System.Collections.Generic.List<object?>
             {
                 (long)System.MathF.Round(pos.X),
@@ -28,12 +27,11 @@ public static class TilesUtils
             int dx = Math.Abs(a.Value.X - b.Value.X);
             int dy = Math.Abs(a.Value.Y - b.Value.Y);
             if (dx > 1 || dy > 1) return true;
-            // Diagonal: treat as "more than one" if the corner is blocked.
-            if (dx == 1 && dy == 1 && IsCornerCut(a.Value.X, a.Value.Y, b.Value.X, b.Value.Y, main))
+            if (dx == 1 && dy == 1 && IsCornerCut(a.Value.X, a.Value.Y, b.Value.X, b.Value.Y, world))
                 return true;
             return false;
         });
-    
+
         reg.Register("IsSameTile", (ctx, args) =>
         {
             if (args.Count < 2) return false;
@@ -51,13 +49,13 @@ public static class TilesUtils
         return null;
     }
 
-    private static bool IsCornerCut(int fromX, int fromY, int toX, int toY, Main main)
+    private static bool IsCornerCut(int fromX, int fromY, int toX, int toY, WorldService world)
     {
         int dx = toX - fromX;
         int dy = toY - fromY;
         if (Math.Abs(dx) != 1 || Math.Abs(dy) != 1) return false;
-        if (!main.TileWalkable(fromX + dx, fromY)) return true;
-        if (!main.TileWalkable(fromX, fromY + dy)) return true;
+        if (!world.IsWalkable(fromX + dx, fromY)) return true;
+        if (!world.IsWalkable(fromX, fromY + dy)) return true;
         return false;
     }
 }

@@ -1,11 +1,10 @@
 using System;
-using System.Collections.Generic;
 
 namespace MMOTest.Server.Gfs.Utils;
 
-public static class DialogueUtils
+internal static class DialogueUtils
 {
-    public static void Register(FunctionRegistry reg, Main main)
+    public static void Register(FunctionRegistry reg, DialogueSystem dialogue)
     {
         reg.Register("RequestTalk", (ctx, args) =>
         {
@@ -13,7 +12,7 @@ public static class DialogueUtils
             long npcId;
             try { npcId = Convert.ToInt64(args[0]); } catch { return null; }
             if (npcId <= 0) return null;
-            main.RequestTalk(ctx.SelfPlayerId, npcId);
+            dialogue.RequestTalk(ctx.SelfPlayerId, npcId);
             return null;
         });
     }

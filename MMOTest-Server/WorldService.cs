@@ -132,6 +132,42 @@ public sealed class WorldService : IDisposable
 
     public JsonElement? GetRootElement() => _worldDoc?.RootElement;
 
+    public PlayerPosition ComputeSpawnPosition(long playerId)
+    {
+        int pid = (int)Math.Max(playerId, 1);
+        int sx = (pid * 3) % 16 - 8;
+        int sz = (pid * 7) % 16 - 8;
+        return FindNearestValidTile(sx, sz);
+    }
+
+    public PlayerPosition FindNearestValidTile(int startX, int startY)
+    {
+        if (IsWalkable(startX, startY))
+        {
+            var info = GetTileInfo(startX, startY);
+            return new PlayerPosition(startX, info.Z, startY, 0f);
+        }
+        for (int radius = 1; radius <= 32; radius++)
+        {
+            for (int dx = -radius; dx <= radius; dx++)
+            {
+                for (int dy = -radius; dy <= radius; dy++)
+                {
+                    if (Math.Abs(dx) != radius && Math.Abs(dy) != radius) continue;
+                    int nx = startX + dx;
+                    int ny = startY + dy;
+                    if (IsWalkable(nx, ny))
+                    {
+                        var info = GetTileInfo(nx, ny);
+                        return new PlayerPosition(nx, info.Z, ny, 0f);
+                    }
+                }
+            }
+        }
+        var fallbackZ = GetTileInfo(startX, startY).Z;
+        return new PlayerPosition(startX, fallbackZ, startY, 0f);
+    }
+
     public void Dispose()
     {
         _worldDoc?.Dispose();

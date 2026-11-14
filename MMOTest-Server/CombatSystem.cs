@@ -5,23 +5,13 @@ using Godot;
 
 namespace MMOTest.Server;
 
-/// <summary>
-/// Owns melee combat: pursuit, engagement, swings, damage, XP, death/respawn,
-/// NPC hostility, NPC and player healing.
-///
-/// Coupling note (temporary): holds Main for NPC lifecycle (KillNpc, MoveNpcTo,
-/// NotifyNpcVisibilityChanged), item drops (GivePlayerCredits, SpawnGroundItemAt),
-/// and spawn helpers (ComputeSpawnPosition). These extract into NpcSystem (3b-C)
-/// and ItemSystem (3b-D); after that CombatSystem takes those systems directly
-/// and _main drops out.
-/// </summary>
+
 internal sealed class CombatSystem
 {
     private const int PlayerAttackSpeedTicks = 10;
     private const int AttackAnimDurationMs = 1400;
     private const int NpcLeashRadiusTiles = 15;
 
-    private readonly Main _main;
     private readonly ServerState _state;
     private readonly WorldService _world;
     private readonly OutboundChannel _outbound;
@@ -30,23 +20,37 @@ internal sealed class CombatSystem
     private readonly PlayerStatsRepository _stats;
     private readonly Gfs.PerTickManager _perTick;
     private readonly Random _combatRng;
+    private readonly Pathfinder _pathfinder;
+    private readonly NpcSystem _npc;
+    private readonly ItemSystem _inv;
+    private readonly GroundItemSystem _ground;
+    private readonly Dictionary<string, Dictionary<string, (int Min, int Max)>> _lootTables;
+    private readonly Dictionary<string, (int Min, int Max)> _creditsLoot;
 
     private readonly Dictionary<long, int> _npcCombatRefCount = new();
     private readonly Dictionary<long, int> _playerHealAccumTicks = new();
 
-    public CombatSystem(Main main, ServerState state, WorldService world,
-                        OutboundChannel outbound, Coordinator coordinator,
-                        MovementSystem movement, PlayerStatsRepository stats,
-                        Gfs.PerTickManager perTick, Random combatRng)
+    public CombatSystem(ServerState state, WorldService world, OutboundChannel outbound,
+                        Coordinator coordinator, MovementSystem movement, Pathfinder pathfinder,
+                        PlayerStatsRepository stats, Gfs.PerTickManager perTick,
+                        NpcSystem npc, ItemSystem inv, GroundItemSystem ground,
+                        Dictionary<string, Dictionary<string, (int Min, int Max)>> lootTables,
+                        Dictionary<string, (int Min, int Max)> creditsLoot,
+                        Random combatRng)
     {
-        _main = main;
         _state = state;
         _world = world;
         _outbound = outbound;
         _coordinator = coordinator;
         _movement = movement;
+        _pathfinder = pathfinder;
         _stats = stats;
         _perTick = perTick;
+        _npc = npc;
+        _inv = inv;
+        _ground = ground;
+        _lootTables = lootTables;
+        _creditsLoot = creditsLoot;
         _combatRng = combatRng;
     }
 
@@ -67,7 +71,7 @@ internal sealed class CombatSystem
 
     internal void RequestEngage(long playerId, long npcId)
     {
-        if (!_main.TryGetNpcById(npcId, out var npc)) return;
+        if (!_npc.TryGetNpcById(npcId, out var npc)) return;
         if (npc.IsDead) return;
         if (!npc.Attackable) return;
 
@@ -105,7 +109,7 @@ internal sealed class CombatSystem
 
     internal void EngageNpc(long playerId, long npcId, bool initiatedByPlayer = true)
     {
-        if (!_main.TryGetNpcById(npcId, out var npc)) return;
+        if (!_npc.TryGetNpcById(npcId, out var npc)) return;
         if (npc.IsDead) return;
 
         if (_state.CombatByPlayer.TryGetValue(playerId, out var existing))
@@ -185,7 +189,7 @@ internal sealed class CombatSystem
             long playerId = kv.Key;
             long npcId = kv.Value;
 
-            if (!_main.TryGetNpcById(npcId, out var npc) || npc.IsDead)
+            if (!_npc.TryGetNpcById(npcId, out var npc) || npc.IsDead)
             { toRemove.Add(playerId); continue; }
             if (!_state.Positions.ContainsKey(playerId))
             { toRemove.Add(playerId); continue; }
@@ -208,7 +212,7 @@ internal sealed class CombatSystem
 
     internal void ProcessHostility()
     {
-        foreach (var npc in _main.AllNpcs())
+        foreach (var npc in _npc.All())
         {
             if (!npc.Aggressive) continue;
             if (npc.IsDead) continue;
@@ -255,7 +259,7 @@ internal sealed class CombatSystem
 
         foreach (var pair in _state.CombatByPlayer.Values)
         {
-            if (!_main.TryGetNpcById(pair.NpcId, out var npc)) { toEnd.Add(pair); continue; }
+            if (!_npc.TryGetNpcById(pair.NpcId, out var npc)) { toEnd.Add(pair); continue; }
             if (npc.IsDead) { toEnd.Add(pair); continue; }
             if (!_state.Positions.ContainsKey(pair.PlayerId)) { toEnd.Add(pair); continue; }
             if (!_state.PlayerCombat.ContainsKey(pair.PlayerId)) { toEnd.Add(pair); continue; }
@@ -273,7 +277,7 @@ internal sealed class CombatSystem
                     EndCombat(pair);
                     npc.ReturningHome = true;
                     npc.Path.Clear();
-                    _main.MoveNpcTo(npc.Id, npc.TileX, npc.TileY);
+                    _npc.MoveNpcTo(npc.Id, npc.TileX, npc.TileY);
                     Diag.Log("diag_combat", $"NPC {npc.Name} (id {npc.Id}) leash broken");
                     continue;
                 }
@@ -304,7 +308,7 @@ internal sealed class CombatSystem
                         }
                         else
                         {
-                            var route = _main.PathfindBetween(nx, ny, playerTile.X, playerTile.Y);
+                            var route = _pathfinder.FindPath(nx, ny, playerTile.X, playerTile.Y);
                             if (route.Count > 0)
                             {
                                 if (route[^1] == playerTile) route.RemoveAt(route.Count - 1);
@@ -407,7 +411,7 @@ internal sealed class CombatSystem
         const int IN_COMBAT_HEAL_PCT = 10;
         const int OUT_COMBAT_HEAL_PCT = 25;
 
-        foreach (var npc in _main.AllNpcs())
+        foreach (var npc in _npc.All())
         {
             if (npc.IsDead) continue;
             if (npc.Hitpoints >= npc.MaxHitpoints) continue;
@@ -486,7 +490,7 @@ internal sealed class CombatSystem
 
         if (npc.Hitpoints <= 0)
         {
-            _main.KillNpc(npc.Id);
+            KillNpc(npc.Id);
             return;
         }
         if (!_state.CombatByNpc.ContainsKey(npc.Id)) _state.CombatByNpc[npc.Id] = pair;
@@ -572,7 +576,7 @@ internal sealed class CombatSystem
         _state.Intents.Remove(peerId);
         _state.PendingEngage.Remove(playerId);
 
-        var spawnPos = _main.ComputeSpawnPosition(playerId);
+        var spawnPos = _world.ComputeSpawnPosition(playerId);
         _state.Positions[playerId] = spawnPos;
 
         int hp = 10;
@@ -599,5 +603,66 @@ internal sealed class CombatSystem
         int dx = (int)MathF.Round(npc.PosX) - npc.TileX;
         int dy = (int)MathF.Round(npc.PosZ) - npc.TileY;
         return Math.Max(Math.Abs(dx), Math.Abs(dy));
+    }
+
+    // ============================================================
+    // NPC death (called when this system's swings bring an NPC to 0 HP,
+    // and from Main.KillNpc forwarder for admin/GFS kills)
+    // ============================================================
+
+    internal void KillNpc(long npcId, long killerPlayerId = 0)
+    {
+        if (!_npc.TryGetNpcById(npcId, out var npc)) return;
+        if (npc.IsDead) return;
+
+        if (killerPlayerId == 0 && _state.CombatByNpc.TryGetValue(npcId, out var killerPair))
+            killerPlayerId = killerPair.PlayerId;
+
+        RollNpcDeathLoot(npc, killerPlayerId);
+
+        npc.IsDead = true;
+        npc.DiedAtMs = (long)Time.GetTicksMsec();
+        npc.Path.Clear();
+        npc.Hitpoints = 0;
+        _ = _npc.MarkDeadAsync(npc.Id);
+
+        if (_state.CombatByNpc.TryGetValue(npcId, out var owner)) EndCombat(owner);
+        Diag.Log("diag_npc", $"NPC {npc.Name} (id {npc.Id}) killed; respawns in {npc.SpawnTimerSeconds}s");
+        _npc.NotifyNpcVisibilityChanged();
+    }
+
+    private void RollNpcDeathLoot(ActiveNpc npc, long killerPlayerId)
+    {
+        int deathX = (int)MathF.Round(npc.PosX);
+        int deathY = (int)MathF.Round(npc.PosZ);
+        var tileInfo = _world.GetTileInfo(deathX, deathY);
+        int deathZ = tileInfo.Z;
+
+        if (!string.IsNullOrEmpty(npc.LootTableName)
+            && _lootTables.TryGetValue(npc.LootTableName, out var bag)
+            && bag.Count > 0)
+        {
+            var keys = new List<string>(bag.Keys);
+            string itemSlug = keys[_combatRng.Next(keys.Count)];
+            int qty = _inv.RollQuantity(bag[itemSlug]);
+            if (qty > 0)
+            {
+                _ground.SpawnGroundItemAt(itemSlug, qty, deathX, deathY, deathZ);
+                Diag.Log("diag_item", $"NPC {npc.Name} dropped {itemSlug} x{qty} at ({deathX},{deathY})");
+            }
+        }
+
+        if (killerPlayerId > 0
+            && !string.IsNullOrEmpty(npc.CreditsTableName)
+            && _creditsLoot.TryGetValue(npc.CreditsTableName, out var range)
+            && _state.Positions.ContainsKey(killerPlayerId))
+        {
+            int amount = _combatRng.Next(range.Min, range.Max + 1);
+            if (amount > 0)
+            {
+                _inv.GiveCredits(killerPlayerId, amount);
+                Diag.Log("diag_item", $"NPC {npc.Name} awarded {amount} credits to player {killerPlayerId}");
+            }
+        }
     }
 }

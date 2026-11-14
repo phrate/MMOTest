@@ -23,12 +23,14 @@ internal sealed class ItemSystem
     private readonly PlayerStatsRepository _stats;
     private readonly TradeSystem _trade;
     private readonly Random _combatRng;
+    private readonly PlayerRepository _players;
 
     private readonly Dictionary<long, long> _lastConsumeTick = new();
 
     public ItemSystem(ServerState state, OutboundChannel outbound, ItemLookup items,
-                      InventoryRepository inventory, PlayerStatsRepository stats,
-                      TradeSystem trade, Random combatRng)
+                  InventoryRepository inventory, PlayerStatsRepository stats,
+                  TradeSystem trade, Random combatRng,
+                  PlayerRepository players)
     {
         _state = state;
         _outbound = outbound;
@@ -37,6 +39,7 @@ internal sealed class ItemSystem
         _stats = stats;
         _trade = trade;
         _combatRng = combatRng;
+        _players = players;
     }
 
     internal void ClearPlayer(long playerId) => _lastConsumeTick.Remove(playerId);
@@ -242,5 +245,16 @@ internal sealed class ItemSystem
         if (range.Min <= 0 && range.Max <= 0) return 0;
         if (range.Min == range.Max) return range.Min;
         return _combatRng.Next(range.Min, range.Max + 1);
+    }
+
+    internal void GiveCredits(long playerId, int amount)
+    {
+        if (_trade.IsTradeInventoryLocked(playerId)) return;
+        if (amount <= 0) return;
+        if (!_state.Credits.TryGetValue(playerId, out int current)) return;
+        int newTotal = current + amount;
+        _state.Credits[playerId] = newTotal;
+        _players.SetCreditsSync(playerId, newTotal);
+        _outbound.BroadcastCredits(playerId, newTotal);
     }
 }

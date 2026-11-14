@@ -14,7 +14,9 @@ namespace MMOTest.Server;
 /// </summary>
 internal sealed class DialogueSystem
 {
-    private readonly Main _main;
+    private readonly NpcSystem _npc;
+    private readonly MovementSystem _movement;
+    private readonly CombatSystem _combat;
     private readonly ServerState _state;
     private readonly Gfs.GfsManager _gfs;
     private readonly Gfs.FunctionRegistry _gfsFns;
@@ -24,18 +26,21 @@ internal sealed class DialogueSystem
 
     private readonly Dictionary<long, long> _pendingTalk = new(); // playerId -> npcId
 
-    public DialogueSystem(Main main, ServerState state,
-                          Gfs.GfsManager gfs, Gfs.FunctionRegistry gfsFns,
-                          Gfs.PerTickManager perTick, OutboundChannel outbound,
-                          Coordinator coordinator)
+    public DialogueSystem(ServerState state,
+                        Gfs.GfsManager gfs, Gfs.FunctionRegistry gfsFns,
+                        Gfs.PerTickManager perTick, OutboundChannel outbound,
+                        Coordinator coordinator,
+                        NpcSystem npc, MovementSystem movement, CombatSystem combat)
     {
-        _main = main;
         _state = state;
         _gfs = gfs;
         _gfsFns = gfsFns;
         _perTick = perTick;
         _outbound = outbound;
         _coordinator = coordinator;
+        _npc = npc;
+        _movement = movement;
+        _combat = combat;
     }
 
     internal void ClearPendingFor(long playerId) => _pendingTalk.Remove(playerId);
@@ -62,7 +67,7 @@ internal sealed class DialogueSystem
 
     internal void RequestTalk(long playerId, long npcId)
     {
-        if (!_main.TryGetNpcById(npcId, out var npc)) return;
+        if (!_npc.TryGetNpcById(npcId, out var npc)) return;
         if (npc.IsDead) return;
         if (string.IsNullOrEmpty(npc.DialogueScript))
         {
@@ -76,14 +81,14 @@ internal sealed class DialogueSystem
         _state.PendingEngage.Remove(playerId);
         _state.PendingPickup.Remove(playerId);
         _perTick?.EndByStem(playerId, "follow_player");
-        _main.RemovePlayerIntent(playerId);
+        _movement.RemoveIntentForPlayer(playerId);
 
         CancelDialogueForPlayer(playerId, "");
 
         _pendingTalk[playerId] = npcId;
 
-        if (!_main.ArePositionsAdjacent(playerId, npc))
-            _main.MovePlayerAdjacentToNpc(playerId, npc);
+        if (!_movement.ArePositionsAdjacent(playerId, npc))
+            _movement.MovePlayerAdjacentToNpc(playerId, npc);
     }
 
     internal void CancelPendingTalkFor(long playerId) => _pendingTalk.Remove(playerId);
@@ -100,7 +105,7 @@ internal sealed class DialogueSystem
             long playerId = kv.Key;
             long npcId = kv.Value;
 
-            if (!_main.TryGetNpcById(npcId, out var npc) || npc.IsDead
+            if (!_npc.TryGetNpcById(npcId, out var npc) || npc.IsDead
                 || string.IsNullOrEmpty(npc.DialogueScript))
             {
                 toRemove.Add(playerId);
@@ -117,13 +122,13 @@ internal sealed class DialogueSystem
                 toRemove.Add(playerId);
                 continue;
             }
-            if (_main.ArePositionsAdjacent(playerId, npc))
+            if (_movement.ArePositionsAdjacent(playerId, npc))
             {
                 toRemove.Add(playerId);
                 toOpen.Add((playerId, npcId));
                 continue;
             }
-            if (!_main.MovePlayerAdjacentToNpc(playerId, npc))
+            if (!_movement.MovePlayerAdjacentToNpc(playerId, npc))
             {
                 toRemove.Add(playerId);
                 _outbound.ChatToPlayer(playerId, "I can't seem to reach that.");
@@ -140,7 +145,7 @@ internal sealed class DialogueSystem
 
     private void OpenDialogue(long playerId, long npcId)
     {
-        if (!_main.TryGetNpcById(npcId, out var npc)) return;
+        if (!_npc.TryGetNpcById(npcId, out var npc)) return;
         if (string.IsNullOrEmpty(npc.DialogueScript)) return;
 
         string path = ResolveDialoguePath(npc.DialogueScript);
@@ -163,13 +168,13 @@ internal sealed class DialogueSystem
 
         _coordinator.OnDialogueOpened(playerId);
         _perTick?.EndByStem(playerId, "follow_player");
-        _main.RemovePlayerIntent(playerId);
+        _movement.RemoveIntentForPlayer(playerId);
         _state.PendingPickup.Remove(playerId);
         _state.PendingEngage.Remove(playerId);
         if (_state.CombatByPlayer.TryGetValue(playerId, out var pair) && !pair.StateAnnounced)
-            _main.EndCombat(pair);
+            _combat.EndCombat(pair);
 
-        _main.SnapAndFaceForDialogue(playerId, npc);
+        _npc.SnapAndFaceForDialogue(playerId, npc);
 
         var session = new DialogueSession
         {
@@ -202,7 +207,7 @@ internal sealed class DialogueSystem
             GD.PrintErr($"[Dialogue] Invalid goto '{goto_}' in {session.ScriptPath}");
             return;
         }
-        if (!_main.TryGetNpcById(session.NpcId, out var npc))
+        if (!_npc.TryGetNpcById(session.NpcId, out var npc))
         {
             CloseDialogue(session, silent: true);
             return;
@@ -219,11 +224,13 @@ internal sealed class DialogueSystem
 
     private void ExecuteAndSendTopic(DialogueSession session, ActiveNpc npc)
     {
-        if (!_state.Sessions.TryGetValue(_main.GetPeerIdForPlayer(session.PlayerId), out var player))
+        if (!_state.PeerByPlayerId.TryGetValue(session.PlayerId, out var peerId)
+            || !_state.Sessions.TryGetValue(peerId, out var player))
         {
             CloseDialogue(session, silent: true);
             return;
         }
+        
         if (session.Ast.Topics == null || !session.Ast.Topics.TryGetValue(session.CurrentTopic, out var topic))
         {
             CloseDialogue(session, silent: true);
