@@ -45,8 +45,7 @@ public partial class Main : Node
 	internal readonly ServerState _state = new();
 	private readonly HashSet<long> _connectedPeers = new();
 	private readonly HashSet<long> _authInProgress = new();
-	private readonly Dictionary<long, List<BankEntry?>> _bankByPlayer = new();
-	private readonly Dictionary<long, int> _bankCapacityByPlayer = new();
+
 
 	private double _npcVisRefreshAccum;
 	private const double NpcVisRefreshIntervalSeconds = 1.5;
@@ -128,6 +127,7 @@ public partial class Main : Node
 	private NpcRenderManager _npcRender;
 	private TradeSystem _trade;
 	private DialogueSystem _dialogue;
+	private BankSystem _bank;
 
 	public override void _Ready()
 	{
@@ -248,6 +248,7 @@ public partial class Main : Node
 			_gfs.ScriptsChanged += OnGfsScriptsChanged;
 			_trade = new TradeSystem(this, _state, _items, _db.Inventory, _perTick);
 			_dialogue = new DialogueSystem(this, _state, _gfs, _gfsFns, _perTick);
+			_bank = new BankSystem(this, _state, _items, _db.Bank, _db.Inventory, _perTick);
 			LoadRecipes();
 
 			_npcRender = new NpcRenderManager(new[]
@@ -421,7 +422,7 @@ public partial class Main : Node
 		ProcessPendingPickup();
 		_trade.ProcessTradeQueues();
 		_trade.ProcessTradeIntents();
-		ProcessBankIntents();
+		_bank.ProcessBankIntents();
 		ProcessRecipeIntents();
 
 		// 2c. Combat
@@ -429,7 +430,7 @@ public partial class Main : Node
 		ProcessPendingEngage();
 		ProcessNpcLookAt();
 		_dialogue.ProcessPendingTalk();
-		ProcessPendingBank();
+		_bank.ProcessPendingBank();
 		ProcessCombat();
 
 		// 2d. Healing
@@ -719,10 +720,7 @@ public partial class Main : Node
 			_visibleGroundItems.Remove(peerId);
 			_state.DialogueByPlayer.Remove(session.PlayerId);
 			_dialogue.ClearPendingFor(session.PlayerId);
-			_bankByPlayer.Remove(session.PlayerId);
-			_bankCapacityByPlayer.Remove(session.PlayerId);
-			_pendingBank.Remove(session.PlayerId);
-			_pendingBankIntents.Remove(session.PlayerId);
+			_bank.ClearPlayer(session.PlayerId);
 			_pendingRecipeIntents.Remove(session.PlayerId);
 
 			if (_state.Positions.TryGetValue(session.PlayerId, out PlayerPosition pos))
@@ -791,11 +789,11 @@ public partial class Main : Node
 				case "trade_confirm": _trade.HandleTradeConfirm(peerId, root); break;
 				case "trade_cancel": _trade.HandleTradeCancel(peerId, root); break;
 				case "dialogue_choose": _dialogue.HandleDialogueChoose(peerId, root); break;
-				case "bank_deposit": HandleBankDeposit(peerId, root); break;
-				case "bank_withdraw": HandleBankWithdraw(peerId, root); break;
-				case "bank_move": HandleBankMove(peerId, root); break;
-				case "bank_close": HandleBankClose(peerId, root); break;
-				case "bank_cert_mode": HandleBankCertMode(peerId, root); break;
+				case "bank_deposit": _bank.HandleBankDeposit(peerId, root); break;
+				case "bank_withdraw": _bank.HandleBankWithdraw(peerId, root); break;
+				case "bank_move": _bank.HandleBankMove(peerId, root); break;
+				case "bank_close": _bank.HandleBankClose(peerId, root); break;
+				case "bank_cert_mode": _bank.HandleBankCertMode(peerId, root); break;
 				case "combine_attempt": HandleCombineAttempt(peerId, root); break;
 				default:
 					GD.PrintErr($"[Server] Unknown message type '{type}' from {peerId}");
@@ -1254,7 +1252,7 @@ private async Task CompleteLoginAsync(long peerId, PlayerRecord player)
 	if (inv == null) inv = new long[28];
 	_state.Inventories[player.Id] = inv;
 
-	LoadBankForPlayer(player.Id);
+	_bank.LoadForPlayer(player.Id);
 
 	int credits = await _db.Players.GetCreditsAsync(player.Id);
 	_state.Credits[player.Id] = credits;
@@ -1568,6 +1566,39 @@ private async Task CompleteLoginAsync(long peerId, PlayerRecord player)
 
 	internal void ClearDialoguePendingFor(long playerId) =>
 		_dialogue.ClearPendingFor(playerId);
+
+	internal void RequestBank(long playerId, long npcId) =>
+		_bank.RequestBank(playerId, npcId);
+
+	internal void CancelBankForPlayer(long playerId, string errorKey) =>
+		_bank.CancelBankForPlayer(playerId, errorKey);
+
+	internal void CancelPendingBankFor(long playerId) =>
+		_bank.CancelPendingBankFor(playerId);
+
+	internal void ProcessPendingBank() =>
+		_bank.ProcessPendingBank();
+
+	internal void ProcessBankIntents() =>
+		_bank.ProcessBankIntents();
+
+	internal void HandleBankDeposit(long peerId, JsonElement root) =>
+		_bank.HandleBankDeposit(peerId, root);
+
+	internal void HandleBankWithdraw(long peerId, JsonElement root) =>
+		_bank.HandleBankWithdraw(peerId, root);
+
+	internal void HandleBankMove(long peerId, JsonElement root) =>
+		_bank.HandleBankMove(peerId, root);
+
+	internal void HandleBankClose(long peerId, JsonElement root) =>
+		_bank.HandleBankClose(peerId, root);
+
+	internal void HandleBankCertMode(long peerId, JsonElement root) =>
+		_bank.HandleBankCertMode(peerId, root);
+
+	internal bool IsPlayerInBank(long playerId) =>
+		_bank.IsPlayerInBank(playerId);
 	
 	internal void RemovePlayerIntent(long playerId)
 	{
