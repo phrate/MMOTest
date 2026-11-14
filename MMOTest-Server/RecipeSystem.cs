@@ -31,6 +31,7 @@ internal sealed class RecipeSystem
     private readonly Gfs.GfsManager _gfs;
     private readonly Gfs.FunctionRegistry _gfsFns;
     private readonly WorldService _world;
+    private readonly OutboundChannel _outbound;
 
     private readonly Dictionary<string, RecipeRecord> _recipesByPair = new();
     private readonly Dictionary<long, List<RecipeIntent>> _pendingRecipeIntents = new();
@@ -38,7 +39,8 @@ internal sealed class RecipeSystem
     public RecipeSystem(Main main, ServerState state, ItemLookup items,
                         RecipeRepository recipes, InventoryRepository inventory,
                         PlayerStatsRepository stats, Gfs.GfsManager gfs,
-                        Gfs.FunctionRegistry gfsFns, WorldService world)
+                        Gfs.FunctionRegistry gfsFns, WorldService world,
+                        OutboundChannel outbound)
     {
         _main = main;
         _state = state;
@@ -49,6 +51,7 @@ internal sealed class RecipeSystem
         _gfs = gfs;
         _gfsFns = gfsFns;
         _world = world;
+        _outbound = outbound;
     }
 
     internal void LoadRecipes()
@@ -117,7 +120,7 @@ internal sealed class RecipeSystem
 
         if (!_recipesByPair.TryGetValue(pair, out var recipe))
         {
-            _main.ChatToPlayer(playerId, "Nothing seemed to happen.");
+            _outbound.ChatToPlayer(playerId, "Nothing seemed to happen.");
             return false;
         }
 
@@ -127,13 +130,13 @@ internal sealed class RecipeSystem
         if (ast == null)
         {
             Diag.Log("diag_recipe", $"[Recipe] no recipe for pair {pair}");
-            _main.ChatToPlayer(playerId, "Nothing seemed to happen.");
+            _outbound.ChatToPlayer(playerId, "Nothing seemed to happen.");
             return false;
         }
         if (ast.Namespace != "server" || ast.Section != "recipe" || ast.Recipe == null)
         {
             GD.PrintErr($"[Recipe] Script {recipe.ScriptPath} is not a [server][recipe] file");
-            _main.ChatToPlayer(playerId, "Nothing seemed to happen.");
+            _outbound.ChatToPlayer(playerId, "Nothing seemed to happen.");
             return false;
         }
 
@@ -190,7 +193,7 @@ internal sealed class RecipeSystem
         catch (Exception e)
         {
             GD.PrintErr($"[Recipe] Runtime error in {recipe.ScriptPath}: {e.Message}");
-            _main.ChatToPlayer(playerId, "Nothing seemed to happen.");
+            _outbound.ChatToPlayer(playerId, "Nothing seemed to happen.");
             return false;
         }
 
@@ -235,13 +238,13 @@ internal sealed class RecipeSystem
                 Array.Copy(sandbox, realInv, realInv.Length);
                 for (int i = 0; i < realInv.Length; i++)
                     _inventory.SaveSlotSync(playerId, i, realInv[i]);
-                _main.BroadcastInventory(playerId);
+                _outbound.BroadcastInventory(playerId);
             }
 
             if (ctx.Effects.Count > 0)
-                _main.RouteChatEffects(playerId, session.Username, cx, cy, ctx.Effects, peerId);
+                _outbound.RouteChatEffects(playerId, session.Username, cx, cy, ctx.Effects, peerId);
             else if (!changed)
-                _main.ChatToPlayer(playerId, "Nothing seemed to happen.");
+                _outbound.ChatToPlayer(playerId, "Nothing seemed to happen.");
 
             Diag.Log("diag_recipe",
                 $"[Recipe] {recipe.Slug} FAILED: consume={ctx.RecipeConsume.Count} output={ctx.RecipeOutput.Count} effects={ctx.Effects.Count} changed={changed}");
@@ -255,7 +258,7 @@ internal sealed class RecipeSystem
             if (removed < qty)
             {
                 GD.PrintErr($"[Recipe] Failed to consume {qty}x item {itemId} in {recipe.ScriptPath} (removed {removed})");
-                _main.ChatToPlayer(playerId, "Nothing seemed to happen.");
+                _outbound.ChatToPlayer(playerId, "Nothing seemed to happen.");
                 return false;
             }
         }
@@ -265,12 +268,12 @@ internal sealed class RecipeSystem
             if (!_items.TryGetById(itemId, out var meta))
             {
                 GD.PrintErr($"[Recipe] Unknown output item {itemId} in {recipe.ScriptPath}");
-                _main.ChatToPlayer(playerId, "Nothing seemed to happen.");
+                _outbound.ChatToPlayer(playerId, "Nothing seemed to happen.");
                 return false;
             }
             if (!TryGiveToSandbox(sandbox, itemId, meta.Stackable, qty))
             {
-                _main.ChatToPlayer(playerId, "You don't have enough inventory space.");
+                _outbound.ChatToPlayer(playerId, "You don't have enough inventory space.");
                 return false;
             }
         }
@@ -278,12 +281,12 @@ internal sealed class RecipeSystem
         Array.Copy(sandbox, realInv, realInv.Length);
         for (int i = 0; i < realInv.Length; i++)
             _inventory.SaveSlotSync(playerId, i, realInv[i]);
-        _main.BroadcastInventory(playerId);
+        _outbound.BroadcastInventory(playerId);
 
         AwardRecipeXp(playerId, recipe.XpRewards);
 
         if (ctx.Effects.Count > 0)
-            _main.RouteChatEffects(playerId, session.Username, cx, cy, ctx.Effects, peerId);
+            _outbound.RouteChatEffects(playerId, session.Username, cx, cy, ctx.Effects, peerId);
 
         Diag.Log("diag_recipe",
             $"[Recipe] {recipe.Slug} SUCCESS: consume={ctx.RecipeConsume.Count} output={ctx.RecipeOutput.Count} effects={ctx.Effects.Count}");
@@ -379,6 +382,6 @@ internal sealed class RecipeSystem
             _ = _stats.AwardSkillXpAsync(playerId, skillId, tenthsToAdd, newLevel);
         }
 
-        _main.SendSkills(peerId);
+        _outbound.SendSkills(peerId);
     }
 }

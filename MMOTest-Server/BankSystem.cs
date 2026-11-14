@@ -48,6 +48,7 @@ internal sealed class BankSystem
     private readonly BankRepository _bankRepo;
     private readonly InventoryRepository _inventory;
     private readonly Gfs.PerTickManager _perTick;
+    private readonly OutboundChannel _outbound;
 
     private readonly Dictionary<long, List<BankEntry?>> _bankByPlayer = new();
     private readonly Dictionary<long, int> _bankCapacityByPlayer = new();
@@ -57,7 +58,7 @@ internal sealed class BankSystem
 
     public BankSystem(Main main, ServerState state, ItemLookup items,
                       BankRepository bankRepo, InventoryRepository inventory,
-                      Gfs.PerTickManager perTick)
+                      Gfs.PerTickManager perTick, OutboundChannel outbound)
     {
         _main = main;
         _state = state;
@@ -65,6 +66,7 @@ internal sealed class BankSystem
         _bankRepo = bankRepo;
         _inventory = inventory;
         _perTick = perTick;
+        _outbound = outbound;
     }
 
     internal bool IsPlayerInBank(long playerId) => _bankSessionByPlayer.ContainsKey(playerId);
@@ -160,7 +162,7 @@ internal sealed class BankSystem
     {
         if (!_main.TryGetNpcById(npcId, out var npc)) return;
         if (npc.IsDead) return;
-        if (!npc.IsBanker) { _main.ChatToPlayer(playerId, "They are not a banker."); return; }
+        if (!npc.IsBanker) { _outbound.ChatToPlayer(playerId, "They are not a banker."); return; }
         if (!_state.PeerByPlayerId.ContainsKey(playerId) || !_state.Positions.ContainsKey(playerId)) return;
         if (_pendingBank.TryGetValue(playerId, out var current) && current == npcId) return;
 
@@ -205,7 +207,7 @@ internal sealed class BankSystem
             if (!_main.MovePlayerAdjacentToNpc(playerId, npc))
             {
                 toRemove.Add(playerId);
-                _main.ChatToPlayer(playerId, "I can't seem to reach that.");
+                _outbound.ChatToPlayer(playerId, "I can't seem to reach that.");
             }
         }
 
@@ -246,7 +248,7 @@ internal sealed class BankSystem
         if (!_state.PeerByPlayerId.TryGetValue(session.PlayerId, out var peerId)) return;
         var bank = _bankByPlayer[session.PlayerId];
         int cap = _bankCapacityByPlayer[session.PlayerId];
-        _main.Send(peerId, new
+        _outbound.Send(peerId, new
         {
             type = session.IsOpened ? "bank_state" : "bank_open",
             session_id = session.SessionId,
@@ -593,7 +595,7 @@ internal sealed class BankSystem
     {
         for (int i = 0; i < inv.Length; i++)
             _inventory.SaveSlotSync(playerId, i, inv[i]);
-        _main.BroadcastInventory(playerId);
+        _outbound.BroadcastInventory(playerId);
     }
 
     // ---------- Cancel / notice / close ----------
@@ -611,7 +613,7 @@ internal sealed class BankSystem
         _pendingBankIntents.Remove(session.PlayerId);
         PersistBank(session.PlayerId);
         if (!_state.PeerByPlayerId.TryGetValue(session.PlayerId, out var peerId)) return;
-        _main.Send(peerId, new
+        _outbound.Send(peerId, new
         {
             type = "bank_close",
             session_id = session.SessionId,
@@ -623,6 +625,6 @@ internal sealed class BankSystem
     private void SendBankNotice(long playerId, string errorKey)
     {
         if (!_state.PeerByPlayerId.TryGetValue(playerId, out var peerId)) return;
-        _main.Send(peerId, new { type = "bank_notice", error_key = errorKey, error_params = new { } });
+        _outbound.Send(peerId, new { type = "bank_notice", error_key = errorKey, error_params = new { } });
     }
 }

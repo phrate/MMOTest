@@ -60,6 +60,7 @@ internal sealed class TradeSystem
     private readonly ItemLookup _items;
     private readonly InventoryRepository _inventory;
     private readonly Gfs.PerTickManager _perTick;
+    private readonly OutboundChannel _outbound;
 
     private readonly Dictionary<long, PendingTradeInvite> _pendingTradeInvites = new();
     private readonly Dictionary<long, TradeSession> _tradeByPlayer = new();
@@ -67,13 +68,15 @@ internal sealed class TradeSystem
     private readonly Dictionary<long, List<TradeIntent>> _pendingTradeIntents = new();
 
     public TradeSystem(Main main, ServerState state, ItemLookup items,
-                       InventoryRepository inventory, Gfs.PerTickManager perTick)
+                       InventoryRepository inventory, Gfs.PerTickManager perTick,
+                       OutboundChannel outbound)
     {
         _main = main;
         _state = state;
         _items = items;
         _inventory = inventory;
         _perTick = perTick;
+        _outbound = outbound;
     }
 
     internal bool IsTradeInventoryLocked(long playerId) => _tradeByPlayer.ContainsKey(playerId);
@@ -316,7 +319,7 @@ internal sealed class TradeSystem
             from_player_id = requesterId,
             from_username = requester.Username,
         });
-        _main.ChatToPlayer(requesterId, $"Trade request sent to {target.Username}.");
+        _outbound.ChatToPlayer(requesterId, $"Trade request sent to {target.Username}.");
     }
 
     internal void HandleTradeInviteResponse(long peerId, JsonElement root, bool accept)
@@ -355,7 +358,7 @@ internal sealed class TradeSystem
                 error_key = ErrorKeys.TradeCancelDeclined,
                 error_params = new { },
             });
-            _main.ChatToPlayer(invite.RequesterId, $"{recipient.Username} declined the trade request.");
+            _outbound.ChatToPlayer(invite.RequesterId, $"{recipient.Username} declined the trade request.");
             return;
         }
 
@@ -591,8 +594,8 @@ internal sealed class TradeSystem
         _state.Credits[trade.PlayerBId] = resultCreditsB;
         _tradeByPlayer.Remove(trade.PlayerAId);
         _tradeByPlayer.Remove(trade.PlayerBId);
-        _main.BroadcastInventory(trade.PlayerAId);
-        _main.BroadcastInventory(trade.PlayerBId);
+        _outbound.BroadcastInventory(trade.PlayerAId);
+        _outbound.BroadcastInventory(trade.PlayerBId);
         SendCreditsToPlayer(trade.PlayerAId, resultCreditsA);
         SendCreditsToPlayer(trade.PlayerBId, resultCreditsB);
         SendToTradePlayer(trade.PlayerAId, new { type = "trade_completed", session_id = trade.Id });
@@ -825,7 +828,7 @@ internal sealed class TradeSystem
 
     private void SendToTradePlayer(long playerId, object message)
     {
-        if (_state.PeerByPlayerId.TryGetValue(playerId, out long peerId)) _main.Send(peerId, message);
+        if (_state.PeerByPlayerId.TryGetValue(playerId, out long peerId)) _outbound.Send(peerId, message);
     }
 
     private void SendTradeError(long playerId, string errorKey, object? errorParams = null)
@@ -867,6 +870,6 @@ internal sealed class TradeSystem
     private void SendCreditsToPlayer(long playerId, int credits)
     {
         if (_state.PeerByPlayerId.TryGetValue(playerId, out long peerId))
-            _main.Send(peerId, new { type = "credits_updated", credits });
+            _outbound.Send(peerId, new { type = "credits_updated", credits });
     }
 }

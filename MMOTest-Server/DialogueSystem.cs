@@ -19,18 +19,20 @@ internal sealed class DialogueSystem
     private readonly Gfs.GfsManager _gfs;
     private readonly Gfs.FunctionRegistry _gfsFns;
     private readonly Gfs.PerTickManager _perTick;
+    private readonly OutboundChannel _outbound;
 
     private readonly Dictionary<long, long> _pendingTalk = new(); // playerId -> npcId
 
     public DialogueSystem(Main main, ServerState state,
                           Gfs.GfsManager gfs, Gfs.FunctionRegistry gfsFns,
-                          Gfs.PerTickManager perTick)
+                          Gfs.PerTickManager perTick, OutboundChannel outbound)
     {
         _main = main;
         _state = state;
         _gfs = gfs;
         _gfsFns = gfsFns;
         _perTick = perTick;
+        _outbound = outbound;
     }
 
     internal void ClearPendingFor(long playerId) => _pendingTalk.Remove(playerId);
@@ -61,7 +63,7 @@ internal sealed class DialogueSystem
         if (npc.IsDead) return;
         if (string.IsNullOrEmpty(npc.DialogueScript))
         {
-            _main.ChatToPlayer(playerId, "They have nothing to say.");
+            _outbound.ChatToPlayer(playerId, "They have nothing to say.");
             return;
         }
         if (!_state.PeerByPlayerId.ContainsKey(playerId) || !_state.Positions.ContainsKey(playerId)) return;
@@ -121,7 +123,7 @@ internal sealed class DialogueSystem
             if (!_main.MovePlayerAdjacentToNpc(playerId, npc))
             {
                 toRemove.Add(playerId);
-                _main.ChatToPlayer(playerId, "I can't seem to reach that.");
+                _outbound.ChatToPlayer(playerId, "I can't seem to reach that.");
             }
         }
 
@@ -298,7 +300,7 @@ internal sealed class DialogueSystem
                                     List<Dictionary<string, object>> options)
     {
         if (!_state.PeerByPlayerId.TryGetValue(session.PlayerId, out var peerId)) return;
-        _main.Send(peerId, new
+        _outbound.Send(peerId, new
         {
             type = session.IsOpened ? "dialogue_state" : "dialogue_open",
             session_id = session.SessionId,
@@ -317,7 +319,7 @@ internal sealed class DialogueSystem
             || current.SessionId != session.SessionId) return;
         _state.DialogueByPlayer.Remove(session.PlayerId);
         if (!_state.PeerByPlayerId.TryGetValue(session.PlayerId, out var peerId)) return;
-        _main.Send(peerId, new
+        _outbound.Send(peerId, new
         {
             type = "dialogue_close",
             session_id = session.SessionId,

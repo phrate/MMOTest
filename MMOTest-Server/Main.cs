@@ -128,6 +128,7 @@ public partial class Main : Node
 	private DialogueSystem _dialogue;
 	private BankSystem _bank;
 	private RecipeSystem _recipe;
+	private OutboundChannel _outbound;
 
 	public override void _Ready()
 	{
@@ -246,10 +247,11 @@ public partial class Main : Node
 			Gfs.Utils.BankUtils.Register(_gfsFns, this);
 			_perTick = new Gfs.PerTickManager(_gfsFns);
 			_gfs.ScriptsChanged += OnGfsScriptsChanged;
-			_trade = new TradeSystem(this, _state, _items, _db.Inventory, _perTick);
-			_dialogue = new DialogueSystem(this, _state, _gfs, _gfsFns, _perTick);
-			_bank = new BankSystem(this, _state, _items, _db.Bank, _db.Inventory, _perTick);
-			_recipe = new RecipeSystem(this, _state, _items, _db.Recipes, _db.Inventory, _db.Stats, _gfs, _gfsFns, _world);
+			_outbound = new OutboundChannel(_state, _items, SendBytes);
+			_trade = new TradeSystem(this, _state, _items, _db.Inventory, _perTick, _outbound);
+			_dialogue = new DialogueSystem(this, _state, _gfs, _gfsFns, _perTick, _outbound);
+			_bank = new BankSystem(this, _state, _items, _db.Bank, _db.Inventory, _perTick, _outbound);
+			_recipe = new RecipeSystem(this, _state, _items, _db.Recipes, _db.Inventory, _db.Stats, _gfs, _gfsFns, _world, _outbound);
 			_recipe.LoadRecipes();
 
 			_npcRender = new NpcRenderManager(new[]
@@ -1386,63 +1388,15 @@ private async Task CompleteLoginAsync(long peerId, PlayerRecord player)
 
 	internal void Send(long peerId, object message, int channel = 0,
 		MultiplayerPeer.TransferModeEnum mode = MultiplayerPeer.TransferModeEnum.Reliable)
-	{
-		if (!_connectedPeers.Contains(peerId)) return;
-		SendBytes(peerId, JsonSerializer.SerializeToUtf8Bytes(message), channel, mode);
-	}
+		=> _outbound.Send(peerId, message, channel, mode);
 
 	internal void RouteChatEffects(long pid, string username, int cx, int cy,
-		List<Dictionary<string, object>> effects, long selfPeer)
-	{
-		foreach (var effect in effects)
-		{
-			string kind = effect.TryGetValue("kind", out var k) ? k as string ?? "" : "";
-			string text = effect.TryGetValue("text", out var t) ? t as string ?? "" : "";
-			switch (kind)
-			{
-				case "chat_local":
-					if (selfPeer >= 0) Send(selfPeer, new { type = "private_message", text });
-					break;
-				case "chat_public":
-					Broadcast(new { type = "chat_message", username, message = text, from_chunk = new[] { cx, cy } });
-					break;
-				case "chat_overhead":
-					Broadcast(new { type = "overhead_message", username, text, from_chunk = new[] { cx, cy } });
-					break;
-				case "chat_private":
-					long targetPid = effect.TryGetValue("target_player_id", out var tpid) ? Convert.ToInt64(tpid) : 0;
-					if (targetPid > 0)
-					{
-						long targetPeer = -1;
-						foreach (var kv in _state.Sessions) if (kv.Value.PlayerId == targetPid) { targetPeer = kv.Key; break; }
-						if (targetPeer >= 0) Send(targetPeer, new { type = "private_message", text });
-					}
-					break;
-				case "anim_set":
-					string anim = effect.TryGetValue("anim", out var a) ? a as string ?? "" : "";
-					long dur = effect.TryGetValue("duration_ms", out var d) ? Convert.ToInt64(d) : 0;
-					Broadcast(new
-					{
-						type = "anim_changed",
-						player_id = pid,
-						anim,
-						duration_ms = dur
-					});
-					break;
-			}
-		}
-	}
+	List<Dictionary<string, object>> effects, long selfPeer)
+	=> _outbound.RouteChatEffects(pid, username, cx, cy, effects, selfPeer);
 
 	private void Broadcast(object message, long exceptPeerId = 0, int channel = 0,
 		MultiplayerPeer.TransferModeEnum mode = MultiplayerPeer.TransferModeEnum.Reliable)
-	{
-		byte[] bytes = JsonSerializer.SerializeToUtf8Bytes(message);
-		foreach (long peerId in _state.Sessions.Keys)
-		{
-			if (peerId == exceptPeerId) continue;
-			SendBytes(peerId, bytes, channel, mode);
-		}
-	}
+		=> _outbound.Broadcast(message, exceptPeerId, channel, mode);
 
 	private void SendBytes(long peerId, byte[] bytes, int channel, MultiplayerPeer.TransferModeEnum mode)
 	{
@@ -2631,13 +2585,8 @@ private int RollQuantity((int Min, int Max) range)
 		return -1;
 	}
 
-	internal void ChatToPlayer(long playerId, string message)
-	{
-		long peerId = -1;
-		foreach (var kv in _state.Sessions) if (kv.Value.PlayerId == playerId) { peerId = kv.Key; break; }
-		if (peerId < 0) return;
-		Send(peerId, new { type = "private_message", text = message });
-	}
+	internal void ChatToPlayer(long playerId, string message) =>
+		_outbound.ChatToPlayer(playerId, message);
 
 	private void BroadcastPlayerAnim(long playerId, string anim, int durationMs)
 	{
@@ -3115,75 +3064,11 @@ internal bool TryConsumeItem(long playerId, int slot, int healAmount)
 	return true;
 }
 
-internal void BroadcastInventory(long playerId)
-{
-	if (!_state.PeerByPlayerId.TryGetValue(playerId, out long peerId)) return;
-	SendInventory(peerId);
-}
+	internal void BroadcastInventory(long playerId) => _outbound.BroadcastInventory(playerId);
 
-private void SendInventory(long peerId)
-{
-	if (!_state.Sessions.TryGetValue(peerId, out var session)) return;
-	if (!_state.Inventories.TryGetValue(session.PlayerId, out var inv)) return;
+	private void SendInventory(long peerId) => _outbound.SendInventory(peerId);
 
-	var slots = new List<object>();
-	for (int i = 0; i < 28; i++)
-	{
-		long packed = inv[i];
-		if (packed == 0) continue;
-		int itemId = ItemStack.ItemId(packed);
-		int qty = ItemStack.Quantity(packed);
-		if (!_items.TryGetById(itemId, out var meta)) continue;
-		slots.Add(new
-		{
-			slot = i,
-			item_id = itemId,
-			slug = meta.Slug,
-			display = meta.Display,
-			type = meta.Type,
-			type_slug = meta.TypeSlug,
-			quantity = qty,
-			cert_of_slug = meta.CertOfSlug,
-			can_trade = meta.CanTrade,
-			can_bank = !meta.NonBankable,
-		});
-	}
-	Send(peerId, new { type = "inventory_data", slots });
-}
-
-internal void SendSkills(long peerId)
-{
-	if (!_state.Sessions.TryGetValue(peerId, out var session)) return;
-	if (!_state.SkillsByPlayer.TryGetValue(session.PlayerId, out var skills)) return;
-
-	var list = skills.Select(s =>
-	{
-		int level = Math.Clamp(s.Max, 1, SkillExperience.MaxLevel);
-		int displayedLevel = s.Level;
-		int displayedMax = s.Max;
-		if (s.Id == "hitpoints" && _state.PlayerCombat.TryGetValue(session.PlayerId, out var combat))
-		{
-			displayedLevel = combat.CurrentHp;
-			displayedMax = combat.MaxHp;
-		}
-		bool maxLevelReached = level == SkillExperience.MaxLevel;
-		int nextLevel = maxLevelReached ? SkillExperience.MaxLevel : level + 1;
-		int currentXp = SkillExperience.GetDisplayedXp(s.CurrentXpTenths);
-		int remainingXp = SkillExperience.GetDisplayedXpToNextLevel(s.CurrentXpTenths, level);
-
-		return new
-		{
-			id = s.Id,
-			level = displayedLevel,
-			max = displayedMax,
-			current_xp = currentXp,
-			next_level = nextLevel,
-			remaining_xp = remainingXp,
-			max_level_reached = maxLevelReached,
-		};
-	}).ToList();
-	Send(peerId, new { type = "skills_data", skills = list });
-}
+	internal void SendSkills(long peerId) => _outbound.SendSkills(peerId);
 
 private void HandleInventorySwap(long peerId, JsonElement root)
 {
