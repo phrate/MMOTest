@@ -1,9 +1,15 @@
 {
 	"folders": [
 		{
+			"name": "MMOTest-Server",
 			"path": "MMOTest-Server"
 		},
 		{
+			"name": "MMOTest-Server.Tests",
+			"path": "MMOTest-Server.Tests"
+		},
+		{
+			"name": "MMOTest-Client",
 			"path": "MMOTest-Client"
 		}
 	],

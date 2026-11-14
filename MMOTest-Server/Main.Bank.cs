@@ -46,7 +46,7 @@ public partial class Main
 
     private void LoadBankForPlayer(long playerId)
     {
-        var tuple = _db.GetBankAsync(playerId).Result;
+        var tuple = _db.Bank.GetAsync(playerId).Result;
         if (tuple == null)
         {
             _bankByPlayer[playerId] = new List<BankEntry?>();
@@ -116,7 +116,7 @@ public partial class Main
         var trimmed = lastUsed < 0
             ? new List<BankEntry?>()
             : bank.GetRange(0, lastUsed + 1);
-        _db.SaveBankAsync(playerId, SerializeBank(trimmed));
+        _db.Bank.SaveAsync(playerId, SerializeBank(trimmed));
     }
 
     // ---------- Entry: request to open bank ----------
@@ -557,7 +557,7 @@ public partial class Main
     private void PersistInventoryFromCache(long playerId, long[] inv)
     {
         for (int i = 0; i < inv.Length; i++)
-            _db.SaveInventorySlotSync(playerId, i, inv[i]);
+            _db.Inventory.SaveSlotSync(playerId, i, inv[i]);
         BroadcastInventory(playerId);
     }
 

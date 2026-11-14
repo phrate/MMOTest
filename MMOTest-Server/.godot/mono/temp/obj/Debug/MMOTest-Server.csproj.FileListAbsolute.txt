@@ -1,3 +1,9 @@
+C:\GAME_DEV\godot\projects\4.x\MMOTest\MMOTest-Server\.godot\mono\temp\obj\Debug\MMOTest-Server.csproj.AssemblyReference.cache
+C:\GAME_DEV\godot\projects\4.x\MMOTest\MMOTest-Server\.godot\mono\temp\obj\Debug\MMOTest-Server.GeneratedMSBuildEditorConfig.editorconfig
+C:\GAME_DEV\godot\projects\4.x\MMOTest\MMOTest-Server\.godot\mono\temp\obj\Debug\MMOTest-Server.AssemblyInfoInputs.cache
+C:\GAME_DEV\godot\projects\4.x\MMOTest\MMOTest-Server\.godot\mono\temp\obj\Debug\MMOTest-Server.AssemblyInfo.cs
+C:\GAME_DEV\godot\projects\4.x\MMOTest\MMOTest-Server\.godot\mono\temp\obj\Debug\MMOTest-Server.csproj.CoreCompileInputs.cache
+C:\GAME_DEV\godot\projects\4.x\MMOTest\MMOTest-Server\.godot\mono\temp\obj\Debug\MMOTest-Server.sourcelink.json
 C:\GAME_DEV\godot\projects\4.x\MMOTest\MMOTest-Server\.godot\mono\temp\bin\Debug\MMOTest-Server.deps.json
 C:\GAME_DEV\godot\projects\4.x\MMOTest\MMOTest-Server\.godot\mono\temp\bin\Debug\MMOTest-Server.runtimeconfig.json
 C:\GAME_DEV\godot\projects\4.x\MMOTest\MMOTest-Server\.godot\mono\temp\bin\Debug\MMOTest-Server.dll
@@ -28,15 +34,9 @@ C:\GAME_DEV\godot\projects\4.x\MMOTest\MMOTest-Server\.godot\mono\temp\bin\Debug
 C:\GAME_DEV\godot\projects\4.x\MMOTest\MMOTest-Server\.godot\mono\temp\bin\Debug\runtimes\win-arm64\native\e_sqlite3.dll
 C:\GAME_DEV\godot\projects\4.x\MMOTest\MMOTest-Server\.godot\mono\temp\bin\Debug\runtimes\win-x64\native\e_sqlite3.dll
 C:\GAME_DEV\godot\projects\4.x\MMOTest\MMOTest-Server\.godot\mono\temp\bin\Debug\runtimes\win-x86\native\e_sqlite3.dll
-C:\GAME_DEV\godot\projects\4.x\MMOTest\MMOTest-Server\.godot\mono\temp\obj\Debug\MMOTest-Server.csproj.AssemblyReference.cache
-C:\GAME_DEV\godot\projects\4.x\MMOTest\MMOTest-Server\.godot\mono\temp\obj\Debug\MMOTest-Server.GeneratedMSBuildEditorConfig.editorconfig
-C:\GAME_DEV\godot\projects\4.x\MMOTest\MMOTest-Server\.godot\mono\temp\obj\Debug\MMOTest-Server.AssemblyInfoInputs.cache
-C:\GAME_DEV\godot\projects\4.x\MMOTest\MMOTest-Server\.godot\mono\temp\obj\Debug\MMOTest-Server.AssemblyInfo.cs
-C:\GAME_DEV\godot\projects\4.x\MMOTest\MMOTest-Server\.godot\mono\temp\obj\Debug\MMOTest-Server.csproj.CoreCompileInputs.cache
 C:\GAME_DEV\godot\projects\4.x\MMOTest\MMOTest-Server\.godot\mono\temp\obj\Debug\MMOTest-.1274C1C8.Up2Date
 C:\GAME_DEV\godot\projects\4.x\MMOTest\MMOTest-Server\.godot\mono\temp\obj\Debug\MMOTest-Server.dll
 C:\GAME_DEV\godot\projects\4.x\MMOTest\MMOTest-Server\.godot\mono\temp\obj\Debug\refint\MMOTest-Server.dll
 C:\GAME_DEV\godot\projects\4.x\MMOTest\MMOTest-Server\.godot\mono\temp\obj\Debug\MMOTest-Server.pdb
 C:\GAME_DEV\godot\projects\4.x\MMOTest\MMOTest-Server\.godot\mono\temp\obj\Debug\MMOTest-Server.genruntimeconfig.cache
 C:\GAME_DEV\godot\projects\4.x\MMOTest\MMOTest-Server\.godot\mono\temp\obj\Debug\ref\MMOTest-Server.dll
-C:\GAME_DEV\godot\projects\4.x\MMOTest\MMOTest-Server\.godot\mono\temp\obj\Debug\MMOTest-Server.sourcelink.json

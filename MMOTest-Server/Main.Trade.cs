@@ -550,7 +550,7 @@ public partial class Main
 		int resultCreditsB = checked(balanceB - trade.CreditsB + trade.CreditsA);
 		try
 		{
-			if (!_db.CommitTradeSync(trade.PlayerAId, inventoryA, resultCreditsA,
+			if (!_db.Inventory.CommitTradeSync(trade.PlayerAId, inventoryA, resultCreditsA,
 									trade.PlayerBId, inventoryB, resultCreditsB))
 			{
 				CancelTrade(trade, ErrorKeys.TradeCommitFailed);

@@ -1,4 +1,5 @@
 using Godot;
+using System;
 using System.Threading.Tasks;
 
 namespace MMOTest.Server;
@@ -14,18 +15,18 @@ namespace MMOTest.Server;
 //   3. the request must come from this machine (loopback address).
 //
 // Behavior:
-//   - If any account has is_admin = 1, log the peer into the first one.
-//   - Otherwise use the account 'abc' / '12345678', creating it as an admin (is_admin = 1) if needed.
-//     This is the one exception to "no code sets is_admin", via Database.TryCreateDevAdminAsync.
-//     An 'abc' account that already exists is never modified; fix its flag by hand in DB Browser.
+//   - If phrate is logged in by another peer, spawn a fallback dev account
+//     so multi-client testing works (trade/follow between two clients).
+//   - If phrate exists but is not logged in, log in as phrate.
+//   - If phrate is missing entirely, create it (admin, defaults) and log in.
 // ============================================================================
 public partial class Main
 {
+    private readonly System.Collections.Generic.HashSet<string> _devUsernameClaims = new();
     private const bool DevAutoLoginEnabled = true;
     private const string DevUsername = "phrate";
     private const string DevPassword = "12345678";
 
-    // Keys resolved by the client from Data/Texts/account/dev_texts.json
     private const string DevDisabledKey = "account.dev.error.disabled";
     private const string DevAccountWrongPasswordKey = "account.dev.error.account_wrong_password";
     private const string DevFailedKey = "account.dev.error.failed";
@@ -59,45 +60,107 @@ public partial class Main
 
     try
     {
-        PlayerRecord player = await _db.GetPlayerByUsernameAsync(DevUsername);
-
-        if (player == null)
+        // Atomic claim check. Must run BEFORE any await, otherwise two
+        // simultaneous connections both see _sessions empty during the
+        // GetPlayerByUsernameAsync await window and both proceed to log
+        // in as phrate.
+        bool alreadyInSession = false;
+        foreach (var kv in _sessions)
         {
-            // EnsureDevAccountSync on startup should have created this. Be
-            // defensive in case the account was deleted mid-session.
-            GD.Print($"[Server] DEV: '{DevUsername}' missing; creating on demand");
-            string hash = await PasswordHasher.HashAsync(DevPassword);
-            await _db.TryCreateDevAdminAsync(DevUsername, hash);
-            player = await _db.GetPlayerByUsernameAsync(DevUsername);
-            if (player != null)
+            if (kv.Value.Username.Equals(DevUsername, StringComparison.OrdinalIgnoreCase))
             {
-                await _db.EnsurePlayerStatsAsync(player.Id);
-                await _db.EnsurePlayerInventoryAsync(player.Id);
+                alreadyInSession = true;
+                break;
             }
         }
-        else if (!await PasswordHasher.VerifyAsync(DevPassword, player.PasswordHash))
+
+        bool alreadyClaimed = !alreadyInSession && !_devUsernameClaims.Add(DevUsername);
+
+        if (alreadyInSession || alreadyClaimed)
         {
-            SendError(peerId, "login_result", DevAccountWrongPasswordKey, new { username = DevUsername });
+            GD.Print($"[Server] DEV: '{DevUsername}' already in use; generating fallback account");
+            await CreateFallbackDevAccountAsync(peerId);
             return;
         }
 
-        if (player == null)
+        try
         {
-            SendError(peerId, "login_result", DevFailedKey);
-            return;
-        }
-        if (!player.IsAdmin)
-        {
-            SendError(peerId, "login_result", DevFailedKey);
-            return;
-        }
+            PlayerRecord player = await _db.Players.GetByUsernameAsync(DevUsername);
 
-        GD.Print($"[Server] DEV: auto-login as '{player.Username}'");
-        await CompleteLoginAsync(peerId, player);
+            if (player == null)
+            {
+                GD.Print($"[Server] DEV: '{DevUsername}' missing; creating on demand");
+                string hash = await PasswordHasher.HashAsync(DevPassword);
+                await _db.Players.TryCreateDevAdminAsync(DevUsername, hash);
+                player = await _db.Players.GetByUsernameAsync(DevUsername);
+                if (player != null)
+                {
+                    await _db.Stats.EnsureStatsAsync(player.Id);
+                    await _db.Stats.EnsureInventoryAsync(player.Id);
+                }
+            }
+            else if (!await PasswordHasher.VerifyAsync(DevPassword, player.PasswordHash))
+            {
+                SendError(peerId, "login_result", DevAccountWrongPasswordKey, new { username = DevUsername });
+                return;
+            }
+
+            if (player == null)
+            {
+                SendError(peerId, "login_result", DevFailedKey);
+                return;
+            }
+            if (!player.IsAdmin)
+            {
+                SendError(peerId, "login_result", DevFailedKey);
+                return;
+            }
+
+            GD.Print($"[Server] DEV: auto-login as '{player.Username}'");
+            await CompleteLoginAsync(peerId, player);
+        }
+        finally
+        {
+            _devUsernameClaims.Remove(DevUsername);
+        }
     }
     finally
     {
         _authInProgress.Remove(peerId);
     }
 }
+
+    private async Task CreateFallbackDevAccountAsync(long peerId)
+    {
+        string username = "dev_" + Guid.NewGuid().ToString("N").Substring(0, 8);
+        string password = Guid.NewGuid().ToString("N");
+
+        string hash = await PasswordHasher.HashAsync(password);
+        var (created, playerId) = await _db.Players.TryCreateAsync(username, hash, isAdmin: true);
+        if (!created)
+        {
+            SendError(peerId, "login_result", DevFailedKey);
+            return;
+        }
+
+        await _db.Stats.EnsureStatsAsync(playerId);
+        await _db.Stats.EnsureInventoryAsync(playerId);
+        await GiveLootTableAsync(playerId, "trade_testing", forceAll: true);
+
+        if (_creditsLootBySlug.TryGetValue("trade_testing_credits", out var range))
+        {
+            int amount = _combatRng.Next(range.Min, range.Max + 1);
+            if (amount > 0) await _db.Players.SetCreditsAsync(playerId, amount);
+        }
+
+        var player = await _db.Players.GetByUsernameAsync(username);
+        if (player == null)
+        {
+            SendError(peerId, "login_result", DevFailedKey);
+            return;
+        }
+
+        GD.Print($"[Server] DEV: fallback account '{username}' (id {playerId}) created and logged in");
+        await CompleteLoginAsync(peerId, player);
+    }
 }

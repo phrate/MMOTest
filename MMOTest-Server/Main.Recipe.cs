@@ -19,7 +19,7 @@ public partial class Main
 
     private void LoadRecipes()
     {
-        var recipes = _db.GetAllRecipesSync();
+        var recipes = _db.Recipes.GetAllSync();
         _recipesByPair.Clear();
         foreach (var r in recipes)
             _recipesByPair[r.Pair] = r;
@@ -163,8 +163,8 @@ public partial class Main
         {
             int tx = (int)MathF.Round(pos.X);
             int ty = (int)MathF.Round(pos.Z);
-            cx = (int)MathF.Floor((float)tx / _chunkSize);
-            cy = (int)MathF.Floor((float)ty / _chunkSize);
+            cx = (int)MathF.Floor((float)tx / _world.ChunkSize);
+            cy = (int)MathF.Floor((float)ty / _world.ChunkSize);
         }
 
         if (ctx.RecipeFailed)
@@ -201,7 +201,7 @@ public partial class Main
             {
                 Array.Copy(sandbox, realInv, realInv.Length);
                 for (int i = 0; i < realInv.Length; i++)
-                    _db.SaveInventorySlotSync(playerId, i, realInv[i]);
+                    _db.Inventory.SaveSlotSync(playerId, i, realInv[i]);
                 BroadcastInventory(playerId);
             }
 
@@ -247,7 +247,7 @@ public partial class Main
         // Commit sandbox back to real inventory.
         Array.Copy(sandbox, realInv, realInv.Length);
         for (int i = 0; i < realInv.Length; i++)
-            _db.SaveInventorySlotSync(playerId, i, realInv[i]);
+            _db.Inventory.SaveSlotSync(playerId, i, realInv[i]);
         BroadcastInventory(playerId);
 
         AwardRecipeXp(playerId, recipe.XpRewards);
@@ -346,7 +346,7 @@ public partial class Main
                 Max = newLevel,
             };
 
-            _ = _db.AwardSkillXpAsync(playerId, skillId, tenthsToAdd, newLevel);
+            _ = _db.Stats.AwardSkillXpAsync(playerId, skillId, tenthsToAdd, newLevel);
         }
 
         SendSkills(peerId);

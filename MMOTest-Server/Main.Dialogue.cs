@@ -27,7 +27,7 @@ private void SnapAndFaceForDialogue(long playerId, ActiveNpc npc)
 
     int px = (int)MathF.Round(pos.X);
     int pz = (int)MathF.Round(pos.Z);
-    var tinfo = GetTileInfo(px, pz);
+    var tinfo = _world.GetTileInfo(px, pz);
     int nx = (int)MathF.Round(npc.PosX);
     int nz = (int)MathF.Round(npc.PosZ);
 

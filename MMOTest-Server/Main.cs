@@ -22,6 +22,10 @@ public partial class Main : Node
 
 	private const double TickIntervalSeconds = 0.3;
 	private const float WalkSpeed = 2.0f;
+	private WorldService _world;
+	internal bool TileWalkable(int x, int y) => _world.IsWalkable(x, y);
+	private bool IsValidTile(int x, int y) => _world.IsWalkable(x, y);
+	private bool IsWalkableTile(int x, int y) => _world.IsWalkable(x, y);
 	private const double WorldCheckIntervalSeconds = 1.0;
 
 	private const int MaxPathLength = 2000;
@@ -36,7 +40,7 @@ public partial class Main : Node
 
 	private record PlayerSession(long PlayerId, string Username, bool IsAdmin, long Sid);
 	internal record PlayerPosition(float X, float Y, float Z, float Yaw);
-	internal record TileInfo(int Z, bool Walkable);
+
 
 	private Database _db;
 	private SceneMultiplayer _mp;
@@ -81,7 +85,7 @@ public partial class Main : Node
 	private readonly Dictionary<long, CombatPair> _combatByPlayer = new();
 	private readonly Dictionary<long, long> _pendingEngage = new(); // playerId -> npcId (approach phase)
 	private readonly Dictionary<long, CombatPair> _combatByNpc = new();
-	private readonly Dictionary<long, Database.PlayerCombatData> _playerCombat = new();
+	private readonly Dictionary<long, PlayerCombatData> _playerCombat = new();
 	private readonly Dictionary<long, long[]> _inventoryByPlayer = new();
 	// ---------- Ground items ----------
 	internal sealed class GroundItem
@@ -106,11 +110,11 @@ public partial class Main : Node
 	private readonly Dictionary<long, long> _pendingPickup = new();
 	private long _nextGroundItemId = 1;
 	private const long GroundItemDespawnMs = 90 * 1000;  // 90s — player/npc drops only
-	private readonly Dictionary<long, Database.ItemMeta> _itemsById = new();
+	private readonly Dictionary<long, ItemMeta> _itemsById = new();
 	private readonly Dictionary<string, long> _itemIdsBySlug = new();
 	private readonly Dictionary<string, Dictionary<string, (int Min, int Max)>> _lootTablesBySlug = new();
 	private readonly Dictionary<long, int> _creditsByPlayer = new();
-	private readonly Dictionary<long, List<Database.SkillLevel>> _skillsByPlayer = new();
+	private readonly Dictionary<long, List<SkillLevel>> _skillsByPlayer = new();
 	private readonly Dictionary<string, (int Min, int Max)> _creditsLootBySlug = new();
 	private readonly Dictionary<long, int> _playerHealAccumTicks = new();
 	private readonly Random _combatRng = new();
@@ -130,7 +134,6 @@ public partial class Main : Node
 	// (transient) means "arrived, about to be cleaned up in the same tick".
 	private readonly Dictionary<long, List<Vector2I>> _intents = new();
 
-	private readonly Dictionary<(int X, int Y), TileInfo> _tiles = new();
 
 	private double _tickAccumulator = 0.0;
 	private long _currentTick = 0;
@@ -140,17 +143,12 @@ public partial class Main : Node
 
 	private string _dummyHash;
 
-	private JsonDocument _worldDoc;
-	private string _worldPath;
-	private int _worldVersion;
-	private int _worldFormatVersion;
-	private int _chunkSize = 8;
-	private DateTime _worldMtime;
-	private long _worldSize;
+
 
 	private Gfs.GfsManager _gfs;
 	private Gfs.FunctionRegistry _gfsFns;
 	private Gfs.PerTickManager _perTick;
+	private Pathfinder _pathfinder;
 	private NpcRenderManager _npcRender;
 
 	public override void _Ready()
@@ -195,11 +193,11 @@ public partial class Main : Node
 
 			if (ResetPlayersOnStartup)
 			{
-				int wiped = _db.WipeAllPlayersExceptSync("phrate");
+				int wiped = _db.Players.WipeAllExceptSync("phrate");
 				GD.Print($"[Server] Reset: wiped {wiped} player(s), preserved 'phrate'");
 			}
 
-			var items = _db.GetAllItemsSync().Result;
+			var items = _db.Items.GetAllSync().Result;
 			foreach (var it in items)
 			{
 				_itemsById[it.Id] = it;
@@ -207,12 +205,12 @@ public partial class Main : Node
 			}
 			GD.Print($"[Server] Loaded {items.Count} item definition(s)");
 
-			var loot = _db.GetAllLootTablesSync();
+			var loot = _db.Loot.GetLootTablesSync();
 			foreach (var kv in loot)
 				_lootTablesBySlug[kv.Key] = kv.Value;
 			GD.Print($"[Server] Loaded {loot.Count} loot table(s)");
 
-			var creditsLoot = _db.GetAllCreditsLootSync();
+			var creditsLoot = _db.Loot.GetCreditsLootSync();
 			foreach (var kv in creditsLoot) _creditsLootBySlug[kv.Key] = kv.Value;
 			GD.Print($"[Server] Loaded {creditsLoot.Count} credits loot table(s)");
 
@@ -224,23 +222,30 @@ public partial class Main : Node
 			_dummyHash = PasswordHasher.Hash("dummy-password-for-timing");
 			GD.Print($"[Server] SQLite {_db.GetSqliteVersion()} ready at {dbPath}");
 
-			int respawned = _db.RespawnAllDeadNpcsSync();
+			int respawned = _db.Npcs.RespawnAllDeadSync();
 			if (respawned > 0)
 				GD.Print($"[Server] Auto-respawned {respawned} dead NPC(s) on startup");
 
-			if (EnsureWorldLoaded())
+			_world = new WorldService(WorldFileCandidates, GD.PrintErr);
+			if (_world.EnsureLoaded())
 			{
-				_lastBroadcastVersion = _worldVersion;
-				GD.Print($"[Server] World ready: v{_worldVersion} format {_worldFormatVersion}, {_tiles.Count} tiles ({_worldPath})");
+				_lastBroadcastVersion = _world.Version;
+				GD.Print($"[Server] World ready: v{_world.Version} format {_world.FormatVersion}, {_world.TileCount} tiles ({_world.Path})");
 			}
 			else
 			{
 				GD.PrintErr("[Server] No world file loaded; world_info/world_fetch will report unavailable");
 			}
 
+			_pathfinder = new Pathfinder((x, y) =>
+			{
+				if (_world.TryGetTile(x, y, out TileInfo t)) return (true, t.Walkable);
+				return (false, false);
+			});
+
 			try
 			{
-				var npcList = _db.GetAllNpcsSync();
+				var npcList = _db.Npcs.GetAllSync();
 				foreach (var npc in npcList) _npcs[npc.Id] = npc;
 				GD.Print($"[Server] Loaded {_npcs.Count} NPC(s) from DB");
 			}
@@ -308,8 +313,7 @@ public partial class Main : Node
 
 	public override void _ExitTree()
 	{
-		_worldDoc?.Dispose();
-		_worldDoc = null;
+		_world?.Dispose();
 	}
 
 	public override void _Process(double delta)
@@ -463,8 +467,8 @@ public partial class Main : Node
 			foreach (var (pid, effects) in tickEffects)
 			{
 				if (!_positions.TryGetValue(pid, out var ppos)) continue;
-				int pcx = (int)MathF.Floor((float)MathF.Round(ppos.X) / _chunkSize);
-				int pcy = (int)MathF.Floor((float)MathF.Round(ppos.Z) / _chunkSize);
+				int pcx = (int)MathF.Floor((float)MathF.Round(ppos.X) / _world.ChunkSize);
+				int pcy = (int)MathF.Floor((float)MathF.Round(ppos.Z) / _world.ChunkSize);
 
 				string username = "";
 				long selfPeer = -1;
@@ -487,8 +491,8 @@ public partial class Main : Node
 			int tx = (int)MathF.Round(pos.X);
 			int ty = (int)MathF.Round(pos.Z);
 			var chunk = new Vector2I(
-				ActiveNpc.FloorDiv(tx, _chunkSize),
-				ActiveNpc.FloorDiv(ty, _chunkSize));
+				ActiveNpc.FloorDiv(tx, _world.ChunkSize),
+				ActiveNpc.FloorDiv(ty, _world.ChunkSize));
 
 			bool playerChunkChanged =
 				!_lastPlayerChunk.TryGetValue(peerId, out var last) || last != chunk;
@@ -539,7 +543,7 @@ public partial class Main : Node
 			// past the tick endpoint and produces a wide slide.
 			int cx = (int)MathF.Round(x);
 			int cz = (int)MathF.Round(z);
-			var wInfo = GetTileInfo(cx, cz);
+			var wInfo = _world.GetTileInfo(cx, cz);
 			lastWaypoint = new Vector3(cx, wInfo.Z, cz);
 			lastWaypointYaw = yaw;
 		}
@@ -564,7 +568,7 @@ public partial class Main : Node
 
 	int tileX = (int)MathF.Round(x);
 	int tileY = (int)MathF.Round(z);
-	var tinfo = GetTileInfo(tileX, tileY);
+	var tinfo = _world.GetTileInfo(tileX, tileY);
 	var endpoint = new PlayerPosition(x, tinfo.Z, z, yaw);
 	bool finished = path.Count == 0;
 	return (endpoint, finished, lastWaypoint, lastWaypointYaw);
@@ -611,7 +615,7 @@ public partial class Main : Node
 
 		int tileX = (int)MathF.Round(x);
 		int tileY = (int)MathF.Round(z);
-		var tinfo = GetTileInfo(tileX, tileY);
+		var tinfo = _world.GetTileInfo(tileX, tileY);
 
 		npc.PosX = x;
 		npc.PosY = tinfo.Z;
@@ -619,27 +623,23 @@ public partial class Main : Node
 		npc.Yaw = yaw;
 	}
 
-	private TileInfo GetTileInfo(int x, int y)
-	{
-		if (_tiles.TryGetValue((x, y), out TileInfo t)) return t;
-		return new TileInfo(100, true);
-	}
+
 
 	// ---------- World file updates ----------
 
 	private void CheckWorldForUpdates()
 	{
-		if (!EnsureWorldLoaded()) return;
-		if (_worldVersion == _lastBroadcastVersion) return;
+		if (!_world.EnsureLoaded()) return;
+		if (_world.Version == _lastBroadcastVersion) return;
 
-		_lastBroadcastVersion = _worldVersion;
-		Diag.Log("diag_world", $"World hotfix: v{_worldVersion}, notifying {_sessions.Count} client(s)");
+		_lastBroadcastVersion = _world.Version;
+		Diag.Log("diag_world", $"World hotfix: v{_world.Version}, notifying {_sessions.Count} client(s)");
 
 		Broadcast(new
 		{
 			type = "world_updated",
-			world_version = _worldVersion,
-			format_version = _worldFormatVersion
+			world_version = _world.Version,
+			format_version = _world.FormatVersion
 		});
 	}
 
@@ -754,7 +754,7 @@ public partial class Main : Node
 				int tx = (int)MathF.Round(pos.X);
 				int ty = (int)MathF.Round(pos.Z);
 				int tz = (int)MathF.Round(pos.Y);
-				_ = _db.SetPlayerTileAsync(session.PlayerId, tx, ty, tz);
+				_ = _db.Players.SetTileAsync(session.PlayerId, tx, ty, tz);
 			}
 			_positions.Remove(session.PlayerId);
 			_lastPlayerChunk.Remove(peerId);
@@ -1001,8 +1001,8 @@ public partial class Main : Node
 
 		if (_positions.TryGetValue(session.PlayerId, out var pos))
 		{
-			int cx = (int)MathF.Floor((float)MathF.Round(pos.X) / _chunkSize);
-			int cy = (int)MathF.Floor((float)MathF.Round(pos.Z) / _chunkSize);
+			int cx = (int)MathF.Floor((float)MathF.Round(pos.X) / _world.ChunkSize);
+			int cy = (int)MathF.Floor((float)MathF.Round(pos.Z) / _world.ChunkSize);
 			RouteChatEffects(session.PlayerId, session.Username, cx, cy, effects, peerId);
 		}
 
@@ -1167,21 +1167,14 @@ public partial class Main : Node
 	_intents[peerId] = path;
 }
 
-	/// <summary>
-	/// True only if (x, y) is an explicit, walkable tile. Unlike GetTileInfo, this
-	/// does NOT treat unlisted tiles as walkable: void tiles block movement.
-	/// </summary>
-	private bool IsWalkableTile(int x, int y)
-	{
-		return _tiles.TryGetValue((x, y), out TileInfo info) && info.Walkable;
-	}
+
 
 	// ---------- Auth ----------
 
 	private async Task HandleHelloAsync(long peerId)
 	{
 		string version = await _db.GetSqliteVersionAsync();
-		long total = await _db.CountPlayersAsync();
+		long total = await _db.Players.CountAsync();
 		Send(peerId, new { type = "hello_ok", sqlite_version = version, total_players = total });
 	}
 
@@ -1198,11 +1191,11 @@ public partial class Main : Node
 		{
 			string hash = await PasswordHasher.HashAsync(password);
 			bool makeAdmin = isDev && OS.IsDebugBuild();
-			var (created, playerId) = await _db.TryCreatePlayerAsync(username, hash, makeAdmin);
+			var (created, playerId) = await _db.Players.TryCreateAsync(username, hash, makeAdmin);
 			if (!created) { SendError(peerId, "register_result", ErrorKeys.RegisterUsernameTaken); return; }
 			GD.Print($"[Server] Registered: {username} (id {playerId}{(makeAdmin ? ", dev admin" : "")})");
-			await _db.EnsurePlayerStatsAsync(playerId);
-			await _db.EnsurePlayerInventoryAsync(playerId);
+			await _db.Stats.EnsureStatsAsync(playerId);
+			await _db.Stats.EnsureInventoryAsync(playerId);
 
 			if (makeAdmin)
 			{
@@ -1217,7 +1210,7 @@ public partial class Main : Node
 				if (_creditsLootBySlug.TryGetValue("trade_testing_credits", out var creditRange))
 				{
 					int amount = _combatRng.Next(creditRange.Min, creditRange.Max + 1);
-					if (amount > 0) await _db.SetPlayerCreditsAsync(playerId, amount);
+					if (amount > 0) await _db.Players.SetCreditsAsync(playerId, amount);
 					GD.Print($"[Server] Dev trade-testing kit: rolled {amount} credits for {username}");
 				}
 				else
@@ -1243,7 +1236,7 @@ public partial class Main : Node
 
 		try
 		{
-			PlayerRecord player = await _db.GetPlayerByUsernameAsync(username);
+			PlayerRecord player = await _db.Players.GetByUsernameAsync(username);
 			bool passwordOk = await PasswordHasher.VerifyAsync(password, player?.PasswordHash ?? _dummyHash);
 			if (player == null || !passwordOk)
 			{
@@ -1260,49 +1253,49 @@ public partial class Main : Node
 
 private async Task CompleteLoginAsync(long peerId, PlayerRecord player)
 {
-	long loginCount = await _db.RecordLoginAsync(player.Id);
-	long totalPlayers = await _db.CountPlayersAsync();
+	long loginCount = await _db.Players.RecordLoginAsync(player.Id);
+	long totalPlayers = await _db.Players.CountAsync();
 	if (!_connectedPeers.Contains(peerId)) return;
 
-	if (!await _db.EnsurePlayerStatsAsync(player.Id))
+	if (!await _db.Stats.EnsureStatsAsync(player.Id))
 	{
 		GD.PrintErr($"[Server] Failed to ensure stats for {player.Username} (id {player.Id}); login aborted");
 		SendError(peerId, "login_result", ErrorKeys.LoginStatsInitFailed);
 		return;
 	}
 
-	if (!await _db.EnsurePlayerInventoryAsync(player.Id))
+	if (!await _db.Stats.EnsureInventoryAsync(player.Id))
 	{
 		GD.PrintErr($"[Server] Failed to ensure inventory/bank for {player.Username} (id {player.Id}); login aborted");
 		SendError(peerId, "login_result", ErrorKeys.LoginStatsInitFailed);
 		return;
 	}
 
-	var combatData = await _db.GetPlayerCombatAsync(player.Id);
-	_playerCombat[player.Id] = combatData ?? new Database.PlayerCombatData(1, 1, 1, 0, 0, 10, 10, 1);
+	var combatData = await _db.Stats.GetCombatAsync(player.Id);
+	_playerCombat[player.Id] = combatData ?? new PlayerCombatData(1, 1, 1, 0, 0, 10, 10, 1);
 
-	var inv = await _db.GetInventorySlotsAsync(player.Id);
+	var inv = await _db.Inventory.GetSlotsAsync(player.Id);
 	if (inv == null) inv = new long[28];
 	_inventoryByPlayer[player.Id] = inv;
 
 	LoadBankForPlayer(player.Id);
 
-	int credits = await _db.GetPlayerCreditsAsync(player.Id);
+	int credits = await _db.Players.GetCreditsAsync(player.Id);
 	_creditsByPlayer[player.Id] = credits;
 
 
-	_skillsByPlayer[player.Id] = await _db.GetPlayerSkillsAsync(player.Id);
+	_skillsByPlayer[player.Id] = await _db.Stats.GetSkillsAsync(player.Id);
 
 	// Compute spawn position and publish it BEFORE the session. Any concurrent
 	// EnterWorld (from another player logging in) reads _positions to build
 	// world_state — the position must be set before the peer becomes visible.
 	PlayerPosition spawnPos;
-	var saved = await _db.GetPlayerTileAsync(player.Id);
+	var saved = await _db.Players.GetTileAsync(player.Id);
 	if (saved.HasValue)
 	{
 		if (IsValidTile(saved.Value.X, saved.Value.Y))
 		{
-			var info = _tiles[(saved.Value.X, saved.Value.Y)];
+			var info = _world.GetTileInfo(saved.Value.X, saved.Value.Y);
 			spawnPos = new PlayerPosition(saved.Value.X, info.Z, saved.Value.Y, 0f);
 			GD.Print($"[Server] Resuming {player.Username} at tile ({saved.Value.X}, {saved.Value.Y})");
 		}
@@ -1321,7 +1314,7 @@ private async Task CompleteLoginAsync(long peerId, PlayerRecord player)
 	// Session published after position. No awaits between these lines, so the
 	// pair is atomic from the perspective of other ticks.
 	long sid = Random.Shared.NextInt64(1, long.MaxValue);
-	_ = _db.SetPlayerSidAsync(player.Id, sid);
+	_ = _db.Players.SetSidAsync(player.Id, sid);
 	var session = new PlayerSession(player.Id, player.Username, player.IsAdmin, sid);
 	_sessions[peerId] = session;
 	_peerByPlayerId[player.Id] = peerId;
@@ -1388,93 +1381,27 @@ private async Task CompleteLoginAsync(long peerId, PlayerRecord player)
 	int tx = (int)MathF.Round(spawnPos.X);
 	int ty = (int)MathF.Round(spawnPos.Z);
 	_lastPlayerChunk[peerId] = new Vector2I(
-		ActiveNpc.FloorDiv(tx, _chunkSize),
-		ActiveNpc.FloorDiv(ty, _chunkSize));
+		ActiveNpc.FloorDiv(tx, _world.ChunkSize),
+		ActiveNpc.FloorDiv(ty, _world.ChunkSize));
 	RefreshNpcVisibility(peerId, tx, ty);
 }
 
 	// ---------- World file ----------
 
-	private bool EnsureWorldLoaded()
-	{
-		foreach (string path in WorldFileCandidates)
-		{
-			if (!File.Exists(path)) continue;
-
-			DateTime mtime = File.GetLastWriteTimeUtc(path);
-			long size = new FileInfo(path).Length;
-			if (_worldDoc != null && path == _worldPath && mtime == _worldMtime && size == _worldSize)
-				return true;
-
-			try
-			{
-				string text = File.ReadAllText(path);
-				JsonDocument doc = JsonDocument.Parse(text);
-				JsonElement root = doc.RootElement;
-
-				if (root.ValueKind != JsonValueKind.Object ||
-					!root.TryGetProperty("format_version", out JsonElement fmt) ||
-					!root.TryGetProperty("world_version", out JsonElement ver))
-				{
-					GD.PrintErr($"[Server] {path}: missing format_version or world_version");
-					doc.Dispose();
-					continue;
-				}
-
-				if (root.TryGetProperty("chunk_size", out JsonElement cs)) _chunkSize = cs.GetInt32();
-
-				var newTiles = new Dictionary<(int, int), TileInfo>();
-				if (root.TryGetProperty("chunks", out JsonElement chunks) && chunks.ValueKind == JsonValueKind.Object)
-				{
-					foreach (JsonProperty chunkProp in chunks.EnumerateObject())
-					{
-						if (chunkProp.Value.ValueKind != JsonValueKind.Array) continue;
-						foreach (JsonElement tile in chunkProp.Value.EnumerateArray())
-						{
-							if (tile.ValueKind != JsonValueKind.Object) continue;
-							int x = tile.GetProperty("x").GetInt32();
-							int y = tile.GetProperty("y").GetInt32();
-							int z = tile.GetProperty("z").GetInt32();
-							bool walkable = true;
-							if (tile.TryGetProperty("flags", out JsonElement flags) &&
-								flags.ValueKind == JsonValueKind.Object &&
-								flags.TryGetProperty("walkable", out JsonElement w))
-								walkable = w.GetBoolean();
-							newTiles[(x, y)] = new TileInfo(z, walkable);
-						}
-					}
-				}
-
-				_worldDoc?.Dispose();
-				_worldDoc = doc;
-				_worldPath = path;
-				_worldFormatVersion = fmt.GetInt32();
-				_worldVersion = ver.GetInt32();
-				_worldMtime = mtime;
-				_worldSize = size;
-
-				_tiles.Clear();
-				foreach (var kv in newTiles) _tiles[kv.Key] = kv.Value;
-				return true;
-			}
-			catch (JsonException e) { GD.PrintErr($"[Server] {path}: parse error: {e.Message}"); }
-			catch (Exception e) { GD.PrintErr($"[Server] {path}: {e.Message}"); }
-		}
-		return false;
-	}
-
 	private void HandleWorldInfo(long peerId)
 	{
 		if (!_sessions.ContainsKey(peerId)) { SendError(peerId, "world_info_result", ErrorKeys.WorldNotLoggedIn); return; }
-		if (!EnsureWorldLoaded())         { SendError(peerId, "world_info_result", ErrorKeys.WorldUnavailable); return; }
-		Send(peerId, new { type = "world_info_result", ok = true, world_version = _worldVersion, format_version = _worldFormatVersion });
+		if (!_world.EnsureLoaded())         { SendError(peerId, "world_info_result", ErrorKeys.WorldUnavailable); return; }
+		Send(peerId, new { type = "world_info_result", ok = true, world_version = _world.Version, format_version = _world.FormatVersion });
 	}
 
 	private void HandleWorldFetch(long peerId)
 	{
 		if (!_sessions.ContainsKey(peerId)) { SendError(peerId, "world_data", ErrorKeys.WorldNotLoggedIn); return; }
-		if (!EnsureWorldLoaded())         { SendError(peerId, "world_data", ErrorKeys.WorldUnavailable); return; }
-		Send(peerId, new { type = "world_data", ok = true, world_version = _worldVersion, format_version = _worldFormatVersion, data = _worldDoc.RootElement });
+		if (!_world.EnsureLoaded())         { SendError(peerId, "world_data", ErrorKeys.WorldUnavailable); return; }
+		var root = _world.GetRootElement();
+		if (root == null) { SendError(peerId, "world_data", ErrorKeys.WorldUnavailable); return; }
+		Send(peerId, new { type = "world_data", ok = true, world_version = _world.Version, format_version = _world.FormatVersion, data = root.Value });
 	}
 
 	// ---------- Outbound ----------
@@ -1560,8 +1487,8 @@ private async Task CompleteLoginAsync(long peerId, PlayerRecord player)
 
 		int tileX = (int)MathF.Round(pos.X);
 		int tileY = (int)MathF.Round(pos.Z);
-		int cx = (int)MathF.Floor((float)tileX / _chunkSize);
-		int cy = (int)MathF.Floor((float)tileY / _chunkSize);
+		int cx = (int)MathF.Floor((float)tileX / _world.ChunkSize);
+		int cy = (int)MathF.Floor((float)tileY / _world.ChunkSize);
 
 		Broadcast(new
 		{
@@ -1578,12 +1505,11 @@ private async Task CompleteLoginAsync(long peerId, PlayerRecord player)
 	internal bool TryGetPosition(long playerId, out PlayerPosition pos) =>
 		_positions.TryGetValue(playerId, out pos);
 
-	internal bool TryGetTileInfo(int x, int y, out TileInfo info) =>
-		_tiles.TryGetValue((x, y), out info);
-
-	private bool IsValidTile(int x, int y)
+	internal bool TryGetTileInfo(int x, int y, out TileInfo info)
 	{
-		return _tiles.TryGetValue((x, y), out var info) && info.Walkable;
+		if (_world.TryGetTile(x, y, out info)) return true;
+		info = new TileInfo(100, true);
+		return false;
 	}
 
 	internal bool TryGetCredits(long playerId, out int credits)
@@ -1601,7 +1527,7 @@ private async Task CompleteLoginAsync(long peerId, PlayerRecord player)
 	{
 		if (IsValidTile(startX, startY))
 		{
-			var info = _tiles[(startX, startY)];
+			var info = _world.GetTileInfo(startX, startY);
 			return new PlayerPosition(startX, info.Z, startY, 0f);
 		}
 		for (int radius = 1; radius <= 32; radius++)
@@ -1615,21 +1541,20 @@ private async Task CompleteLoginAsync(long peerId, PlayerRecord player)
 					int ny = startY + dy;
 					if (IsValidTile(nx, ny))
 					{
-						var info = _tiles[(nx, ny)];
+						var info = _world.GetTileInfo(nx, ny);
 						return new PlayerPosition(nx, info.Z, ny, 0f);
 					}
 				}
 			}
 		}
-		var fallbackZ = GetTileInfo(startX, startY).Z;
+		var fallbackZ = _world.GetTileInfo(startX, startY).Z;
 		return new PlayerPosition(startX, fallbackZ, startY, 0f);
 	}
 
-	internal bool TileWalkable(int x, int y) =>
-		_tiles.TryGetValue((x, y), out var info) && info.Walkable;
 
 
-	internal int ChunkSize => _chunkSize;
+
+	internal int ChunkSize => _world.ChunkSize;
 
 	internal void SetIntent(long playerId, List<Vector2I> route)
 	{
@@ -1676,84 +1601,21 @@ private async Task CompleteLoginAsync(long peerId, PlayerRecord player)
 	}
 
 	internal List<Vector2I> PathfindBetween(int startX, int startY, int goalX, int goalY)
-	{
-		if (!TryGetTileInfo(startX, startY, out _)) return new();
+		=> _pathfinder.FindPath(startX, startY, goalX, goalY);
 
-		var queue = new Queue<Vector2I>();
-		var cameFrom = new Dictionary<Vector2I, Vector2I?>();
-		var start = new Vector2I(startX, startY);
-		var goal = new Vector2I(goalX, goalY);
-		queue.Enqueue(start);
-		cameFrom[start] = null;
-		Vector2I[] dirs = { new(1,0), new(-1,0), new(0,1), new(0,-1),
-							new(1,1), new(1,-1), new(-1,1), new(-1,-1) };
-
-		Vector2I? best = null;
-		int bestDist = int.MaxValue;
-		int expansions = 0;
-		const int MAX_EXPANSIONS = 20000;
-
-		while (queue.Count > 0)
-		{
-			if (++expansions > MAX_EXPANSIONS)
-			{
-				Diag.Error("diag_pathfinding", $"PathfindBetween hit {MAX_EXPANSIONS} expansions; using best-so-far");
-				break;
-			}
-			var cur = queue.Dequeue();
-			int d = Math.Max(Math.Abs(cur.X - goal.X), Math.Abs(cur.Y - goal.Y));
-			if (d < bestDist) { bestDist = d; best = cur; }
-			if (cur == goal) break;
-
-			foreach (var dir in dirs)
-			{
-				var next = cur + dir;
-				if (cameFrom.ContainsKey(next)) continue;
-				if (!TryGetTileInfo(next.X, next.Y, out var info) || !info.Walkable) continue;
-				if (dir.X != 0 && dir.Y != 0)
-				{
-					if (!TryGetTileInfo(cur.X + dir.X, cur.Y, out var a) || !a.Walkable) continue;
-					if (!TryGetTileInfo(cur.X, cur.Y + dir.Y, out var b) || !b.Walkable) continue;
-				}
-				cameFrom[next] = cur;
-				queue.Enqueue(next);
-			}
-		}
-
-		if (best == null) return new();
-		var path = new List<Vector2I>();
-		Vector2I? node = best;
-		while (node.HasValue && node.Value != start)
-		{
-			path.Insert(0, node.Value);
-			node = cameFrom[node.Value];
-		}
-		return path;
-	}
-
-internal List<Vector2I> FindAdjacentWalkablePath(int x, int y)
-{
-	Vector2I[] dirs = { new(1,0), new(-1,0), new(0,1), new(0,-1),
-						new(1,1), new(1,-1), new(-1,1), new(-1,-1) };
-	foreach (var d in dirs)
-	{
-		var cand = new Vector2I(x + d.X, y + d.Y);
-		if (IsValidTile(cand.X, cand.Y))
-			return new List<Vector2I> { cand };
-	}
-	return new List<Vector2I>();
-}
+	internal List<Vector2I> FindAdjacentWalkablePath(int x, int y)
+		=> _pathfinder.FindAdjacentWalkable(x, y);
 
 	private HashSet<long> ComputeVisibleNpcIds(int tileX, int tileY)
 	{
 		var visible = new HashSet<long>();
-		int pcx = ActiveNpc.FloorDiv(tileX, _chunkSize);
-		int pcy = ActiveNpc.FloorDiv(tileY, _chunkSize);
+		int pcx = ActiveNpc.FloorDiv(tileX, _world.ChunkSize);
+		int pcy = ActiveNpc.FloorDiv(tileY, _world.ChunkSize);
 		foreach (var npc in _npcs.Values)
 		{
 			if (npc.IsDead) continue;
-			int ncx = npc.ChunkX(_chunkSize);
-			int ncy = npc.ChunkY(_chunkSize);
+			int ncx = npc.ChunkX(_world.ChunkSize);
+			int ncy = npc.ChunkY(_world.ChunkSize);
 			if (Math.Abs(pcx - ncx) <= NpcViewChunkRadius &&
 				Math.Abs(pcy - ncy) <= NpcViewChunkRadius)
 				visible.Add(npc.Id);
@@ -1926,7 +1788,7 @@ internal List<Vector2I> FindAdjacentWalkablePath(int x, int y)
 	npc.DiedAtMs = (long)Time.GetTicksMsec();
 	npc.Path.Clear();
 	npc.Hitpoints = 0;
-	_ = _db.MarkNpcDeadAsync(npc.Id);
+	_ = _db.Npcs.MarkDeadAsync(npc.Id);
 
 	if (_combatByNpc.TryGetValue(npcId, out var owner)) EndCombat(owner);
 	Diag.Log("diag_npc", $"NPC {npc.Name} (id {npc.Id}) killed; respawns in {npc.SpawnTimerSeconds}s");
@@ -1941,7 +1803,7 @@ internal List<Vector2I> FindAdjacentWalkablePath(int x, int y)
 		npc.HealAccumulatorTicks = 0;
 		npc.ResetPositionToHome();
 		npc.Path.Clear();
-		_ = _db.ReviveNpcAsync(npc.Id);
+		_ = _db.Npcs.ReviveAsync(npc.Id);
 		Diag.Log("diag_npc", $"NPC {npc.Name} (id {npc.Id}) respawned with {npc.Hitpoints} HP");
 	}
 
@@ -1968,7 +1830,7 @@ private void RollNpcDeathLoot(ActiveNpc npc, long killerPlayerId)
 {
 	int deathX = (int)MathF.Round(npc.PosX);
 	int deathY = (int)MathF.Round(npc.PosZ);
-	var tileInfo = GetTileInfo(deathX, deathY);
+	var tileInfo = _world.GetTileInfo(deathX, deathY);
 	int deathZ = tileInfo.Z;
 
 	// Item drop
@@ -2028,7 +1890,7 @@ internal void GivePlayerCredits(long playerId, int amount)
 	if (!_creditsByPlayer.TryGetValue(playerId, out int current)) return;
 	int newTotal = current + amount;
 	_creditsByPlayer[playerId] = newTotal;
-	_db.SetPlayerCreditsSync(playerId, newTotal);
+	_db.Players.SetCreditsSync(playerId, newTotal);
 	BroadcastCredits(playerId);
 }
 
@@ -2363,7 +2225,7 @@ private void ProcessNpcHealing()
 		if (newHp == npc.Hitpoints) continue;
 
 		npc.Hitpoints = newHp;
-		_ = _db.SetNpcHpAsync(npc.Id, newHp);
+		_ = _db.Stats.SetNpcHpAsync(npc.Id, newHp);
 		BroadcastNpcHp(npc);
 		Diag.Log("diag_combat", $"NPC {npc.Name} healed to {newHp}/{npc.MaxHitpoints} ({(inCombat ? "in combat" : "out of combat")})");
 	}
@@ -2395,7 +2257,7 @@ private void ProcessPlayerHealing()
 		if (newHp == data.CurrentHp) continue;
 
 		_playerCombat[playerId] = data with { CurrentHp = newHp };
-		_ = _db.SetPlayerHpAsync(playerId, newHp);
+		_ = _db.Stats.SetPlayerHpAsync(playerId, newHp);
 		BroadcastPlayerHp(playerId, newHp, data.MaxHp);
 		Diag.Log("diag_combat", $"Player {playerId} regen to {newHp}/{data.MaxHp}");
 	}
@@ -2406,18 +2268,17 @@ private void ProcessPlayerHealing()
 	if (!_playerCombat.TryGetValue(pair.PlayerId, out var stats)) return;
 	BroadcastPlayerAnim(pair.PlayerId, "attack", AttackAnimDurationMs);
 
-	bool hit = RollHit(stats.Accuracy, stats.MeleeBonus, npc.Defence, npc.MeleeDefense);
-	int damage = hit ? RollDamage(stats.Strength, stats.MeleeBonus) : 0;
+	bool hit = CombatRolls.RollHit(stats.Accuracy, stats.MeleeBonus, npc.Defence, npc.MeleeDefense, _combatRng);
+	int damage = hit ? CombatRolls.RollDamage(stats.Strength, stats.MeleeBonus, _combatRng) : 0;
 
 	if (damage > 0)
 	{
 		AwardCombatExperience(pair.PlayerId, damage);
 		npc.Hitpoints = Math.Max(0, npc.Hitpoints - damage);
-		_ = _db.SetNpcHpAsync(npc.Id, npc.Hitpoints);
+		_ = _db.Stats.SetNpcHpAsync(npc.Id, npc.Hitpoints);
 		BroadcastNpcHp(npc);
 	}
 
-	// Always broadcast a damage number, even on a 0-hit.
 	Broadcast(new { type = "damage_number", target_type = "npc", target_id = npc.Id, amount = damage });
 
 	if (npc.Hitpoints <= 0)
@@ -2467,7 +2328,7 @@ private void ProcessPlayerHealing()
 				BroadcastPlayerHp(playerId, combat.CurrentHp, newMaxHp);
 		}
 
-		_ = _db.AwardCombatXpAsync(playerId, damage, accuracyLevel, hitpointsMax);
+		_ = _db.Stats.AwardCombatXpAsync(playerId, damage, accuracyLevel, hitpointsMax);
 		if (_peerByPlayerId.TryGetValue(playerId, out long peerId))
 			SendSkills(peerId);
 	}
@@ -2477,18 +2338,17 @@ private void ProcessPlayerHealing()
 	if (!_playerCombat.TryGetValue(pair.PlayerId, out var pd)) return;
 	BroadcastNpcAnim(npc.Id, "attack", AttackAnimDurationMs);
 
-	bool hit = RollHit(npc.Accuracy, npc.MeleeBonus, pd.Defence, pd.MeleeDefense);
-	int damage = hit ? RollDamage(npc.Strength, npc.MeleeBonus) : 0;
+	bool hit = CombatRolls.RollHit(npc.Accuracy, npc.MeleeBonus, pd.Defence, pd.MeleeDefense, _combatRng);
+	int damage = hit ? CombatRolls.RollDamage(npc.Strength, npc.MeleeBonus, _combatRng) : 0;
 
 	if (damage > 0)
 	{
 		int newHp = Math.Max(0, pd.CurrentHp - damage);
 		_playerCombat[pair.PlayerId] = pd with { CurrentHp = newHp };
-		_ = _db.SetPlayerHpAsync(pair.PlayerId, newHp);
+		_ = _db.Stats.SetPlayerHpAsync(pair.PlayerId, newHp);
 		BroadcastPlayerHp(pair.PlayerId, newHp, pd.MaxHp);
 	}
 
-	// Always broadcast a damage number, even on a 0-hit.
 	Broadcast(new { type = "damage_number", target_type = "player", target_id = pair.PlayerId, amount = damage });
 }
 
@@ -2519,7 +2379,7 @@ private void ProcessPlayerHealing()
 		if (_playerCombat.TryGetValue(playerId, out var pd))
 		{
 			_playerCombat[playerId] = pd with { CurrentHp = pd.MaxHp };
-			_ = _db.SetPlayerHpAsync(playerId, pd.MaxHp);
+			_ = _db.Stats.SetPlayerHpAsync(playerId, pd.MaxHp);
 			hp = pd.MaxHp;
 		}
 		_playerHealAccumTicks[playerId] = 0;
@@ -2616,24 +2476,6 @@ private int DistanceFromSpawn(ActiveNpc npc)
 	return true;
 }
 
-	private bool RollHit(int accuracy, int accuracyBonus, int defence, int defenceBonus)
-	{
-		int effectiveAcc = Math.Max(1, accuracy) + 8;
-		int attackRoll = effectiveAcc * (accuracyBonus + 64);
-		int effectiveDef = Math.Max(1, defence) + 8;
-		int defenceRoll = effectiveDef * (defenceBonus + 64);
-		if (attackRoll > defenceRoll)
-			return _combatRng.NextDouble() < 1.0 - (defenceRoll + 2.0) / (2.0 * (attackRoll + 1.0));
-		return _combatRng.NextDouble() < (double)attackRoll / (2.0 * (defenceRoll + 1.0));
-	}
-
-	private int RollDamage(int strength, int strengthBonus)
-	{
-		int effectiveStr = Math.Max(1, strength) + 8;
-		int maxHit = (int)MathF.Floor(0.5f + effectiveStr * (strengthBonus + 64) / 640f);
-		if (maxHit < 1) maxHit = 1;
-		return _combatRng.Next(0, maxHit + 1);
-	}
 
 private int RollQuantity((int Min, int Max) range)
 {
@@ -2828,7 +2670,7 @@ private void HandleNpcEditorSave(long peerId, JsonElement root)
 		u["ether_defense"]    = npc.EtherDefense;
 		u["attack_speed"]     = npc.AttackSpeedTicks;
 
-		_ = _db.SaveAdminNpcEditAsync(npcId, u);
+		_ = _db.Npcs.SaveAdminEditAsync(npcId, u);
 		BroadcastNpcHp(npc);
 		Broadcast(new { type = "npc_updated", npc = NpcToPacket(npc) });
 		NotifyNpcVisibilityChanged();
@@ -2968,7 +2810,7 @@ internal bool ConsumeInventorySlot(long playerId, int slot, int qty)
 	int itemId = ItemStack.ItemId(packed);
 	int newQty = currentQty - qty;
 	inv[slot] = newQty > 0 ? ItemStack.Encode(itemId, newQty) : 0;
-	_db.SaveInventorySlotSync(playerId, slot, inv[slot]);
+	_db.Inventory.SaveSlotSync(playerId, slot, inv[slot]);
 	BroadcastInventory(playerId);
 	return true;
 }
@@ -3014,7 +2856,7 @@ internal async Task<bool> GiveItemAsync(long playerId, string itemSlug, int qty)
 	// function. Every use below relies on it.
 	if (!_inventoryByPlayer.TryGetValue(playerId, out var inv))
 	{
-		inv = await _db.GetInventorySlotsAsync(playerId);
+		inv = await _db.Inventory.GetSlotsAsync(playerId);
 		if (inv == null) inv = new long[28];
 		_inventoryByPlayer[playerId] = inv;
 	}
@@ -3029,7 +2871,7 @@ internal async Task<bool> GiveItemAsync(long playerId, string itemSlug, int qty)
 			if (ItemStack.ItemId(packed) != itemId) continue;
 			int newQty = ItemStack.Quantity(packed) + qty;
 			inv[i] = ItemStack.Encode((int)itemId, newQty);
-			_db.SaveInventorySlotSync(playerId, i, inv[i]);
+			_db.Inventory.SaveSlotSync(playerId, i, inv[i]);
 			BroadcastInventory(playerId);
 			return true;
 		}
@@ -3038,7 +2880,7 @@ internal async Task<bool> GiveItemAsync(long playerId, string itemSlug, int qty)
 		{
 			if (inv[i] != 0) continue;
 			inv[i] = ItemStack.Encode((int)itemId, qty);
-			_db.SaveInventorySlotSync(playerId, i, inv[i]);
+			_db.Inventory.SaveSlotSync(playerId, i, inv[i]);
 			BroadcastInventory(playerId);
 			return true;
 		}
@@ -3052,7 +2894,7 @@ internal async Task<bool> GiveItemAsync(long playerId, string itemSlug, int qty)
 		{
 			if (inv[i] != 0) continue;
 			inv[i] = ItemStack.Encode((int)itemId, 1);
-			_db.SaveInventorySlotSync(playerId, i, inv[i]);
+			_db.Inventory.SaveSlotSync(playerId, i, inv[i]);
 			placed++;
 		}
 		if (placed > 0) BroadcastInventory(playerId);
@@ -3104,7 +2946,7 @@ internal void HealPlayer(long playerId, int amount)
 	int newHp = Math.Min(pd.MaxHp, pd.CurrentHp + amount);
 	if (newHp == pd.CurrentHp) return;
 	_playerCombat[playerId] = pd with { CurrentHp = newHp };
-	_ = _db.SetPlayerHpAsync(playerId, newHp);
+	_ = _db.Stats.SetPlayerHpAsync(playerId, newHp);
 	BroadcastPlayerHp(playerId, newHp, pd.MaxHp);
 }
 
@@ -3210,8 +3052,8 @@ private void HandleInventorySwap(long peerId, JsonElement root)
 	inv[slotA] = inv[slotB];
 	inv[slotB] = tmp;
 
-	_db.SaveInventorySlotSync(session.PlayerId, slotA, inv[slotA]);
-	_db.SaveInventorySlotSync(session.PlayerId, slotB, inv[slotB]);
+	_db.Inventory.SaveSlotSync(session.PlayerId, slotA, inv[slotA]);
+	_db.Inventory.SaveSlotSync(session.PlayerId, slotB, inv[slotB]);
 	BroadcastInventory(session.PlayerId);
 	Diag.Log("diag_item", $"Swap player {session.PlayerId}: slot {slotA} <-> {slotB}");
 }
@@ -3380,10 +3222,10 @@ private void BroadcastGroundItemToNearby(GroundItem item)
 	{
 		if (!_sessions.TryGetValue(peerId, out var sess)) continue;
 		if (!_positions.TryGetValue(sess.PlayerId, out var pos)) continue;
-		int pcx = ActiveNpc.FloorDiv((int)MathF.Round(pos.X), _chunkSize);
-		int pcy = ActiveNpc.FloorDiv((int)MathF.Round(pos.Z), _chunkSize);
-		int icx = ActiveNpc.FloorDiv(item.TileX, _chunkSize);
-		int icy = ActiveNpc.FloorDiv(item.TileY, _chunkSize);
+		int pcx = ActiveNpc.FloorDiv((int)MathF.Round(pos.X), _world.ChunkSize);
+		int pcy = ActiveNpc.FloorDiv((int)MathF.Round(pos.Z), _world.ChunkSize);
+		int icx = ActiveNpc.FloorDiv(item.TileX, _world.ChunkSize);
+		int icy = ActiveNpc.FloorDiv(item.TileY, _world.ChunkSize);
 		if (Math.Abs(pcx - icx) > NpcViewChunkRadius) continue;
 		if (Math.Abs(pcy - icy) > NpcViewChunkRadius) continue;
 
@@ -3405,12 +3247,12 @@ private void RefreshGroundItemVisibility(long peerId, int tx, int ty)
 		_visibleGroundItems[peerId] = oldSet;
 	}
 	var newSet = new HashSet<long>();
-	int pcx = ActiveNpc.FloorDiv(tx, _chunkSize);
-	int pcy = ActiveNpc.FloorDiv(ty, _chunkSize);
+	int pcx = ActiveNpc.FloorDiv(tx, _world.ChunkSize);
+	int pcy = ActiveNpc.FloorDiv(ty, _world.ChunkSize);
 	foreach (var item in _groundItems.Values)
 	{
-		int icx = ActiveNpc.FloorDiv(item.TileX, _chunkSize);
-		int icy = ActiveNpc.FloorDiv(item.TileY, _chunkSize);
+		int icx = ActiveNpc.FloorDiv(item.TileX, _world.ChunkSize);
+		int icy = ActiveNpc.FloorDiv(item.TileY, _world.ChunkSize);
 		if (Math.Abs(pcx - icx) > NpcViewChunkRadius) continue;
 		if (Math.Abs(pcy - icy) > NpcViewChunkRadius) continue;
 		newSet.Add(item.Id);
@@ -3450,7 +3292,7 @@ internal bool TryDropFromSlot(long playerId, int slot, int qty)
 
 	int newQty = currentQty - qty;
 	inv[slot] = newQty > 0 ? ItemStack.Encode(itemId, newQty) : 0;
-	_db.SaveInventorySlotSync(playerId, slot, inv[slot]);
+	_db.Inventory.SaveSlotSync(playerId, slot, inv[slot]);
 	BroadcastInventory(playerId);
 	return DropGroundItem(playerId, meta.Slug, qty);
 }
@@ -3498,26 +3340,26 @@ private static string CollapseSpaces(string text)
 	/// </summary>
 	private void EnsureDevAccountSync(string username, string password)
 	{
-		var existing = _db.GetPlayerByUsernameAsync(username).Result;
+		var existing = _db.Players.GetByUsernameAsync(username).Result;
 		if (existing != null)
 		{
 			if (!existing.IsAdmin)
 			{
-				_db.SetPlayerAdminSync(existing.Id, true);
+				_db.Players.SetAdminSync(existing.Id, true);
 				GD.Print($"[Server] Elevated dev account '{username}' to admin");
 			}
 			return;
 		}
 
 		string hash = PasswordHasher.Hash(password);
-		var (created, playerId) = _db.TryCreatePlayerAsync(username, hash, isAdmin: true).Result;
+		var (created, playerId) = _db.Players.TryCreateAsync(username, hash, isAdmin: true).Result;
 		if (!created)
 		{
 			GD.PrintErr($"[Server] Failed to create dev account '{username}'");
 			return;
 		}
-		_db.EnsurePlayerStatsAsync(playerId).Wait();
-		_db.EnsurePlayerInventoryAsync(playerId).Wait();
+		_db.Stats.EnsureStatsAsync(playerId).Wait();
+		_db.Stats.EnsureInventoryAsync(playerId).Wait();
 		GD.Print($"[Server] Created dev account '{username}' (id {playerId})");
 	}
 }
