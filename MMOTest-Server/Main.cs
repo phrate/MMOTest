@@ -130,6 +130,7 @@ public partial class Main : Node
 	private RecipeSystem _recipe;
 	private OutboundChannel _outbound;
 	private Coordinator _coordinator;
+	private MovementSystem _movement;
 
 	public override void _Ready()
 	{
@@ -250,6 +251,7 @@ public partial class Main : Node
 			_gfs.ScriptsChanged += OnGfsScriptsChanged;
 			_outbound = new OutboundChannel(_state, _items, SendBytes);
 			_coordinator = new Coordinator();
+			_movement = new MovementSystem(_state, _world, _outbound);
 			_trade = new TradeSystem(this, _state, _items, _db.Inventory, _perTick, _outbound, _coordinator);
 			_dialogue = new DialogueSystem(this, _state, _gfs, _gfsFns, _perTick, _outbound, _coordinator);
 			_bank = new BankSystem(this, _state, _items, _db.Bank, _db.Inventory, _perTick, _outbound, _coordinator);
@@ -344,40 +346,7 @@ public partial class Main : Node
 		_state.CurrentTick++;
 
 		// 1. Movement processing (only if there are intents to process)
-		if (_state.Intents.Count > 0)
-		{
-			var updates = new List<object>();
-			var donePeers = new List<long>();
-
-			foreach (long peerId in _state.Intents.Keys.ToList())
-			{
-				if (!_state.Sessions.TryGetValue(peerId, out PlayerSession session)) { donePeers.Add(peerId); continue; }
-				if (!_state.Positions.TryGetValue(session.PlayerId, out PlayerPosition current)) { donePeers.Add(peerId); continue; }
-
-				var path = _state.Intents[peerId];
-				if (path.Count == 0) { donePeers.Add(peerId); continue; }
-
-				var (next, finished, waypoint, waypointYaw) = StepTowardPath(current, path);
-				_state.Positions[session.PlayerId] = next;
-				updates.Add(new {
-					player_id = session.PlayerId,
-					x = next.X, y = next.Y, z = next.Z, yaw = next.Yaw,
-					wx = waypoint.HasValue ? (float?)waypoint.Value.X : null,
-					wy = waypoint.HasValue ? (float?)waypoint.Value.Y : null,
-					wz = waypoint.HasValue ? (float?)waypoint.Value.Z : null,
-					wyaw = waypoint.HasValue ? (float?)waypointYaw : null,
-				});
-
-				if (finished) donePeers.Add(peerId);
-			}
-
-			foreach (long p in donePeers) _state.Intents.Remove(p);
-			if (updates.Count > 0)
-			{
-				Broadcast(new { type = "tick_positions", tick = _state.CurrentTick, updates },
-					channel: 1, mode: MultiplayerPeer.TransferModeEnum.UnreliableOrdered);
-			}
-		}
+		_movement.Tick(_state.CurrentTick);
 
 		// 2. NPC movement
 		if (_npcs.Count > 0)
@@ -490,72 +459,7 @@ public partial class Main : Node
 	}
 
 
-	private (PlayerPosition Endpoint, bool Finished, Vector3? Waypoint, float WaypointYaw)
-	StepTowardPath(PlayerPosition current, List<Vector2I> path)
-{
-	float remaining = WalkSpeed * (float)TickIntervalSeconds;
-	float x = current.X;
-	float z = current.Z;
-	float yaw = current.Yaw;
-
-	Vector3? lastWaypoint = null;
-	float lastWaypointYaw = 0f;
-	bool pastFirstIteration = false;
-
-	while (remaining > 0.0001f && path.Count > 0)
-	{
-		var target = path[0];
-		float dx = target.X - x;
-		float dz = target.Y - z;
-		float dist = MathF.Sqrt(dx * dx + dz * dz);
-
-		if (dist < 0.0001f)
-		{
-			path.RemoveAt(0);
-			continue;
-		}
-
-		float newYaw = MathF.Atan2(-dx, -dz);
-		newYaw = MathF.Round(newYaw / (MathF.PI / 4f)) * (MathF.PI / 4f);
-
-		if (pastFirstIteration && MathF.Abs(yaw - newYaw) > 0.001f)
-		{
-			// The corner is the tile the character just reached, which is the
-			// current x/z — not `target`, which is the next tile to head for.
-			// Sending the next tile as the waypoint aims the client at a point
-			// past the tick endpoint and produces a wide slide.
-			int cx = (int)MathF.Round(x);
-			int cz = (int)MathF.Round(z);
-			var wInfo = _world.GetTileInfo(cx, cz);
-			lastWaypoint = new Vector3(cx, wInfo.Z, cz);
-			lastWaypointYaw = yaw;
-		}
-
-		if (dist <= remaining)
-		{
-			x = target.X;
-			z = target.Y;
-			remaining -= dist;
-			path.RemoveAt(0);
-		}
-		else
-		{
-			float ratio = remaining / dist;
-			x += dx * ratio;
-			z += dz * ratio;
-			remaining = 0;
-		}
-		yaw = newYaw;
-		pastFirstIteration = true;
-	}
-
-	int tileX = (int)MathF.Round(x);
-	int tileY = (int)MathF.Round(z);
-	var tinfo = _world.GetTileInfo(tileX, tileY);
-	var endpoint = new PlayerPosition(x, tinfo.Z, z, yaw);
-	bool finished = path.Count == 0;
-	return (endpoint, finished, lastWaypoint, lastWaypointYaw);
-}
+	
 
 	private void StepNpcMovement(ActiveNpc npc)
 	{
@@ -2123,7 +2027,7 @@ internal void EngageNpc(long playerId, long npcId, bool initiatedByPlayer = true
 			float nYaw = MathF.Atan2(-(ptx - ntx), -(pty - nty));
 			nYaw = MathF.Round(nYaw / (MathF.PI / 4f)) * (MathF.PI / 4f);
 
-			if (!IsPlayerMoving(pair.PlayerId))
+			if (!_movement.IsMoving(pair.PlayerId))
 			{
 				float pYaw = MathF.Atan2(-(ntx - ptx), -(nty - pty));
 				pYaw = MathF.Round(pYaw / (MathF.PI / 4f)) * (MathF.PI / 4f);
@@ -2155,7 +2059,7 @@ internal void EngageNpc(long playerId, long npcId, bool initiatedByPlayer = true
 			}
 		}
 
-		if (!IsPlayerMoving(pair.PlayerId)
+		if (!_movement.IsMoving(pair.PlayerId)
 			&& CanSwingTick(pair.LastPlayerSwingTick, PlayerAttackSpeedTicks, _state.CurrentTick))
 		{
 			ResolvePlayerAttack(pair, npc);
@@ -2398,15 +2302,7 @@ private void ProcessPlayerHealing()
 /// True if the player has an active movement intent (auto-path or manual click).
 /// Used to gate auto-retaliate: swings only happen when standing still.
 /// </summary>
-private bool IsPlayerMoving(long playerId)
-{
-	foreach (var kv in _state.Sessions)
-	{
-		if (kv.Value.PlayerId != playerId) continue;
-		return _state.Intents.TryGetValue(kv.Key, out var path) && path.Count > 0;
-	}
-	return false;
-}
+
 
 private int DistanceFromSpawn(ActiveNpc npc)
 {
