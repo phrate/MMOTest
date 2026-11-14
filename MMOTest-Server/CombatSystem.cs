@@ -631,6 +631,16 @@ internal sealed class CombatSystem
         _npc.NotifyNpcVisibilityChanged();
     }
 
+    internal void CancelPendingApproach(long playerId)
+    {
+        if (!_state.CombatByPlayer.TryGetValue(playerId, out var pair)) return;
+        if (pair.StateAnnounced) return;
+        _state.CombatByPlayer.Remove(playerId);
+        if (_state.CombatByNpc.TryGetValue(pair.NpcId, out var owner) && owner == pair)
+            _state.CombatByNpc.Remove(pair.NpcId);
+        Diag.Log("diag_combat", $"Player {playerId} cancelled pre-combat approach");
+    }
+
     private void RollNpcDeathLoot(ActiveNpc npc, long killerPlayerId)
     {
         int deathX = (int)MathF.Round(npc.PosX);

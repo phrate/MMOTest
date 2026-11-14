@@ -17,12 +17,7 @@ public partial class Main : Node
 	private const double TickIntervalSeconds = 0.3;
 	private const float WalkSpeed = 2.0f;
 	private WorldService _world;
-	
-	private static readonly string[] WorldFileCandidates =
-	{
-		ProjectSettings.GlobalizePath("user://world.json"),
-		ProjectSettings.GlobalizePath("res://data/world.json"),
-	};
+
 	private Database _db;
 	private SceneMultiplayer _mp;
 	private ENetMultiplayerPeer _enet;
@@ -70,6 +65,7 @@ public partial class Main : Node
 	private AuthSystem _auth;
 	private WorldFileSystem _worldFiles;
 	private GfsIntegration _gfsIntegration;
+	private WalkHandler _walk;
 
 	public override void _Ready()
 	{
@@ -109,7 +105,7 @@ public partial class Main : Node
 
 			// Ensure the canonical dev account exists before anything else.
 			// Cheap no-op when it already exists.
-			EnsureDevAccountSync("phrate", "12345678");
+			AuthSystem.EnsureDevAccountSync(_db, "phrate", "12345678");
 
 			if (ResetPlayersOnStartup)
 			{
@@ -141,7 +137,7 @@ public partial class Main : Node
 			if (respawned > 0)
 				GD.Print($"[Server] Auto-respawned {respawned} dead NPC(s) on startup");
 
-			_world = new WorldService(WorldFileCandidates, GD.PrintErr);
+			_world = new WorldService(WorldFileSystem.WorldFileCandidates, GD.PrintErr);
 			if (_world.EnsureLoaded())
 			{
 				GD.Print($"[Server] World ready: v{_world.Version} format {_world.FormatVersion}, {_world.TileCount} tiles ({_world.Path})");
@@ -187,6 +183,7 @@ public partial class Main : Node
 
 			_combat = new CombatSystem(_state, _world, _outbound, _coordinator, _movement, _pathfinder,
 	_db.Stats, _perTick, _npc, _inv, _ground, _lootTablesBySlug, _creditsLootBySlug, _combatRng);
+			_walk = new WalkHandler(_state, _movement, _combat, _coordinator, _perTick);
 			_dialogue = new DialogueSystem(_state, _gfs, _gfsFns, _perTick, _outbound, _coordinator, _npc, _movement, _combat);
 			_bank     = new BankSystem(_state, _items, _db.Bank, _db.Inventory, _perTick, _outbound, _coordinator, _npc, _movement, _combat, _dialogue);
 
@@ -471,7 +468,7 @@ public partial class Main : Node
 				case "npc_editor_get":  _npc.HandleNpcEditorGet(peerId, root); break;
 				case "npc_editor_save": _npc.HandleNpcEditorSave(peerId, root); break;
 				case "dev_auto_login": await _auth.HandleDevAutoLoginAsync(peerId); break;
-				case "player_walk": HandlePlayerWalkBuffered(peerId, root); break;
+				case "player_walk": _walk.HandlePlayerWalk(peerId, root); break;
 				case "inventory_swap": _inv.HandleInventorySwap(peerId, root); break;
 				case "ping":         HandlePing(peerId, root); break;
 				case "dev_shutdown": HandleDevShutdown(peerId); break;
@@ -576,34 +573,6 @@ public partial class Main : Node
 		return root.TryGetProperty(property, out JsonElement value) ? value.GetString() ?? "" : "";
 	}
 
-	private void HandlePlayerWalkBuffered(long peerId, JsonElement root)
-	{
-		if (!_state.Sessions.TryGetValue(peerId, out var session)) return;
-
-		_perTick?.EndByStem(session.PlayerId, "follow_player");
-		_coordinator.OnPlayerWalked(session.PlayerId);
-		_state.PendingEngage.Remove(session.PlayerId);
-		_state.PendingPickup.Remove(session.PlayerId);
-
-		if (_state.CombatByPlayer.TryGetValue(session.PlayerId, out var combatPair) && !combatPair.StateAnnounced)
-			_combat.EndCombat(combatPair);
-
-		if (!root.TryGetProperty("path", out JsonElement pathEl) || pathEl.ValueKind != JsonValueKind.Array)
-			return;
-
-		var path = new List<Vector2I>();
-		foreach (JsonElement t in pathEl.EnumerateArray())
-		{
-			if (t.ValueKind != JsonValueKind.Array || t.GetArrayLength() != 2) return;
-			if (!t[0].TryGetInt32(out int x) || !t[1].TryGetInt32(out int y)) return;
-			path.Add(new Vector2I(x, y));
-		}
-
-		if (!_movement.ValidateWalkPath(session.PlayerId, path)) return;
-
-		_state.Intents[peerId] = path;
-	}
-
 	// ---------- Outbound ----------
 
 
@@ -615,48 +584,4 @@ public partial class Main : Node
 
 	internal bool TryGetPosition(long playerId, out PlayerPosition pos) =>
 		_state.Positions.TryGetValue(playerId, out pos);
-
-	internal int ChunkSize => _world.ChunkSize;
-
-	private static int CountInventoryOfItem(long[] inventory, int itemId)
-	{
-		int total = 0;
-		foreach (long packed in inventory)
-		{
-			if (packed == 0) continue;
-			if (ItemStack.ItemId(packed) == itemId) total += ItemStack.Quantity(packed);
-		}
-		return total;
-	}
-
-	/// <summary>
-	/// Ensures the canonical dev account exists with admin flag set. If the
-	/// account is missing, creates it with fresh defaults (HP 10, all other
-	/// skills level 1, 0 credits, empty inventory, empty bank). If it exists
-	/// but isn't admin, elevates it. Does not touch existing player data.
-	/// </summary>
-	private void EnsureDevAccountSync(string username, string password)
-	{
-		var existing = _db.Players.GetByUsernameAsync(username).Result;
-		if (existing != null)
-		{
-			if (!existing.IsAdmin)
-			{
-				_db.Players.SetAdminSync(existing.Id, true);
-				GD.Print($"[Server] Elevated dev account '{username}' to admin");
-			}
-			return;
-		}
-
-		string hash = PasswordHasher.Hash(password);
-		var (created, playerId) = _db.Players.TryCreateAsync(username, hash, isAdmin: true).Result;
-		if (!created)
-		{
-			GD.PrintErr($"[Server] Failed to create dev account '{username}'");
-			return;
-		}
-		_db.Stats.EnsureStatsAsync(playerId).Wait();
-		_db.Stats.EnsureInventoryAsync(playerId).Wait();
-		GD.Print($"[Server] Created dev account '{username}' (id {playerId})");
-	}
 }

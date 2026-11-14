@@ -18,6 +18,12 @@ internal sealed class WorldFileSystem
     private double _checkAccumulator;
     private int _lastBroadcastVersion;
 
+    internal static readonly string[] WorldFileCandidates =
+    {
+        ProjectSettings.GlobalizePath("user://world.json"),
+        ProjectSettings.GlobalizePath("res://data/world.json"),
+    };
+
     public WorldFileSystem(ServerState state, WorldService world, OutboundChannel outbound)
     {
         _state = state;

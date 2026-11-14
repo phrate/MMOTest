@@ -488,4 +488,29 @@ internal sealed class AuthSystem
         _npc.RefreshNpcVisibility(peerId, tx, ty);
     }
 
+    internal static void EnsureDevAccountSync(Database db, string username, string password)
+    {
+        var existing = db.Players.GetByUsernameAsync(username).Result;
+        if (existing != null)
+        {
+            if (!existing.IsAdmin)
+            {
+                db.Players.SetAdminSync(existing.Id, true);
+                GD.Print($"[Server] Elevated dev account '{username}' to admin");
+            }
+            return;
+        }
+
+        string hash = PasswordHasher.Hash(password);
+        var (created, playerId) = db.Players.TryCreateAsync(username, hash, isAdmin: true).Result;
+        if (!created)
+        {
+            GD.PrintErr($"[Server] Failed to create dev account '{username}'");
+            return;
+        }
+        db.Stats.EnsureStatsAsync(playerId).Wait();
+        db.Stats.EnsureInventoryAsync(playerId).Wait();
+        GD.Print($"[Server] Created dev account '{username}' (id {playerId})");
+    }
+
 }
