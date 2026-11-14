@@ -28,8 +28,6 @@ public partial class Main : Node
 	private bool IsWalkableTile(int x, int y) => _world.IsWalkable(x, y);
 	private const double WorldCheckIntervalSeconds = 1.0;
 
-	private const int MaxPathLength = 2000;
-
 	private static readonly string[] WorldFileCandidates =
 	{
 		ProjectSettings.GlobalizePath("user://world.json"),
@@ -94,6 +92,7 @@ public partial class Main : Node
 	private NpcSystem _npc;
 	private ItemSystem _inv;
 	private GroundItemSystem _ground;
+	private ChatSystem _chat;
 
 	public override void _Ready()
 	{
@@ -221,6 +220,7 @@ public partial class Main : Node
 			_npc.LoadAll();
 			_inv = new ItemSystem(_state, _outbound, _items, _db.Inventory, _db.Stats, _trade, _combatRng);
 			_ground = new GroundItemSystem(_state, _world, _outbound, _items, _inv, _trade, _db.Inventory, _pathfinder, NpcViewChunkRadius);
+			_chat = new ChatSystem(_state, _outbound, _world, MaxChatLength);
 			
 			_recipe = new RecipeSystem(this, _state, _items, _db.Recipes, _db.Inventory, _db.Stats, _gfs, _gfsFns, _world, _outbound);
 			_recipe.LoadRecipes();
@@ -543,7 +543,7 @@ public partial class Main : Node
 				case "inventory_swap": _inv.HandleInventorySwap(peerId, root); break;
 				case "ping":         HandlePing(peerId, root); break;
 				case "dev_shutdown": HandleDevShutdown(peerId); break;
-				case "chat_send": HandleChatSend(peerId, root); break;
+				case "chat_send": _chat.HandleChatSend(peerId, root); break;
 				case "tooltips_info": HandleTooltipsInfo(peerId); break;
 				case "gfs_info":    HandleGfsInfo(peerId); break;
 				case "run_action":  HandleRunAction(peerId, root); break;
@@ -826,80 +826,33 @@ public partial class Main : Node
 		return root.TryGetProperty(property, out JsonElement value) ? value.GetString() ?? "" : "";
 	}
 
-	// ---------- Gameplay ----------
-
-	/// <summary>
-	/// Buffers a walk path. Validates: session, path length, all tiles walkable,
-	/// consecutive tiles adjacent (8-connected, no diagonal corner-cutting), and
-	/// first step adjacent to the player's current tile (guards against
-	/// teleport-by-crafted-path).
-	///
-	/// Diagonal corner rule: a step from (x, y) to (x±1, y±1) is only valid if
-	/// both (x±1, y) and (x, y±1) are walkable. Matches the client's A* setting
-	/// (AStarGrid2D.DIAGONAL_MODE_ONLY_IF_NO_OBSTACLES); if these ever diverge,
-	/// a client's valid-looking path will be silently rejected server-side.
-	/// </summary>
 	private void HandlePlayerWalkBuffered(long peerId, JsonElement root)
-{
-	if (!_state.Sessions.TryGetValue(peerId, out PlayerSession session)) return;
-
-	// Manual click-to-walk cancels all script-driven movement and pending
-	// queues. Without clearing pickup, a queued pickup abandoned by walking
-	// elsewhere would fire the next time the player stepped on the item.
-	_perTick?.EndByStem(session.PlayerId, "follow_player");
-	_coordinator.OnPlayerWalked(session.PlayerId);
-	_state.PendingEngage.Remove(session.PlayerId);
-	_state.PendingPickup.Remove(session.PlayerId);
-
-	if (_state.CombatByPlayer.TryGetValue(session.PlayerId, out var combatPair) && !combatPair.StateAnnounced)
 	{
-		_combat.EndCombat(combatPair);
-	}
+		if (!_state.Sessions.TryGetValue(peerId, out var session)) return;
 
-	if (!_state.Positions.TryGetValue(session.PlayerId, out PlayerPosition current)) return;
+		_perTick?.EndByStem(session.PlayerId, "follow_player");
+		_coordinator.OnPlayerWalked(session.PlayerId);
+		_state.PendingEngage.Remove(session.PlayerId);
+		_state.PendingPickup.Remove(session.PlayerId);
 
-	if (!root.TryGetProperty("path", out JsonElement pathEl) || pathEl.ValueKind != JsonValueKind.Array)
-		return;
+		if (_state.CombatByPlayer.TryGetValue(session.PlayerId, out var combatPair) && !combatPair.StateAnnounced)
+			_combat.EndCombat(combatPair);
 
-	var path = new List<Vector2I>();
-	Vector2I? prev = null;
-	foreach (JsonElement t in pathEl.EnumerateArray())
-	{
-		if (t.ValueKind != JsonValueKind.Array || t.GetArrayLength() != 2) return;
-		if (!t[0].TryGetInt32(out int x) || !t[1].TryGetInt32(out int y)) return;
-		if (Math.Abs(x) > 1_000_000 || Math.Abs(y) > 1_000_000) return;
-		if (!IsWalkableTile(x, y)) return;
+		if (!root.TryGetProperty("path", out JsonElement pathEl) || pathEl.ValueKind != JsonValueKind.Array)
+			return;
 
-		if (prev.HasValue)
+		var path = new List<Vector2I>();
+		foreach (JsonElement t in pathEl.EnumerateArray())
 		{
-			int ddx = Math.Abs(x - prev.Value.X);
-			int ddy = Math.Abs(y - prev.Value.Y);
-			if (ddx > 1 || ddy > 1 || (ddx == 0 && ddy == 0)) return;
-			if (ddx == 1 && ddy == 1)
-			{
-				if (!IsWalkableTile(prev.Value.X, y)) return;
-				if (!IsWalkableTile(x, prev.Value.Y)) return;
-			}
+			if (t.ValueKind != JsonValueKind.Array || t.GetArrayLength() != 2) return;
+			if (!t[0].TryGetInt32(out int x) || !t[1].TryGetInt32(out int y)) return;
+			path.Add(new Vector2I(x, y));
 		}
-		path.Add(new Vector2I(x, y));
-		prev = new Vector2I(x, y);
+
+		if (!_movement.ValidateWalkPath(session.PlayerId, path)) return;
+
+		_state.Intents[peerId] = path;
 	}
-
-	if (path.Count == 0 || path.Count > MaxPathLength) return;
-
-	int curX = (int)MathF.Round(current.X);
-	int curY = (int)MathF.Round(current.Z);
-	int ddx0 = Math.Abs(path[0].X - curX);
-	int ddy0 = Math.Abs(path[0].Y - curY);
-	if (ddx0 > 1 || ddy0 > 1) return;
-	if (ddx0 == 1 && ddy0 == 1)
-	{
-		if (!IsWalkableTile(curX, path[0].Y)) return;
-		if (!IsWalkableTile(path[0].X, curY)) return;
-	}
-
-	_state.Intents[peerId] = path;
-}
 
 
 
@@ -1159,32 +1112,7 @@ internal PlayerPosition ComputeSpawnPosition(long playerId)
 		if (!_connectedPeers.Contains(peerId)) return;
 		_mp.SendBytes(bytes, (int)peerId, mode, channel);
 	}
-	private void HandleChatSend(long peerId, JsonElement root)
-	{
-		if (!_state.Sessions.TryGetValue(peerId, out PlayerSession session)) return;
-		if (!_state.Positions.TryGetValue(session.PlayerId, out PlayerPosition pos)) return;
-		if (!root.TryGetProperty("message", out JsonElement msgEl)) return;
-
-		string text = (msgEl.GetString() ?? "").Trim();
-		if (text.Length == 0) return;
-		text = CollapseSpaces(text);
-		if (text.Length > MaxChatLength) text = text.Substring(0, MaxChatLength);
-
-		int tileX = (int)MathF.Round(pos.X);
-		int tileY = (int)MathF.Round(pos.Z);
-		int cx = (int)MathF.Floor((float)tileX / _world.ChunkSize);
-		int cy = (int)MathF.Floor((float)tileY / _world.ChunkSize);
-
-		Broadcast(new
-		{
-			type = "chat_message",
-			username = session.Username,
-			message = text,
-			from_chunk = new[] { cx, cy }
-		});
-
-		GD.Print($"[Chat] {session.Username}: {text}");
-	}
+	
 	
 
 	internal bool TryGetPosition(long playerId, out PlayerPosition pos) =>
@@ -1341,6 +1269,9 @@ internal PlayerPosition ComputeSpawnPosition(long playerId)
 
 	internal void HandleBankCertMode(long peerId, JsonElement root) =>
 		_bank.HandleBankCertMode(peerId, root);
+
+	internal void HandleChatSend(long peerId, JsonElement root) =>
+		_chat.HandleChatSend(peerId, root);
 
 	internal bool IsPlayerInBank(long playerId) =>
 		_bank.IsPlayerInBank(playerId);
@@ -1556,22 +1487,7 @@ private void BroadcastCredits(long playerId)
 
 	internal void SendSkills(long peerId) => _outbound.SendSkills(peerId);
 
-private static string CollapseSpaces(string text)
-{
-	var sb = new System.Text.StringBuilder(text.Length);
-	bool prevSpace = false;
-	foreach (char c in text)
-	{
-		if (c == ' ')
-		{
-			if (prevSpace) continue;
-			prevSpace = true;
-		}
-		else prevSpace = false;
-		sb.Append(c);
-	}
-	return sb.ToString();
-}
+
 
 	/// <summary>
 	/// Ensures the canonical dev account exists with admin flag set. If the

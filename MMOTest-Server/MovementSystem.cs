@@ -207,4 +207,54 @@ internal sealed class MovementSystem
     {
         if (_state.PeerByPlayerId.TryGetValue(playerId, out long peerId)) _state.Intents.Remove(peerId);
     }
+
+    /// <summary>
+    /// Validates a proposed path against world geometry and adjacency rules.
+    /// All tiles must be walkable; consecutive tiles must be 8-connected;
+    /// diagonal steps require both shared corners walkable (no corner-cutting);
+    /// first step must be adjacent to the player's current rounded tile. Bounds
+    /// checked to prevent teleport-by-crafted-path. Matches client A*
+    /// (DIAGONAL_MODE_ONLY_IF_NO_OBSTACLES).
+    /// </summary>
+    public bool ValidateWalkPath(long playerId, List<Vector2I> path)
+    {
+        const int MaxPathLength = 2000;
+
+        if (path.Count == 0) return false;
+        if (path.Count > MaxPathLength) return false;
+        if (!_state.Positions.TryGetValue(playerId, out var current)) return false;
+
+        Vector2I? prev = null;
+        foreach (var tile in path)
+        {
+            if (Math.Abs(tile.X) > 1_000_000 || Math.Abs(tile.Y) > 1_000_000) return false;
+            if (!_world.IsWalkable(tile.X, tile.Y)) return false;
+
+            if (prev.HasValue)
+            {
+                int ddx = Math.Abs(tile.X - prev.Value.X);
+                int ddy = Math.Abs(tile.Y - prev.Value.Y);
+                if (ddx > 1 || ddy > 1 || (ddx == 0 && ddy == 0)) return false;
+                if (ddx == 1 && ddy == 1)
+                {
+                    if (!_world.IsWalkable(prev.Value.X, tile.Y)) return false;
+                    if (!_world.IsWalkable(tile.X, prev.Value.Y)) return false;
+                }
+            }
+            prev = tile;
+        }
+
+        int curX = (int)MathF.Round(current.X);
+        int curY = (int)MathF.Round(current.Z);
+        int ddx0 = Math.Abs(path[0].X - curX);
+        int ddy0 = Math.Abs(path[0].Y - curY);
+        if (ddx0 > 1 || ddy0 > 1) return false;
+        if (ddx0 == 1 && ddy0 == 1)
+        {
+            if (!_world.IsWalkable(curX, path[0].Y)) return false;
+            if (!_world.IsWalkable(path[0].X, curY)) return false;
+        }
+
+        return true;
+    }
 }
