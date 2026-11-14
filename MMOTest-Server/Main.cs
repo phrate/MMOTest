@@ -110,8 +110,7 @@ public partial class Main : Node
 	private readonly Dictionary<long, long> _pendingPickup = new();
 	private long _nextGroundItemId = 1;
 	private const long GroundItemDespawnMs = 90 * 1000;  // 90s — player/npc drops only
-	private readonly Dictionary<long, ItemMeta> _itemsById = new();
-	private readonly Dictionary<string, long> _itemIdsBySlug = new();
+	private readonly ItemLookup _items = new();
 	private readonly Dictionary<string, Dictionary<string, (int Min, int Max)>> _lootTablesBySlug = new();
 	private readonly Dictionary<long, int> _creditsByPlayer = new();
 	private readonly Dictionary<long, List<SkillLevel>> _skillsByPlayer = new();
@@ -198,12 +197,8 @@ public partial class Main : Node
 			}
 
 			var items = _db.Items.GetAllSync().Result;
-			foreach (var it in items)
-			{
-				_itemsById[it.Id] = it;
-				_itemIdsBySlug[it.Slug] = it.Id;
-			}
-			GD.Print($"[Server] Loaded {items.Count} item definition(s)");
+			_items.Load(items);
+			GD.Print($"[Server] Loaded {_items.Count} item definition(s)");
 
 			var loot = _db.Loot.GetLootTablesSync();
 			foreach (var kv in loot)
@@ -1866,7 +1861,7 @@ private void RollNpcDeathLoot(ActiveNpc npc, long killerPlayerId)
 internal bool SpawnGroundItemAt(string itemSlug, int quantity, int tileX, int tileY, int tileZ)
 {
 	if (quantity < 1) return false;
-	if (!_itemIdsBySlug.ContainsKey(itemSlug)) return false;
+	if (!_items.ContainsSlug(itemSlug)) return false;
 
 	var item = new GroundItem
 	{
@@ -2787,7 +2782,7 @@ internal string? GetSlotItemSlug(long playerId, int slot)
 	long packed = inv[slot];
 	if (packed == 0) return null;
 	int itemId = ItemStack.ItemId(packed);
-	return _itemsById.TryGetValue(itemId, out var meta) ? meta.Slug : null;
+	return _items.TryGetById(itemId, out var meta) ? meta.Slug : null;
 }
 
 internal int GetSlotQuantity(long playerId, int slot)
@@ -2826,7 +2821,7 @@ internal bool GiveItem(long playerId, string itemSlug, int qty)
 {
 	if (IsTradeInventoryLocked(playerId)) return false;
 	if (qty < 1) return false;
-	if (!_itemIdsBySlug.ContainsKey(itemSlug)) return false;
+	if (!_items.ContainsSlug(itemSlug)) return false;
 	if (!_inventoryByPlayer.ContainsKey(playerId)) return false;
 	_ = GiveItemAsync(playerId, itemSlug, qty);
 	return true;
@@ -2841,12 +2836,12 @@ internal async Task<bool> GiveItemAsync(long playerId, string itemSlug, int qty)
 {
 	if (IsTradeInventoryLocked(playerId)) return false;
 	if (qty < 1) return false;
-	if (!_itemIdsBySlug.TryGetValue(itemSlug, out long itemId))
+	if (!_items.TryGetIdBySlug(itemSlug, out long itemId))
 	{
 		GD.PrintErr($"[GiveItem] Unknown slug '{itemSlug}' (player {playerId})");
 		return false;
 	}
-	if (!_itemsById.TryGetValue(itemId, out var meta))
+	if (!_items.TryGetById(itemId, out var meta))
 	{
 		GD.PrintErr($"[GiveItem] Item id {itemId} ('{itemSlug}') missing from _itemsById");
 		return false;
@@ -2986,7 +2981,7 @@ private void SendInventory(long peerId)
 		if (packed == 0) continue;
 		int itemId = ItemStack.ItemId(packed);
 		int qty = ItemStack.Quantity(packed);
-		if (!_itemsById.TryGetValue(itemId, out var meta)) continue;
+		if (!_items.TryGetById(itemId, out var meta)) continue;
 		slots.Add(new
 		{
 			slot = i,
@@ -3064,7 +3059,7 @@ private object GroundItemToPacket(GroundItem item)
 {
 	string display = "";
 	bool isCert = false;
-	if (_itemIdsBySlug.TryGetValue(item.ItemSlug, out long iid) && _itemsById.TryGetValue(iid, out var meta))
+	if (_items.TryGetIdBySlug(item.ItemSlug, out long iid) && _items.TryGetById(iid, out var meta))
 	{
 		display = meta.Display;
 		isCert = !string.IsNullOrEmpty(meta.CertOfSlug);
@@ -3085,7 +3080,7 @@ private object GroundItemToPacket(GroundItem item)
 internal bool DropGroundItem(long playerId, string itemSlug, int quantity)
 {
 	if (quantity < 1) return false;
-	if (!_itemIdsBySlug.ContainsKey(itemSlug)) return false;
+	if (!_items.ContainsSlug(itemSlug)) return false;
 	if (!_positions.TryGetValue(playerId, out var pos)) return false;
 
 	int tx = (int)MathF.Round(pos.X);
@@ -3288,7 +3283,7 @@ internal bool TryDropFromSlot(long playerId, int slot, int qty)
 	int currentQty = ItemStack.Quantity(packed);
 	if (currentQty < qty) return false;
 	int itemId = ItemStack.ItemId(packed);
-	if (!_itemsById.TryGetValue(itemId, out var meta)) return false;
+	if (!_items.TryGetById(itemId, out var meta)) return false;
 
 	int newQty = currentQty - qty;
 	inv[slot] = newQty > 0 ? ItemStack.Encode(itemId, newQty) : 0;

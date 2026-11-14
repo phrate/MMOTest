@@ -233,7 +233,7 @@ public partial class Main
         string display = "";
         string certOf = "";
         bool stackable = false;
-        if (_itemsById.TryGetValue(entry.ItemId, out var meta))
+        if (_items.TryGetById(entry.ItemId, out var meta))
         {
             display = meta.Display;
             certOf = meta.CertOfSlug;
@@ -374,7 +374,7 @@ public partial class Main
         notice = "";
         if (!_inventoryByPlayer.TryGetValue(playerId, out var inv)) return false;
         if (!_bankByPlayer.TryGetValue(playerId, out var bank)) return false;
-        if (!_itemsById.TryGetValue(intent.ItemId, out var item)) return false;
+        if (!_items.TryGetById(intent.ItemId, out var item)) return false;
         if (item.NonBankable) { notice = ErrorKeys.BankNonBankable; return false; }
 
         int inInv = CountInventoryOfItem(inv, intent.ItemId);
@@ -384,7 +384,7 @@ public partial class Main
 
         // Cert twins convert to base on deposit.
         int baseId = intent.ItemId;
-        if (!string.IsNullOrEmpty(item.CertOfSlug) && _itemIdsBySlug.TryGetValue(item.CertOfSlug, out var baseItemId))
+        if (!string.IsNullOrEmpty(item.CertOfSlug) && _items.TryGetIdBySlug(item.CertOfSlug, out var baseItemId))
             baseId = (int)baseItemId;
 
         // Find existing stack of baseId in bank.
@@ -423,7 +423,7 @@ public partial class Main
         long playerId = session.PlayerId;
         if (!_bankByPlayer.TryGetValue(playerId, out var bank)) return false;
         if (!_inventoryByPlayer.TryGetValue(playerId, out var inv)) return false;
-        if (!_itemsById.TryGetValue(intent.ItemId, out var bankedItem)) return false;
+        if (!_items.TryGetById(intent.ItemId, out var bankedItem)) return false;
 
         int existingIdx = bank.FindIndex(e => e != null && e.ItemId == intent.ItemId);
         if (existingIdx < 0) { notice = ErrorKeys.BankNothingToWithdraw; return false; }
@@ -436,11 +436,11 @@ public partial class Main
         string certReason = "";
         if (session.CertMode && !bankedItem.Stackable && !bankedItem.NonCertable)
         {
-            if (_itemIdsBySlug.TryGetValue(bankedItem.Slug + "_cert", out var certId))
+            if (_items.TryGetIdBySlug(bankedItem.Slug + "_cert", out var certId))
                 outputItemId = (int)certId;
             // else: silently fall back to base
         }
-        if (!_itemsById.TryGetValue(outputItemId, out var outItem)) return false;
+        if (!_items.TryGetById(outputItemId, out var outItem)) return false;
 
         int fits = HowManyFitInInventory(inv, outputItemId, outItem.Stackable, requested);
         if (fits <= 0) { notice = ErrorKeys.BankPartialWithdraw; return false; }

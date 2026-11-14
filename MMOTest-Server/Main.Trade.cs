@@ -240,7 +240,7 @@ public partial class Main
 
 	private bool TryApplyAdd(List<(int ItemId, int Quantity)> offer, long[] inventory, int itemId, int requested)
 	{
-		if (!_itemsById.TryGetValue(itemId, out var item) || !item.CanTrade) return false;
+		if (!_items.TryGetById(itemId, out var item) || !item.CanTrade) return false;
 		int available = CountInventoryOfItem(inventory, itemId);
 		int alreadyOffered = offer.Where(o => o.ItemId == itemId).Sum(o => o.Quantity);
 		int room = available - alreadyOffered;
@@ -402,7 +402,7 @@ public partial class Main
 			SendTradeError(playerId, ErrorKeys.TradeOfferInvalid);
 			return;
 		}
-		if (!_itemsById.TryGetValue(itemId, out var item) || !item.CanTrade)
+		if (!_items.TryGetById(itemId, out var item) || !item.CanTrade)
 		{
 			SendTradeError(playerId, ErrorKeys.TradeOfferInvalid);
 			return;
@@ -676,7 +676,7 @@ public partial class Main
 	{
 		foreach (var (itemId, quantity) in offer)
 		{
-			if (!_itemsById.TryGetValue(itemId, out var item)) return false;
+			if (!_items.TryGetById(itemId, out var item)) return false;
 			int remaining = quantity;
 
 			if (item.Stackable)
@@ -784,7 +784,7 @@ public partial class Main
 		foreach (var (itemId, quantity) in offer)
 		{
 			if (quantity <= 0) continue;
-			if (!_itemsById.TryGetValue(itemId, out var item)) continue;
+			if (!_items.TryGetById(itemId, out var item)) continue;
 			result.Add(new
 			{
 				item_id = itemId,

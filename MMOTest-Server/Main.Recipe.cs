@@ -130,7 +130,7 @@ public partial class Main
         ctx.ResolveIdent = (name) =>
         {
             if (name.StartsWith("item_"))
-                return _itemIdsBySlug.TryGetValue(name, out var id) ? (long)id : null;
+                return _items.TryGetIdBySlug(name, out var id) ? (long)id : null;
             if (name.StartsWith("level_"))
             {
                 string skillId = name.Substring("level_".Length);
@@ -184,7 +184,7 @@ public partial class Main
 
             foreach (var (itemId, qty) in ctx.RecipeOutput)
             {
-                if (!_itemsById.TryGetValue(itemId, out var meta))
+                if (!_items.TryGetById(itemId, out var meta))
                 {
                     GD.PrintErr($"[Recipe] {recipe.Slug} failed: unknown output item {itemId}");
                     continue;
@@ -231,7 +231,7 @@ public partial class Main
         // Apply outputs to sandbox.
         foreach (var (itemId, qty) in ctx.RecipeOutput)
         {
-            if (!_itemsById.TryGetValue(itemId, out var meta))
+            if (!_items.TryGetById(itemId, out var meta))
             {
                 GD.PrintErr($"[Recipe] Unknown output item {itemId} in {recipe.ScriptPath}");
                 ChatToPlayer(playerId, "Nothing seemed to happen.");
