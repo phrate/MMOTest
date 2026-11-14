@@ -50,7 +50,6 @@ public partial class Main : Node
 	private double _npcVisRefreshAccum;
 	private const double NpcVisRefreshIntervalSeconds = 1.5;
 	private int _npcVisRefreshCounter;
-	private readonly Dictionary<long, (long PlayerId, long Sid)> _npcLookAt = new();
 
 	// TEMP-DEV: scaffolding to exercise NPC movement before real AI lands.
 	// Delete this block (and DiagNpcWander export, DebugWanderTick, and the
@@ -58,12 +57,7 @@ public partial class Main : Node
 	[ExportGroup("NPC")]
 	[Export] public int NpcViewChunkRadius { get; set; } = 10;
 	[Export] public bool DiagNpcWander { get; set; } = false;
-	private double _wanderAccumulator;
-	private const double WanderIntervalSeconds = 3.0;
-	private readonly Random _wanderRng = new();
 
-	private readonly Dictionary<long, ActiveNpc> _npcs = new();
-	private readonly Dictionary<long, HashSet<long>> _visibleNpcs = new();  // peerId -> npc ids
 	// ---------- Combat state ----------
 
 	// ---------- Ground items ----------
@@ -126,6 +120,7 @@ public partial class Main : Node
 	private Coordinator _coordinator;
 	private MovementSystem _movement;
 	private CombatSystem _combat;
+	private NpcSystem _npc;
 
 	public override void _Ready()
 	{
@@ -214,17 +209,6 @@ public partial class Main : Node
 				if (_world.TryGetTile(x, y, out TileInfo t)) return (true, t.Walkable);
 				return (false, false);
 			});
-
-			try
-			{
-				var npcList = _db.Npcs.GetAllSync();
-				foreach (var npc in npcList) _npcs[npc.Id] = npc;
-				GD.Print($"[Server] Loaded {_npcs.Count} NPC(s) from DB");
-			}
-			catch (Exception e)
-			{
-				GD.PrintErr($"[Server] Failed to load NPCs: {e.Message}");
-			}
 			
 
 			if (File.Exists(TooltipsFileCandidates[0]) || File.Exists(TooltipsFileCandidates[1]))
@@ -252,8 +236,6 @@ public partial class Main : Node
 			_bank = new BankSystem(this, _state, _items, _db.Bank, _db.Inventory, _perTick, _outbound, _coordinator);
 			_coordinator.Wire(_trade, _dialogue, _bank);
 			_combat = new CombatSystem(this, _state, _world, _outbound, _coordinator, _movement, _db.Stats, _perTick, _combatRng);
-			_recipe = new RecipeSystem(this, _state, _items, _db.Recipes, _db.Inventory, _db.Stats, _gfs, _gfsFns, _world, _outbound);
-			_recipe.LoadRecipes();
 
 			_npcRender = new NpcRenderManager(new[]
 			{
@@ -261,6 +243,13 @@ public partial class Main : Node
 				ProjectSettings.GlobalizePath("user://npc_render"),
 			});
 			_npcRender.LoadAll();
+
+			_npc = new NpcSystem(_state, _world, _outbound, _db.Npcs, _gfs, _npcRender, _pathfinder, NpcViewChunkRadius, DiagNpcWander);
+			_npc.LoadAll();
+			
+			_recipe = new RecipeSystem(this, _state, _items, _db.Recipes, _db.Inventory, _db.Stats, _gfs, _gfsFns, _world, _outbound);
+			_recipe.LoadRecipes();
+
 
 
 			var peer = new ENetMultiplayerPeer();
@@ -299,7 +288,7 @@ public partial class Main : Node
 
 	public override void _Process(double delta)
 	{
-		if (_gfs == null || _perTick == null)
+		if (_gfs == null || _perTick == null || _npc == null)
 		{
 			// _Ready hasn't finished (or failed). Don't spam errors while we wait
 			// for the real diagnostic to surface.
@@ -320,17 +309,8 @@ public partial class Main : Node
 			CheckWorldForUpdates();
 		}
 
-		if (_npcRender != null && _npcRender.Poll())
-		{
-			Broadcast(new
-			{
-				type = "npc_render_updated",
-				slugs = _npcRender.GetManifest()
-			});
-			Diag.Log("diag_npc", $"Render bundles updated, notified {_state.Sessions.Count} client(s)");
-		}
-
-		DebugWanderTick(delta);   // TEMP-DEV
+		_npc.PollRenderBundles();
+		_npc.TickWander(delta);
 
 		_gfs.Poll();
 	}
@@ -345,49 +325,10 @@ public partial class Main : Node
 		_movement.Tick(_state.CurrentTick);
 
 		// 2. NPC movement
-		if (_npcs.Count > 0)
-		{
-			var npcUpdates = new List<object>();
-			foreach (var npc in _npcs.Values)
-			{
-				if (npc.IsDead) continue;
-				if (npc.ReturningHome && npc.Path.Count == 0 && DistanceFromSpawn(npc) <= 1)
-				{
-					npc.ReturningHome = false;
-					// No instant heal. Over-time healing (ProcessNpcHealing) handles regen.
-				}
-				if (npc.Path.Count == 0) continue;
-
-				StepNpcMovement(npc);
-
-				if (MathF.Abs(npc.PosX - npc.LastSentX) > 0.001f ||
-					MathF.Abs(npc.PosY - npc.LastSentY) > 0.001f ||
-					MathF.Abs(npc.PosZ - npc.LastSentZ) > 0.001f ||
-					MathF.Abs(npc.Yaw  - npc.LastSentYaw) > 0.01f)
-				{
-					npc.LastSentX = npc.PosX;
-					npc.LastSentY = npc.PosY;
-					npc.LastSentZ = npc.PosZ;
-					npc.LastSentYaw = npc.Yaw;
-					npcUpdates.Add(new
-					{
-						npc_id = npc.Id,
-						x = npc.PosX,
-						y = npc.PosY,
-						z = npc.PosZ,
-						yaw = npc.Yaw
-					});
-				}
-			}
-			if (npcUpdates.Count > 0)
-			{
-				Broadcast(new { type = "npc_tick_positions", updates = npcUpdates },
-					channel: 1, mode : MultiplayerPeer.TransferModeEnum.UnreliableOrdered);
-			}
-		}
+		_npc.TickMovement(_state.CurrentTick);
 
 		// 2b. NPC respawn sweep
-		CheckNpcRespawns();
+		_npc.CheckNpcRespawns();
 
 		ProcessGroundItemDespawn();
 		ProcessPendingPickup();
@@ -399,7 +340,7 @@ public partial class Main : Node
 		// 2c. Combat
 		_combat.ProcessHostility();
 		_combat.ProcessPendingEngage();
-		ProcessNpcLookAt();
+		_npc.ProcessNpcLookAt();
 		_dialogue.ProcessPendingTalk();
 		_bank.ProcessPendingBank();
 		_combat.ProcessCombat();
@@ -448,7 +389,7 @@ public partial class Main : Node
 
 			if (playerChunkChanged || periodicNpcRefresh)
 			{
-				RefreshNpcVisibility(peerId, tx, ty);
+				_npc.RefreshNpcVisibility(peerId, tx, ty);
 				RefreshGroundItemVisibility(peerId, tx, ty);
 			}
 		}
@@ -457,54 +398,7 @@ public partial class Main : Node
 
 	
 
-	private void StepNpcMovement(ActiveNpc npc)
-	{
-		float remaining = WalkSpeed * (float)TickIntervalSeconds;
-		float x = npc.PosX;
-		float z = npc.PosZ;
-		float yaw = npc.Yaw;
-
-		while (remaining > 0.0001f && npc.Path.Count > 0)
-		{
-			var target = npc.Path[0];
-			float dx = target.X - x;
-			float dz = target.Y - z;
-			float dist = MathF.Sqrt(dx * dx + dz * dz);
-
-			if (dist < 0.0001f)
-			{
-				npc.Path.RemoveAt(0);
-				continue;
-			}
-
-			yaw = MathF.Atan2(-dx, -dz);
-			yaw = MathF.Round(yaw / (MathF.PI / 4f)) * (MathF.PI / 4f);
-
-			if (dist <= remaining)
-			{
-				x = target.X;
-				z = target.Y;
-				remaining -= dist;
-				npc.Path.RemoveAt(0);
-			}
-			else
-			{
-				float ratio = remaining / dist;
-				x += dx * ratio;
-				z += dz * ratio;
-				remaining = 0;
-			}
-		}
-
-		int tileX = (int)MathF.Round(x);
-		int tileY = (int)MathF.Round(z);
-		var tinfo = _world.GetTileInfo(tileX, tileY);
-
-		npc.PosX = x;
-		npc.PosY = tinfo.Z;
-		npc.PosZ = z;
-		npc.Yaw = yaw;
-	}
+	
 
 
 
@@ -634,7 +528,6 @@ public partial class Main : Node
 			}
 			_state.Positions.Remove(session.PlayerId);
 			_lastPlayerChunk.Remove(peerId);
-			_visibleNpcs.Remove(peerId);
 
 			Broadcast(
 				new { type = "player_left", player_id = session.PlayerId, username = session.Username },
@@ -668,8 +561,8 @@ public partial class Main : Node
 				case "login":       await HandleLoginAsync(peerId, GetString(root, "username"), GetString(root, "password"), GetString(root, "reason")); break;
 				case "world_info":  HandleWorldInfo(peerId); break;
 				case "world_fetch": HandleWorldFetch(peerId); break;
-				case "npc_editor_get":  HandleNpcEditorGet(peerId, root); break;
-				case "npc_editor_save": HandleNpcEditorSave(peerId, root); break;
+				case "npc_editor_get":  _npc.HandleNpcEditorGet(peerId, root); break;
+				case "npc_editor_save": _npc.HandleNpcEditorSave(peerId, root); break;
 				case "dev_auto_login": await HandleDevAutoLoginAsync(peerId); break;
 				case "player_walk": HandlePlayerWalkBuffered(peerId, root); break;
 				case "inventory_swap": HandleInventorySwap(peerId, root); break;
@@ -679,8 +572,8 @@ public partial class Main : Node
 				case "tooltips_info": HandleTooltipsInfo(peerId); break;
 				case "gfs_info":    HandleGfsInfo(peerId); break;
 				case "run_action":  HandleRunAction(peerId, root); break;
-				case "npc_render_info_request": HandleNpcRenderInfo(peerId); break;
-				case "npc_render_fetch":        HandleNpcRenderFetch(peerId, root); break;
+				case "npc_render_info_request": _npc.HandleNpcRenderInfo(peerId); break;
+				case "npc_render_fetch":        _npc.HandleNpcRenderFetch(peerId, root); break;
 				case "pickup_ground_item": HandlePickupGroundItem(peerId, root); break;
 				case "trade_invite_accept": _trade.HandleTradeInviteResponse(peerId, root, accept: true); break;
 				case "trade_invite_decline": _trade.HandleTradeInviteResponse(peerId, root, accept: false); break;
@@ -1207,7 +1100,6 @@ private async Task CompleteLoginAsync(long peerId, PlayerRecord player)
 	EnterWorld(peerId, session, spawnPos);
 }
 	
-	internal IEnumerable<ActiveNpc> AllNpcs() => _npcs.Values;
 internal PlayerPosition ComputeSpawnPosition(long playerId)
 {
     int pid = (int)Math.Max(playerId, 1);
@@ -1249,7 +1141,7 @@ internal PlayerPosition ComputeSpawnPosition(long playerId)
 	_lastPlayerChunk[peerId] = new Vector2I(
 		ActiveNpc.FloorDiv(tx, _world.ChunkSize),
 		ActiveNpc.FloorDiv(ty, _world.ChunkSize));
-	RefreshNpcVisibility(peerId, tx, ty);
+	_npc.RefreshNpcVisibility(peerId, tx, ty);
 }
 
 	// ---------- World file ----------
@@ -1516,176 +1408,32 @@ internal PlayerPosition ComputeSpawnPosition(long playerId)
 
 	internal List<Vector2I> FindAdjacentWalkablePath(int x, int y)
 		=> _pathfinder.FindAdjacentWalkable(x, y);
-
-	private HashSet<long> ComputeVisibleNpcIds(int tileX, int tileY)
+	
+	internal void MoveNpcTo(long npcId, int tileX, int tileY) =>
+		_npc.MoveNpcTo(npcId, tileX, tileY);
+	
+	internal long GetPeerIdForPlayer(long playerId)
 	{
-		var visible = new HashSet<long>();
-		int pcx = ActiveNpc.FloorDiv(tileX, _world.ChunkSize);
-		int pcy = ActiveNpc.FloorDiv(tileY, _world.ChunkSize);
-		foreach (var npc in _npcs.Values)
-		{
-			if (npc.IsDead) continue;
-			int ncx = npc.ChunkX(_world.ChunkSize);
-			int ncy = npc.ChunkY(_world.ChunkSize);
-			if (Math.Abs(pcx - ncx) <= NpcViewChunkRadius &&
-				Math.Abs(pcy - ncy) <= NpcViewChunkRadius)
-				visible.Add(npc.Id);
-		}
-		return visible;
+		if (_state.PeerByPlayerId.TryGetValue(playerId, out var peerId)) return peerId;
+		return -1;
 	}
 
-	private object NpcToPacket(ActiveNpc npc) => new
-	{
-		id = npc.Id,
-		name = npc.Name,
-		display = npc.Display,
-		x = npc.PosX,
-		y = npc.PosY,
-		z = npc.PosZ,
-		yaw = npc.Yaw,
-		anim = npc.PlayingAnimation,
-		attackable = npc.Attackable,
-		final_level = npc.FinalLevel,
-		render_slug = npc.RenderSlug,
-		hitpoints = npc.Hitpoints,
-		max_hitpoints = npc.MaxHitpoints,
-		has_dialogue = HasDialogueScript(npc),
-		dialogue_script = npc.DialogueScript,
-		is_banker = npc.IsBanker
-	};
+	internal void OpenNpcEditorForPlayer(long playerId, long npcId) =>
+		_npc.OpenNpcEditorForPlayer(playerId, npcId);
 
-	/// <summary>
-	/// Diff the player's current NPC visibility against the last snapshot, sending
-	/// npc_joined for additions and npc_left for removals. Called on login (empty
-	/// prior set — everything gets sent) and on chunk-boundary crossings.
-	/// </summary>
-	private void RefreshNpcVisibility(long peerId, int tileX, int tileY)
-	{
-		if (!_visibleNpcs.TryGetValue(peerId, out var oldSet))
-		{
-			oldSet = new HashSet<long>();
-			_visibleNpcs[peerId] = oldSet;
-		}
-		var newSet = ComputeVisibleNpcIds(tileX, tileY);
-
-		var added = new List<object>();
-		foreach (var id in newSet)
-		{
-			if (!oldSet.Contains(id) && _npcs.TryGetValue(id, out var npc))
-				added.Add(NpcToPacket(npc));
-		}
-		if (added.Count > 0)
-		{
-			Send(peerId, new { type = "npc_joined", npcs = added });
-			Diag.Log("diag_npc", $"peer {peerId} sees {added.Count} new NPC(s)");
-		}
-
-		var removed = new List<long>();
-		foreach (var id in oldSet)
-			if (!newSet.Contains(id)) removed.Add(id);
-		if (removed.Count > 0)
-		{
-			Send(peerId, new { type = "npc_left", ids = removed });
-			Diag.Log("diag_npc", $"peer {peerId} lost {removed.Count} NPC(s)");
-		}
-
-		_visibleNpcs[peerId] = newSet;
-	}
-
-	private void HandleNpcRenderInfo(long peerId)
-	{
-		if (!_state.Sessions.ContainsKey(peerId)) return;
-		Send(peerId, new
-		{
-			type = "npc_render_info_response",
-			slugs = _npcRender.GetManifest()
-		});
-	}
-
-	private void HandleNpcRenderFetch(long peerId, JsonElement root)
-	{
-		if (!_state.Sessions.ContainsKey(peerId)) return;
-		if (!root.TryGetProperty("slugs", out var slugsEl) || slugsEl.ValueKind != JsonValueKind.Array) return;
-
-		foreach (var s in slugsEl.EnumerateArray())
-		{
-			string slug = s.GetString() ?? "";
-			if (string.IsNullOrEmpty(slug)) continue;
-			var bundle = _npcRender.GetBundle(slug);
-			if (bundle == null) continue;
-
-			var filesDict = new Dictionary<string, string>();
-			foreach (var f in bundle.Files)
-				filesDict[f.RelativePath] = Convert.ToBase64String(f.Bytes);
-
-			Send(peerId, new
-			{
-				type = "npc_render_data",
-				slug = bundle.Slug,
-				hash = bundle.Hash,
-				files = filesDict
-			});
-			Diag.Log("diag_npc", $"Sent render bundle '{slug}' to peer {peerId} ({bundle.Files.Count} files)");
-		}
-	}
-
-	/// <summary>
-	/// Movement entry point. Any caller (AI package, script, debug) asks an NPC
-	/// to walk to a tile. Computes a path via the shared BFS. Idempotent if the
-	/// NPC is already moving toward that exact tile.
-	/// </summary>
-	internal void MoveNpcTo(long npcId, int tileX, int tileY)
-	{
-		if (!_npcs.TryGetValue(npcId, out var npc)) return;
-		if (npc.IsDead) return;
-		if (!IsValidTile(tileX, tileY)) return;
-
-		int curX = (int)MathF.Round(npc.PosX);
-		int curY = (int)MathF.Round(npc.PosZ);
-		if (curX == tileX && curY == tileY) return;
-
-		var path = PathfindBetween(curX, curY, tileX, tileY);
-		if (path.Count == 0) return;
-		npc.Path = path;
-	}
+	internal void SnapAndFaceForDialogue(long playerId, ActiveNpc npc) =>
+		_npc.SnapAndFaceForDialogue(playerId, npc);
 
 	// ====================================================================
 	// TEMP-DEV: debug NPC wander. Delete when real AI packages are wired in.
 	// Set DiagNpcWander=true in the scene inspector to enable.
 	// ====================================================================
-	private void DebugWanderTick(double delta)
-	{
-		if (!DiagNpcWander) return;
-		_wanderAccumulator += delta;
-		if (_wanderAccumulator < WanderIntervalSeconds) return;
-		_wanderAccumulator = 0;
-
-		foreach (var npc in _npcs.Values)
-		{
-			if (npc.IsDead) continue;
-			if (npc.Path.Count > 0) continue;
-			if (npc.AiPackageState != "wander") continue;
-			if (_state.CombatByNpc.ContainsKey(npc.Id)) continue;
-			for (int attempt = 0; attempt < 8; attempt++)
-			{
-				int dx = _wanderRng.Next(-3, 4);
-				int dy = _wanderRng.Next(-3, 4);
-				if (dx == 0 && dy == 0) continue;
-				int tx = npc.TileX + dx;
-				int ty = npc.TileY + dy;
-				if (IsValidTile(tx, ty))
-				{
-					MoveNpcTo(npc.Id, tx, ty);
-					break;
-				}
-			}
-		}
-	}
+	
 
 	// ---------- NPC death / respawn ----------
 	internal void KillNpc(long npcId, long killerPlayerId = 0)
 {
-	if (!_npcs.TryGetValue(npcId, out var npc)) return;
+	if (!_npc.TryGetNpcById(npcId, out var npc)) return;
 	if (npc.IsDead) return;
 
 	// Resolve the killer if not explicitly passed. Combat pairs set it to the
@@ -1703,37 +1451,11 @@ internal PlayerPosition ComputeSpawnPosition(long playerId)
 
 	if (_state.CombatByNpc.TryGetValue(npcId, out var owner)) _combat.EndCombat(owner);
 	Diag.Log("diag_npc", $"NPC {npc.Name} (id {npc.Id}) killed; respawns in {npc.SpawnTimerSeconds}s");
-	NotifyNpcVisibilityChanged();
+	_npc.NotifyNpcVisibilityChanged();
 }
 
-	private void ReviveNpc(ActiveNpc npc)
-	{
-		npc.IsDead = false;
-		npc.DiedAtMs = 0;
-		npc.Hitpoints = npc.MaxHitpoints;
-		npc.HealAccumulatorTicks = 0;
-		npc.ResetPositionToHome();
-		npc.Path.Clear();
-		_ = _db.Npcs.ReviveAsync(npc.Id);
-		Diag.Log("diag_npc", $"NPC {npc.Name} (id {npc.Id}) respawned with {npc.Hitpoints} HP");
-	}
+	
 
-	private void CheckNpcRespawns()
-	{
-		long now = (long)Time.GetTicksMsec();
-		bool changed = false;
-		foreach (var npc in _npcs.Values)
-		{
-			if (!npc.IsDead) continue;
-			if (npc.DiedAtMs <= 0) continue;
-			if (now - npc.DiedAtMs >= npc.SpawnTimerSeconds * 1000L)
-			{
-				ReviveNpc(npc);
-				changed = true;
-			}
-		}
-		if (changed) NotifyNpcVisibilityChanged();
-	}
 
 // ---------- Loot + credits ----------
 
@@ -1869,98 +1591,13 @@ private int RollQuantity((int Min, int Max) range)
 	return _combatRng.Next(range.Min, range.Max + 1);
 }
 
-	internal ActiveNpc? GetNpcById(long npcId) =>
-		_npcs.TryGetValue(npcId, out var n) ? n : null;
+	internal ActiveNpc? GetNpcById(long npcId) => _npc.GetNpcById(npcId);
+	internal IEnumerable<ActiveNpc> AllNpcs() => _npc.All();
 
-	internal bool TryGetNpcById(long npcId, out ActiveNpc npc) =>
-		_npcs.TryGetValue(npcId, out npc!);
+	internal bool TryGetNpcById(long npcId, out ActiveNpc npc) => _npc.TryGetNpcById(npcId, out npc);
 
-	internal bool IsNpcInCombat(long npcId) => _state.CombatByNpc.ContainsKey(npcId);
+	internal bool IsNpcInCombat(long npcId) => _npc.IsNpcInCombat(npcId);
 
-	internal void SnapAndFaceForDialogue(long playerId, ActiveNpc npc)
-	{
-		if (!_state.Positions.TryGetValue(playerId, out var pos)) return;
-
-		int px = (int)MathF.Round(pos.X);
-		int pz = (int)MathF.Round(pos.Z);
-		var tinfo = _world.GetTileInfo(px, pz);
-		int nx = (int)MathF.Round(npc.PosX);
-		int nz = (int)MathF.Round(npc.PosZ);
-
-		float yaw = MathF.Atan2(-(nx - px), -(nz - pz));
-		yaw = MathF.Round(yaw / (MathF.PI / 4f)) * (MathF.PI / 4f);
-
-		var newPos = new PlayerPosition(px, tinfo.Z, pz, yaw);
-		_state.Positions[playerId] = newPos;
-
-		Broadcast(new
-		{
-			type = "tick_positions",
-			tick = _state.CurrentTick,
-			updates = new[] {
-				new {
-					player_id = playerId,
-					x = newPos.X, y = newPos.Y, z = newPos.Z, yaw = newPos.Yaw,
-				}
-			}
-		}, channel: 1, mode: MultiplayerPeer.TransferModeEnum.UnreliableOrdered);
-
-		long sid = 0;
-		long peerId = GetPeerIdForPlayer(playerId);
-		if (peerId >= 0 && _state.Sessions.TryGetValue(peerId, out var sess))
-			sid = sess.Sid;
-		QueueNpcLookAt(npc.Id, playerId, sid);
-	}
-
-	private void QueueNpcLookAt(long npcId, long playerId, long sid)
-	{
-		if (_npcLookAt.TryGetValue(npcId, out var existing))
-		{
-			if (sid >= existing.Sid) return;
-		}
-		_npcLookAt[npcId] = (playerId, sid);
-	}
-
-	private void ProcessNpcLookAt()
-	{
-		if (_npcLookAt.Count == 0) return;
-		foreach (var kv in _npcLookAt)
-		{
-			long npcId = kv.Key;
-			long playerId = kv.Value.PlayerId;
-			if (!_npcs.TryGetValue(npcId, out var npc)) continue;
-			if (npc.IsDead) continue;
-			if (_state.CombatByNpc.ContainsKey(npcId)) continue;
-			if (!_state.Positions.TryGetValue(playerId, out var ppos)) continue;
-
-			int nx = (int)MathF.Round(npc.PosX);
-			int nz = (int)MathF.Round(npc.PosZ);
-			int px = (int)MathF.Round(ppos.X);
-			int pz = (int)MathF.Round(ppos.Z);
-			float yaw = MathF.Atan2(-(px - nx), -(pz - nz));
-			yaw = MathF.Round(yaw / (MathF.PI / 4f)) * (MathF.PI / 4f);
-
-			if (MathF.Abs(yaw - npc.Yaw) > 0.05f)
-			{
-				npc.Yaw = yaw;
-				npc.LastSentYaw = yaw;
-				Broadcast(new
-				{
-					type = "npc_tick_positions",
-					updates = new[] {
-						new { npc_id = npcId, x = npc.PosX, y = npc.PosY, z = npc.PosZ, yaw = yaw }
-					}
-				}, channel: 1, mode: MultiplayerPeer.TransferModeEnum.UnreliableOrdered);
-			}
-		}
-		_npcLookAt.Clear();
-	}
-
-	internal long GetPeerIdForPlayer(long playerId)
-	{
-		if (_state.PeerByPlayerId.TryGetValue(playerId, out var peerId)) return peerId;
-		return -1;
-	}
 
 	internal void ChatToPlayer(long playerId, string message) =>
 		_outbound.ChatToPlayer(playerId, message);
@@ -1975,21 +1612,7 @@ private int RollQuantity((int Min, int Max) range)
 		Broadcast(new { type = "npc_anim_changed", npc_id = npcId, anim = anim, duration_ms = durationMs });
 	}
 
-	/// <summary>
-	/// Re-run NPC visibility diff against all logged-in players. Called after
-	/// death, revive, or any state change that flips IsDead.
-	/// </summary>
-	private void NotifyNpcVisibilityChanged()
-	{
-		foreach (long peerId in _state.Sessions.Keys.ToList())
-		{
-			if (!_state.Sessions.TryGetValue(peerId, out var sess)) continue;
-			if (!_state.Positions.TryGetValue(sess.PlayerId, out var pos)) continue;
-			int tx = (int)MathF.Round(pos.X);
-			int ty = (int)MathF.Round(pos.Z);
-			RefreshNpcVisibility(peerId, tx, ty);
-		}
-	}
+
 
 	private void BroadcastNpcHp(ActiveNpc npc)
 	{
@@ -2013,160 +1636,6 @@ private int RollQuantity((int Min, int Max) range)
 		});
 	}
 
-	// ---------- Admin NPC editor ----------
-
-	internal void OpenNpcEditorForPlayer(long playerId, long npcId)
-	{
-		long peerId = -1;
-		foreach (var kv in _state.Sessions) if (kv.Value.PlayerId == playerId) { peerId = kv.Key; break; }
-		if (peerId < 0) return;
-		if (!_state.Sessions[peerId].IsAdmin)
-		{
-			ChatToPlayer(playerId, "Admin only.");
-			return;
-		}
-		if (!_npcs.ContainsKey(npcId)) return;
-		Send(peerId, new { type = "npc_editor_open", npc_id = npcId });
-	}
-
-private void HandleNpcEditorGet(long peerId, JsonElement root)
-{
-	if (!_state.Sessions.TryGetValue(peerId, out var session)) return;
-	if (!session.IsAdmin) return;
-	if (!root.TryGetProperty("npc_id", out var idEl) || !idEl.TryGetInt64(out long npcId)) return;
-	if (!_npcs.TryGetValue(npcId, out var npc)) return;
-
-	Send(peerId, new
-	{
-		type = "npc_editor_data",
-		npc = new
-		{
-			id = npc.Id,
-			name = npc.Name,
-			display = npc.Display,
-			render_slug = npc.RenderSlug,
-			attackable = npc.Attackable,
-			aggressive = npc.Aggressive,
-			aggro_range = npc.AggroRangeTiles,
-			ai_package_state = npc.AiPackageState,
-			ai_action_state = npc.AiActionState,
-			loot_table_name = npc.LootTableName,
-			spawn_timer = npc.SpawnTimerSeconds,
-			hitpoints = npc.Hitpoints,
-			max_hitpoints = npc.MaxHitpoints,
-			accuracy = npc.Accuracy,
-			strength = npc.Strength,
-			defence = npc.Defence,
-			ether = npc.Ether,
-			max_ether = npc.MaxEther,
-			melee_bonus = npc.MeleeBonus,
-			ranged_bonus = npc.RangedBonus,
-			ether_bonus = npc.EtherBonus,
-			melee_defense = npc.MeleeDefense,
-			ranged_defense = npc.RangedDefense,
-			ether_defense = npc.EtherDefense,
-			attack_speed = npc.AttackSpeedTicks,
-			final_level = npc.FinalLevel,
-		}
-	});
-}
-
-private void HandleNpcEditorSave(long peerId, JsonElement root)
-{
-	if (!_state.Sessions.TryGetValue(peerId, out var session)) return;
-	if (!session.IsAdmin) return;
-	if (!root.TryGetProperty("npc_id", out var idEl) || !idEl.TryGetInt64(out long npcId)) return;
-	if (!_npcs.TryGetValue(npcId, out var npc)) return;
-	if (!root.TryGetProperty("updates", out var upEl) || upEl.ValueKind != JsonValueKind.Object) return;
-
-	var u = new Dictionary<string, object>();
-	foreach (var prop in upEl.EnumerateObject())
-	{
-		u[prop.Name] = prop.Value.ValueKind switch
-		{
-			JsonValueKind.True => true,
-			JsonValueKind.False => false,
-			JsonValueKind.String => prop.Value.GetString() ?? "",
-			JsonValueKind.Number => prop.Value.TryGetInt32(out int iv) ? iv : 0,
-			_ => (object)0,
-		};
-	}
-
-	try
-	{
-		if (u.ContainsKey("display"))          npc.Display = u["display"].ToString() ?? npc.Display;
-		if (u.ContainsKey("attackable"))       npc.Attackable = (bool)u["attackable"];
-		if (u.ContainsKey("aggressive"))       npc.Aggressive = (bool)u["aggressive"];
-		if (u.ContainsKey("aggro_range"))      npc.AggroRangeTiles = Math.Max(1, Convert.ToInt32(u["aggro_range"]));
-		if (u.ContainsKey("ai_package_state")) npc.AiPackageState = u["ai_package_state"].ToString() ?? "idle";
-		if (u.ContainsKey("ai_action_state"))  npc.AiActionState = u["ai_action_state"].ToString() ?? "none";
-		if (u.ContainsKey("loot_table_name"))  npc.LootTableName = u["loot_table_name"].ToString() ?? "common_loot_1";
-		if (u.ContainsKey("spawn_timer"))      npc.SpawnTimerSeconds = Math.Max(1, Convert.ToInt32(u["spawn_timer"]));
-		if (u.ContainsKey("hitpoints"))        npc.Hitpoints = Math.Max(0, Convert.ToInt32(u["hitpoints"]));
-		if (u.ContainsKey("max_hitpoints"))    npc.MaxHitpoints = Math.Max(1, Convert.ToInt32(u["max_hitpoints"]));
-		if (npc.Hitpoints > npc.MaxHitpoints)  npc.MaxHitpoints = npc.Hitpoints;
-		if (u.ContainsKey("accuracy"))         npc.Accuracy = Math.Max(1, Convert.ToInt32(u["accuracy"]));
-		if (u.ContainsKey("strength"))         npc.Strength = Math.Max(1, Convert.ToInt32(u["strength"]));
-		if (u.ContainsKey("defence"))          npc.Defence = Math.Max(1, Convert.ToInt32(u["defence"]));
-		if (u.ContainsKey("ether"))            npc.Ether = Math.Max(1, Convert.ToInt32(u["ether"]));
-		if (u.ContainsKey("max_ether"))        npc.MaxEther = Math.Max(1, Convert.ToInt32(u["max_ether"]));
-		if (npc.Ether > npc.MaxEther)          npc.MaxEther = npc.Ether;
-		if (u.ContainsKey("melee_bonus"))      npc.MeleeBonus = Math.Max(0, Convert.ToInt32(u["melee_bonus"]));
-		if (u.ContainsKey("ranged_bonus"))     npc.RangedBonus = Math.Max(0, Convert.ToInt32(u["ranged_bonus"]));
-		if (u.ContainsKey("ether_bonus"))      npc.EtherBonus = Math.Max(0, Convert.ToInt32(u["ether_bonus"]));
-		if (u.ContainsKey("melee_defense"))    npc.MeleeDefense = Math.Max(0, Convert.ToInt32(u["melee_defense"]));
-		if (u.ContainsKey("ranged_defense"))   npc.RangedDefense = Math.Max(0, Convert.ToInt32(u["ranged_defense"]));
-		if (u.ContainsKey("ether_defense"))    npc.EtherDefense = Math.Max(0, Convert.ToInt32(u["ether_defense"]));
-		if (u.ContainsKey("attack_speed"))     npc.AttackSpeedTicks = Math.Max(1, Convert.ToInt32(u["attack_speed"]));
-
-		// Sync the save dict to final values
-		u["display"]          = npc.Display;
-		u["attackable"]       = npc.Attackable;
-		u["aggressive"]       = npc.Aggressive;
-		u["aggro_range"]      = npc.AggroRangeTiles;
-		u["ai_package_state"] = npc.AiPackageState;
-		u["ai_action_state"]  = npc.AiActionState;
-		u["loot_table_name"]  = npc.LootTableName;
-		u["spawn_timer"]      = npc.SpawnTimerSeconds;
-		u["hitpoints"]        = npc.Hitpoints;
-		u["max_hitpoints"]    = npc.MaxHitpoints;
-		u["accuracy"]         = npc.Accuracy;
-		u["strength"]         = npc.Strength;
-		u["defence"]          = npc.Defence;
-		u["ether"]            = npc.Ether;
-		u["max_ether"]        = npc.MaxEther;
-		u["melee_bonus"]      = npc.MeleeBonus;
-		u["ranged_bonus"]     = npc.RangedBonus;
-		u["ether_bonus"]      = npc.EtherBonus;
-		u["melee_defense"]    = npc.MeleeDefense;
-		u["ranged_defense"]   = npc.RangedDefense;
-		u["ether_defense"]    = npc.EtherDefense;
-		u["attack_speed"]     = npc.AttackSpeedTicks;
-
-		_ = _db.Npcs.SaveAdminEditAsync(npcId, u);
-		BroadcastNpcHp(npc);
-		Broadcast(new { type = "npc_updated", npc = NpcToPacket(npc) });
-		NotifyNpcVisibilityChanged();
-		Send(peerId, new { type = "npc_editor_saved", ok = true, npc_id = npcId });
-	}
-	catch (Exception e)
-	{
-		GD.PrintErr($"[Server] npc_editor_save: {e.Message}");
-		SendError(peerId, "npc_editor_saved", "npc.save_failed");
-	}
-}
-
-/// <summary>
-/// Each tick, check all pending pursuits. Promote to real combat when the
-/// player becomes adjacent. Re-route the player if the NPC moved.
-/// </summary>
-
-
-/// <summary>
-/// Aggressive NPCs scan for players within aggro_range and engage those whose
-/// final_level is within [1, npc.FinalLevel * 2]. Skips NPCs already in combat,
-/// returning home, dead, or past their leash.
-/// </summary>
 
 
 // ---------- Inventory ----------
@@ -2691,10 +2160,5 @@ private static string CollapseSpaces(string text)
 	}
 
 
-private int DistanceFromSpawn(ActiveNpc npc)
-{
-    int dx = (int)MathF.Round(npc.PosX) - npc.TileX;
-    int dy = (int)MathF.Round(npc.PosZ) - npc.TileY;
-    return Math.Max(Math.Abs(dx), Math.Abs(dy));
-}
+
 }
