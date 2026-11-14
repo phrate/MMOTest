@@ -52,6 +52,7 @@ public partial class Main : Node
 	private const double NpcVisRefreshIntervalSeconds = 1.5;
 	private int _npcVisRefreshCounter;
 	private readonly Dictionary<long, int> _npcCombatRefCount = new();
+	private readonly Dictionary<long, (long PlayerId, long Sid)> _npcLookAt = new();
 
 	// TEMP-DEV: scaffolding to exercise NPC movement before real AI lands.
 	// Delete this block (and DiagNpcWander export, DebugWanderTick, and the
@@ -126,6 +127,7 @@ public partial class Main : Node
 	private Pathfinder _pathfinder;
 	private NpcRenderManager _npcRender;
 	private TradeSystem _trade;
+	private DialogueSystem _dialogue;
 
 	public override void _Ready()
 	{
@@ -245,6 +247,7 @@ public partial class Main : Node
 			_perTick = new Gfs.PerTickManager(_gfsFns);
 			_gfs.ScriptsChanged += OnGfsScriptsChanged;
 			_trade = new TradeSystem(this, _state, _items, _db.Inventory, _perTick);
+			_dialogue = new DialogueSystem(this, _state, _gfs, _gfsFns, _perTick);
 			LoadRecipes();
 
 			_npcRender = new NpcRenderManager(new[]
@@ -425,7 +428,7 @@ public partial class Main : Node
 		ProcessHostility();
 		ProcessPendingEngage();
 		ProcessNpcLookAt();
-		ProcessPendingTalk();
+		_dialogue.ProcessPendingTalk();
 		ProcessPendingBank();
 		ProcessCombat();
 
@@ -715,7 +718,7 @@ public partial class Main : Node
 			_trade.ClearPendingFor(session.PlayerId);
 			_visibleGroundItems.Remove(peerId);
 			_state.DialogueByPlayer.Remove(session.PlayerId);
-			_pendingTalk.Remove(session.PlayerId);
+			_dialogue.ClearPendingFor(session.PlayerId);
 			_bankByPlayer.Remove(session.PlayerId);
 			_bankCapacityByPlayer.Remove(session.PlayerId);
 			_pendingBank.Remove(session.PlayerId);
@@ -787,7 +790,7 @@ public partial class Main : Node
 				case "trade_offer_accept": _trade.HandleTradeAcceptOffer(peerId, root); break;
 				case "trade_confirm": _trade.HandleTradeConfirm(peerId, root); break;
 				case "trade_cancel": _trade.HandleTradeCancel(peerId, root); break;
-				case "dialogue_choose": HandleDialogueChoose(peerId, root); break;
+				case "dialogue_choose": _dialogue.HandleDialogueChoose(peerId, root); break;
 				case "bank_deposit": HandleBankDeposit(peerId, root); break;
 				case "bank_withdraw": HandleBankWithdraw(peerId, root); break;
 				case "bank_move": HandleBankMove(peerId, root); break;
@@ -1538,12 +1541,39 @@ private async Task CompleteLoginAsync(long peerId, PlayerRecord player)
 
 	internal void RequestTrade(long requesterId, long targetPlayerId) =>
 		_trade.RequestTrade(requesterId, targetPlayerId);
+
+	internal void CancelTradeForPlayer(long playerId, string errorKey) =>
+		_trade.CancelTradeForPlayer(playerId, errorKey);
+
+	internal void CancelTradeQueuesForPlayer(long playerId, string errorKey) =>
+		_trade.CancelTradeQueuesForPlayer(playerId, errorKey);
+
+	internal void RequestTalk(long playerId, long npcId) =>
+		_dialogue.RequestTalk(playerId, npcId);
+
+	internal void CancelDialogueForPlayer(long playerId, string errorKey) =>
+		_dialogue.CancelDialogueForPlayer(playerId, errorKey);
+
+	internal void CancelPendingTalkFor(long playerId) =>
+		_dialogue.CancelPendingTalkFor(playerId);
+
+	internal void ProcessPendingTalk() =>
+		_dialogue.ProcessPendingTalk();
+
+	internal void HandleDialogueChoose(long peerId, JsonElement root) =>
+		_dialogue.HandleDialogueChoose(peerId, root);
+
+	internal bool HasDialogueScript(ActiveNpc npc) =>
+		_dialogue.HasDialogueScript(npc);
+
+	internal void ClearDialoguePendingFor(long playerId) =>
+		_dialogue.ClearPendingFor(playerId);
 	
-	private void RemovePlayerIntent(long playerId)
+	internal void RemovePlayerIntent(long playerId)
 	{
 		if (_state.PeerByPlayerId.TryGetValue(playerId, out long peerId)) _state.Intents.Remove(peerId);
 	}
-	
+
 	private static int CountInventoryOfItem(long[] inventory, int itemId)
 	{
 		int total = 0;
@@ -2008,7 +2038,7 @@ internal void EngageNpc(long playerId, long npcId, bool initiatedByPlayer = true
 	Diag.Log("diag_combat", $"Player {playerId} engaged NPC {npc.Name} (id {npcId}) initiatedByPlayer={initiatedByPlayer}");
 }
 
-	private void EndCombat(CombatPair pair)
+	internal void EndCombat(CombatPair pair)
 	{
 		_state.CombatByPlayer.Remove(pair.PlayerId);
 		bool wasOwner = _combatByNpc.TryGetValue(pair.NpcId, out var owner) && owner == pair;
@@ -2386,7 +2416,7 @@ private void ProcessPlayerHealing()
 		Diag.Log("diag_combat", $"Player {playerId} died and respawned at ({spawnPos.X}, {spawnPos.Z})");
 	}
 
-	private bool ArePositionsAdjacent(long playerId, ActiveNpc npc)
+	internal bool ArePositionsAdjacent(long playerId, ActiveNpc npc)
 	{
 		if (!_state.Positions.TryGetValue(playerId, out var ppos)) return false;
 		int px = (int)MathF.Round(ppos.X);
@@ -2429,7 +2459,7 @@ private int DistanceFromSpawn(ActiveNpc npc)
 	return Math.Max(Math.Abs(dx), Math.Abs(dy));
 }
 
-	private bool MovePlayerAdjacentToNpc(long playerId, ActiveNpc npc)
+	internal bool MovePlayerAdjacentToNpc(long playerId, ActiveNpc npc)
 {
 	long peerId = -1;
 	foreach (var kv in _state.Sessions) if (kv.Value.PlayerId == playerId) { peerId = kv.Key; break; }
@@ -2475,6 +2505,99 @@ private int RollQuantity((int Min, int Max) range)
 	if (range.Min == range.Max) return range.Min;
 	return _combatRng.Next(range.Min, range.Max + 1);
 }
+
+	internal ActiveNpc? GetNpcById(long npcId) =>
+		_npcs.TryGetValue(npcId, out var n) ? n : null;
+
+	internal bool TryGetNpcById(long npcId, out ActiveNpc npc) =>
+		_npcs.TryGetValue(npcId, out npc!);
+
+	internal bool IsNpcInCombat(long npcId) => _combatByNpc.ContainsKey(npcId);
+
+	internal void SnapAndFaceForDialogue(long playerId, ActiveNpc npc)
+	{
+		if (!_state.Positions.TryGetValue(playerId, out var pos)) return;
+
+		int px = (int)MathF.Round(pos.X);
+		int pz = (int)MathF.Round(pos.Z);
+		var tinfo = _world.GetTileInfo(px, pz);
+		int nx = (int)MathF.Round(npc.PosX);
+		int nz = (int)MathF.Round(npc.PosZ);
+
+		float yaw = MathF.Atan2(-(nx - px), -(nz - pz));
+		yaw = MathF.Round(yaw / (MathF.PI / 4f)) * (MathF.PI / 4f);
+
+		var newPos = new PlayerPosition(px, tinfo.Z, pz, yaw);
+		_state.Positions[playerId] = newPos;
+
+		Broadcast(new
+		{
+			type = "tick_positions",
+			tick = _state.CurrentTick,
+			updates = new[] {
+				new {
+					player_id = playerId,
+					x = newPos.X, y = newPos.Y, z = newPos.Z, yaw = newPos.Yaw,
+				}
+			}
+		}, channel: 1, mode: MultiplayerPeer.TransferModeEnum.UnreliableOrdered);
+
+		long sid = 0;
+		long peerId = GetPeerIdForPlayer(playerId);
+		if (peerId >= 0 && _state.Sessions.TryGetValue(peerId, out var sess))
+			sid = sess.Sid;
+		QueueNpcLookAt(npc.Id, playerId, sid);
+	}
+
+	private void QueueNpcLookAt(long npcId, long playerId, long sid)
+	{
+		if (_npcLookAt.TryGetValue(npcId, out var existing))
+		{
+			if (sid >= existing.Sid) return;
+		}
+		_npcLookAt[npcId] = (playerId, sid);
+	}
+
+	private void ProcessNpcLookAt()
+	{
+		if (_npcLookAt.Count == 0) return;
+		foreach (var kv in _npcLookAt)
+		{
+			long npcId = kv.Key;
+			long playerId = kv.Value.PlayerId;
+			if (!_npcs.TryGetValue(npcId, out var npc)) continue;
+			if (npc.IsDead) continue;
+			if (_combatByNpc.ContainsKey(npcId)) continue;
+			if (!_state.Positions.TryGetValue(playerId, out var ppos)) continue;
+
+			int nx = (int)MathF.Round(npc.PosX);
+			int nz = (int)MathF.Round(npc.PosZ);
+			int px = (int)MathF.Round(ppos.X);
+			int pz = (int)MathF.Round(ppos.Z);
+			float yaw = MathF.Atan2(-(px - nx), -(pz - nz));
+			yaw = MathF.Round(yaw / (MathF.PI / 4f)) * (MathF.PI / 4f);
+
+			if (MathF.Abs(yaw - npc.Yaw) > 0.05f)
+			{
+				npc.Yaw = yaw;
+				npc.LastSentYaw = yaw;
+				Broadcast(new
+				{
+					type = "npc_tick_positions",
+					updates = new[] {
+						new { npc_id = npcId, x = npc.PosX, y = npc.PosY, z = npc.PosZ, yaw = yaw }
+					}
+				}, channel: 1, mode: MultiplayerPeer.TransferModeEnum.UnreliableOrdered);
+			}
+		}
+		_npcLookAt.Clear();
+	}
+
+	internal long GetPeerIdForPlayer(long playerId)
+	{
+		if (_state.PeerByPlayerId.TryGetValue(playerId, out var peerId)) return peerId;
+		return -1;
+	}
 
 	internal void ChatToPlayer(long playerId, string message)
 	{
