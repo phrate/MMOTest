@@ -184,8 +184,8 @@ public partial class Main
         if (!npc.IsBanker || npc.IsDead) return;
         if (!_bankByPlayer.ContainsKey(playerId)) return;
 
-        CancelTradeForPlayer(playerId, ErrorKeys.TradeCancelDialogue);
-        CancelTradeQueuesForPlayer(playerId, ErrorKeys.TradeCancelDialogue);
+        _trade.CancelTradeForPlayer(playerId, ErrorKeys.TradeCancelDialogue);
+        _trade.CancelTradeQueuesForPlayer(playerId, ErrorKeys.TradeCancelDialogue);
         CancelDialogueForPlayer(playerId, "");
         _perTick?.EndByStem(playerId, "follow_player");
         RemovePlayerIntent(playerId);

@@ -217,8 +217,8 @@ private void ProcessPendingTalk()
             return;
         }
 
-        CancelTradeForPlayer(playerId, ErrorKeys.TradeCancelDialogue);
-        CancelTradeQueuesForPlayer(playerId, ErrorKeys.TradeCancelDialogue);
+        _trade.CancelTradeForPlayer(playerId, ErrorKeys.TradeCancelDialogue);
+        _trade.CancelTradeQueuesForPlayer(playerId, ErrorKeys.TradeCancelDialogue);
         CancelBankForPlayer(playerId, "");
         CancelPendingBankFor(playerId);
         _perTick?.EndByStem(playerId, "follow_player");

@@ -125,6 +125,7 @@ public partial class Main : Node
 	private Gfs.PerTickManager _perTick;
 	private Pathfinder _pathfinder;
 	private NpcRenderManager _npcRender;
+	private TradeSystem _trade;
 
 	public override void _Ready()
 	{
@@ -243,6 +244,7 @@ public partial class Main : Node
 			Gfs.Utils.BankUtils.Register(_gfsFns, this);
 			_perTick = new Gfs.PerTickManager(_gfsFns);
 			_gfs.ScriptsChanged += OnGfsScriptsChanged;
+			_trade = new TradeSystem(this, _state, _items, _db.Inventory, _perTick);
 			LoadRecipes();
 
 			_npcRender = new NpcRenderManager(new[]
@@ -414,8 +416,8 @@ public partial class Main : Node
 
 		ProcessGroundItemDespawn();
 		ProcessPendingPickup();
-		ProcessTradeQueues();
-		ProcessTradeIntents();
+		_trade.ProcessTradeQueues();
+		_trade.ProcessTradeIntents();
 		ProcessBankIntents();
 		ProcessRecipeIntents();
 
@@ -689,8 +691,8 @@ public partial class Main : Node
 	{
 		if (_state.Sessions.TryGetValue(peerId, out var departingSession))
 		{
-			CancelTradeForPlayer(departingSession.PlayerId, ErrorKeys.TradeCancelDisconnected);
-			CancelTradeQueuesForPlayer(departingSession.PlayerId, ErrorKeys.TradeCancelDisconnected);
+			_trade.CancelTradeForPlayer(departingSession.PlayerId, ErrorKeys.TradeCancelDisconnected);
+			_trade.CancelTradeQueuesForPlayer(departingSession.PlayerId, ErrorKeys.TradeCancelDisconnected);
 		}
 		_connectedPeers.Remove(peerId);
 		_authInProgress.Remove(peerId);
@@ -710,7 +712,7 @@ public partial class Main : Node
 			_playerHealAccumTicks.Remove(session.PlayerId);
 			_state.PeerByPlayerId.Remove(session.PlayerId);
 			_state.PendingPickup.Remove(session.PlayerId);
-			_pendingTradeIntents.Remove(session.PlayerId);
+			_trade.ClearPendingFor(session.PlayerId);
 			_visibleGroundItems.Remove(peerId);
 			_state.DialogueByPlayer.Remove(session.PlayerId);
 			_pendingTalk.Remove(session.PlayerId);
@@ -777,14 +779,14 @@ public partial class Main : Node
 				case "npc_render_info_request": HandleNpcRenderInfo(peerId); break;
 				case "npc_render_fetch":        HandleNpcRenderFetch(peerId, root); break;
 				case "pickup_ground_item": HandlePickupGroundItem(peerId, root); break;
-				case "trade_invite_accept": HandleTradeInviteResponse(peerId, root, accept: true); break;
-				case "trade_invite_decline": HandleTradeInviteResponse(peerId, root, accept: false); break;
-				case "trade_offer_add": HandleTradeOfferAdd(peerId, root); break;
-				case "trade_offer_withdraw": HandleTradeOfferWithdraw(peerId, root); break;
-				case "trade_credits_set": HandleTradeCreditsSet(peerId, root); break;
-				case "trade_offer_accept": HandleTradeAcceptOffer(peerId, root); break;
-				case "trade_confirm": HandleTradeConfirm(peerId, root); break;
-				case "trade_cancel": HandleTradeCancel(peerId, root); break;
+				case "trade_invite_accept": _trade.HandleTradeInviteResponse(peerId, root, accept: true); break;
+				case "trade_invite_decline": _trade.HandleTradeInviteResponse(peerId, root, accept: false); break;
+				case "trade_offer_add": _trade.HandleTradeOfferAdd(peerId, root); break;
+				case "trade_offer_withdraw": _trade.HandleTradeOfferWithdraw(peerId, root); break;
+				case "trade_credits_set": _trade.HandleTradeCreditsSet(peerId, root); break;
+				case "trade_offer_accept": _trade.HandleTradeAcceptOffer(peerId, root); break;
+				case "trade_confirm": _trade.HandleTradeConfirm(peerId, root); break;
+				case "trade_cancel": _trade.HandleTradeCancel(peerId, root); break;
 				case "dialogue_choose": HandleDialogueChoose(peerId, root); break;
 				case "bank_deposit": HandleBankDeposit(peerId, root); break;
 				case "bank_withdraw": HandleBankWithdraw(peerId, root); break;
@@ -1079,8 +1081,8 @@ public partial class Main : Node
 	// queues. Without clearing pickup, a queued pickup abandoned by walking
 	// elsewhere would fire the next time the player stepped on the item.
 	_perTick?.EndByStem(session.PlayerId, "follow_player");
-	CancelTradeForPlayer(session.PlayerId, ErrorKeys.TradeCancelMoved);
-	CancelTradeQueuesForPlayer(session.PlayerId, ErrorKeys.TradeCancelMoved);
+	_trade.CancelTradeForPlayer(session.PlayerId, ErrorKeys.TradeCancelMoved);
+	_trade.CancelTradeQueuesForPlayer(session.PlayerId, ErrorKeys.TradeCancelMoved);
 	CancelDialogueForPlayer(session.PlayerId, "");
 	CancelPendingTalkFor(session.PlayerId);
 	CancelBankForPlayer(session.PlayerId, "");        // silent
@@ -1380,7 +1382,7 @@ private async Task CompleteLoginAsync(long peerId, PlayerRecord player)
 	private void SendError(long peerId, string type, string errorKey, object errorParams = null)
 		=> Send(peerId, new { type, ok = false, error_key = errorKey, error_params = errorParams ?? new { } });
 
-	private void Send(long peerId, object message, int channel = 0,
+	internal void Send(long peerId, object message, int channel = 0,
 		MultiplayerPeer.TransferModeEnum mode = MultiplayerPeer.TransferModeEnum.Reliable)
 	{
 		if (!_connectedPeers.Contains(peerId)) return;
@@ -1532,6 +1534,25 @@ private async Task CompleteLoginAsync(long peerId, PlayerRecord player)
 		long peerId = -1;
 		foreach (var kv in _state.Sessions) if (kv.Value.PlayerId == playerId) { peerId = kv.Key; break; }
 		if (peerId >= 0) _state.Intents[peerId] = new List<Vector2I>(route);
+	}
+
+	internal void RequestTrade(long requesterId, long targetPlayerId) =>
+		_trade.RequestTrade(requesterId, targetPlayerId);
+	
+	private void RemovePlayerIntent(long playerId)
+	{
+		if (_state.PeerByPlayerId.TryGetValue(playerId, out long peerId)) _state.Intents.Remove(peerId);
+	}
+	
+	private static int CountInventoryOfItem(long[] inventory, int itemId)
+	{
+		int total = 0;
+		foreach (long packed in inventory)
+		{
+			if (packed == 0) continue;
+			if (ItemStack.ItemId(packed) == itemId) total += ItemStack.Quantity(packed);
+		}
+		return total;
 	}
 
 	internal Dictionary<string, object>? GetActiveScriptArgs(long playerId, string stem) =>
@@ -1856,7 +1877,7 @@ internal bool SpawnGroundItemAt(string itemSlug, int quantity, int tileX, int ti
 
 internal void GivePlayerCredits(long playerId, int amount)
 {
-	if (IsTradeInventoryLocked(playerId)) return;
+	if (_trade.IsTradeInventoryLocked(playerId)) return;
 	if (amount <= 0) return;
 	if (!_state.Credits.TryGetValue(playerId, out int current)) return;
 	int newTotal = current + amount;
@@ -1904,8 +1925,8 @@ internal void RequestEngage(long playerId, long npcId)
 		return;
 	}
 
-	CancelTradeForPlayer(playerId, ErrorKeys.TradeCancelCombat);
-	CancelTradeQueuesForPlayer(playerId, ErrorKeys.TradeCancelCombat);
+	_trade.CancelTradeForPlayer(playerId, ErrorKeys.TradeCancelCombat);
+	_trade.CancelTradeQueuesForPlayer(playerId, ErrorKeys.TradeCancelCombat);
 	CancelDialogueForPlayer(playerId, ErrorKeys.DialogueCancelInterrupted);
 	CancelPendingTalkFor(playerId);
 	CancelBankForPlayer(playerId, ErrorKeys.BankCancelInterrupted);
@@ -1957,8 +1978,8 @@ internal void EngageNpc(long playerId, long npcId, bool initiatedByPlayer = true
 		return;
 	}
 
-	CancelTradeForPlayer(playerId, ErrorKeys.TradeCancelCombat);
-	CancelTradeQueuesForPlayer(playerId, ErrorKeys.TradeCancelCombat);
+	_trade.CancelTradeForPlayer(playerId, ErrorKeys.TradeCancelCombat);
+	_trade.CancelTradeQueuesForPlayer(playerId, ErrorKeys.TradeCancelCombat);
 	CancelDialogueForPlayer(playerId, ErrorKeys.DialogueCancelInterrupted);
 	CancelPendingTalkFor(playerId);
 	CancelBankForPlayer(playerId, ErrorKeys.BankCancelInterrupted);
@@ -2325,8 +2346,8 @@ private void ProcessPlayerHealing()
 
 	private void HandlePlayerDeath(long playerId)
 	{
-		CancelTradeForPlayer(playerId, ErrorKeys.TradeCancelDeath);
-		CancelTradeQueuesForPlayer(playerId, ErrorKeys.TradeCancelDeath);
+		_trade.CancelTradeForPlayer(playerId, ErrorKeys.TradeCancelDeath);
+		_trade.CancelTradeQueuesForPlayer(playerId, ErrorKeys.TradeCancelDeath);
 		CancelDialogueForPlayer(playerId, ErrorKeys.DialogueCancelInterrupted);
 		CancelPendingTalkFor(playerId);
 		CancelBankForPlayer(playerId, ErrorKeys.BankCancelInterrupted);
@@ -2455,7 +2476,7 @@ private int RollQuantity((int Min, int Max) range)
 	return _combatRng.Next(range.Min, range.Max + 1);
 }
 
-	private void ChatToPlayer(long playerId, string message)
+	internal void ChatToPlayer(long playerId, string message)
 	{
 		long peerId = -1;
 		foreach (var kv in _state.Sessions) if (kv.Value.PlayerId == playerId) { peerId = kv.Key; break; }
@@ -2771,7 +2792,7 @@ internal int GetSlotQuantity(long playerId, int slot)
 
 internal bool ConsumeInventorySlot(long playerId, int slot, int qty)
 {
-	if (IsTradeInventoryLocked(playerId)) return false;
+	if (_trade.IsTradeInventoryLocked(playerId)) return false;
 	if (!_state.Inventories.TryGetValue(playerId, out var inv)) return false;
 	if (slot < 0 || slot >= 28) return false;
 	long packed = inv[slot];
@@ -2795,7 +2816,7 @@ internal bool ConsumeInventorySlot(long playerId, int slot, int qty)
 /// </summary>
 internal bool GiveItem(long playerId, string itemSlug, int qty)
 {
-	if (IsTradeInventoryLocked(playerId)) return false;
+	if (_trade.IsTradeInventoryLocked(playerId)) return false;
 	if (qty < 1) return false;
 	if (!_items.ContainsSlug(itemSlug)) return false;
 	if (!_state.Inventories.ContainsKey(playerId)) return false;
@@ -2810,7 +2831,7 @@ internal bool GiveItem(long playerId, string itemSlug, int qty)
 /// </summary>
 internal async Task<bool> GiveItemAsync(long playerId, string itemSlug, int qty)
 {
-	if (IsTradeInventoryLocked(playerId)) return false;
+	if (_trade.IsTradeInventoryLocked(playerId)) return false;
 	if (qty < 1) return false;
 	if (!_items.TryGetIdBySlug(itemSlug, out long itemId))
 	{
@@ -2939,7 +2960,7 @@ internal bool TryConsumeItem(long playerId, int slot, int healAmount)
 	return true;
 }
 
-private void BroadcastInventory(long playerId)
+internal void BroadcastInventory(long playerId)
 {
 	if (!_state.PeerByPlayerId.TryGetValue(playerId, out long peerId)) return;
 	SendInventory(peerId);
@@ -3012,7 +3033,7 @@ private void SendSkills(long peerId)
 private void HandleInventorySwap(long peerId, JsonElement root)
 {
 	if (!_state.Sessions.TryGetValue(peerId, out var session)) return;
-	if (IsTradeInventoryLocked(session.PlayerId)) return;
+	if (_trade.IsTradeInventoryLocked(session.PlayerId)) return;
 	if (!root.TryGetProperty("slot_a", out var aEl) || !aEl.TryGetInt32(out int slotA)) return;
 	if (!root.TryGetProperty("slot_b", out var bEl) || !bEl.TryGetInt32(out int slotB)) return;
 	if (slotA == slotB) return;
@@ -3081,7 +3102,7 @@ internal bool DropGroundItem(long playerId, string itemSlug, int quantity)
 
 internal void RequestPickup(long playerId, long groundItemId)
 {
-	if (IsTradeInventoryLocked(playerId)) return;
+	if (_trade.IsTradeInventoryLocked(playerId)) return;
 	if (!_groundItems.TryGetValue(groundItemId, out var item)) return;
 	if (!_state.Positions.TryGetValue(playerId, out var pos)) return;
 
@@ -3157,7 +3178,7 @@ private void MovePlayerAdjacentToTile(long playerId, int tx, int ty)
 
 private void ExecutePickup(long playerId, GroundItem item)
 {
-	if (IsTradeInventoryLocked(playerId)) return;
+	if (_trade.IsTradeInventoryLocked(playerId)) return;
 	if (!_groundItems.Remove(item.Id)) return;
 	foreach (var kv in _visibleGroundItems)
 	{
@@ -3251,7 +3272,7 @@ private void HandlePickupGroundItem(long peerId, JsonElement root)
 
 internal bool TryDropFromSlot(long playerId, int slot, int qty)
 {
-	if (IsTradeInventoryLocked(playerId)) return false;
+	if (_trade.IsTradeInventoryLocked(playerId)) return false;
 	if (!_state.Inventories.TryGetValue(playerId, out var inv)) return false;
 	if (slot < 0 || slot >= 28) return false;
 	long packed = inv[slot];
