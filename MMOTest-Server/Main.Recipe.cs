@@ -134,7 +134,7 @@ public partial class Main
             if (name.StartsWith("level_"))
             {
                 string skillId = name.Substring("level_".Length);
-                if (_skillsByPlayer.TryGetValue(playerId, out var skills))
+                if (_state.SkillsByPlayer.TryGetValue(playerId, out var skills))
                 {
                     var skill = skills.FirstOrDefault(s => s.Id == skillId);
                     if (skill != null) return (long)skill.Max;
@@ -322,7 +322,7 @@ public partial class Main
     private void AwardRecipeXp(long playerId, Dictionary<string, int> xpRewards)
     {
         if (xpRewards.Count == 0) return;
-        if (!_skillsByPlayer.TryGetValue(playerId, out var skills)) return;
+        if (!_state.SkillsByPlayer.TryGetValue(playerId, out var skills)) return;
         if (!_state.PeerByPlayerId.TryGetValue(playerId, out var peerId)) return;
 
         foreach (var (skillId, rawXp) in xpRewards)

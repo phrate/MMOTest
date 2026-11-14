@@ -65,6 +65,7 @@ internal sealed class ServerState
     public readonly Dictionary<long, CombatPair> CombatByPlayer = new();
     public readonly Dictionary<long, long> PendingEngage = new();
     public readonly Dictionary<long, PlayerCombatData> PlayerCombat = new();
+    public readonly Dictionary<long, List<SkillLevel>> SkillsByPlayer = new();
     public readonly Dictionary<long, List<Vector2I>> Intents = new();
     public readonly Dictionary<long, long> PendingPickup = new();
     public readonly Dictionary<long, DialogueSession> DialogueByPlayer = new();

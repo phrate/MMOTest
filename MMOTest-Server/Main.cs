@@ -93,7 +93,6 @@ public partial class Main : Node
 	private readonly ItemLookup _items = new();
 	private readonly Dictionary<string, Dictionary<string, (int Min, int Max)>> _lootTablesBySlug = new();
 
-	private readonly Dictionary<long, List<SkillLevel>> _skillsByPlayer = new();
 	private readonly Dictionary<string, (int Min, int Max)> _creditsLootBySlug = new();
 	private readonly Dictionary<long, int> _playerHealAccumTicks = new();
 	private readonly Random _combatRng = new();
@@ -711,7 +710,7 @@ public partial class Main : Node
 			_lastConsumeTick.Remove(session.PlayerId);
 			_state.Inventories.Remove(session.PlayerId);
 			_state.Credits.Remove(session.PlayerId);
-			_skillsByPlayer.Remove(session.PlayerId);
+			_state.SkillsByPlayer.Remove(session.PlayerId);
 			_state.PendingEngage.Remove(session.PlayerId);
 			_playerHealAccumTicks.Remove(session.PlayerId);
 			_state.PeerByPlayerId.Remove(session.PlayerId);
@@ -1258,7 +1257,7 @@ private async Task CompleteLoginAsync(long peerId, PlayerRecord player)
 	_state.Credits[player.Id] = credits;
 
 
-	_skillsByPlayer[player.Id] = await _db.Stats.GetSkillsAsync(player.Id);
+	_state.SkillsByPlayer[player.Id] = await _db.Stats.GetSkillsAsync(player.Id);
 
 	// Compute spawn position and publish it BEFORE the session. Any concurrent
 	// EnterWorld (from another player logging in) reads _state.Positions to build
@@ -2344,7 +2343,7 @@ private void ProcessPlayerHealing()
 
 	private void AwardCombatExperience(long playerId, int damage)
 	{
-		if (damage <= 0 || !_skillsByPlayer.TryGetValue(playerId, out var skills)) return;
+		if (damage <= 0 || !_state.SkillsByPlayer.TryGetValue(playerId, out var skills)) return;
 
 		int accuracyIndex = skills.FindIndex(skill => skill.Id == "accuracy");
 		int hitpointsIndex = skills.FindIndex(skill => skill.Id == "hitpoints");
@@ -3153,7 +3152,7 @@ private void SendInventory(long peerId)
 private void SendSkills(long peerId)
 {
 	if (!_state.Sessions.TryGetValue(peerId, out var session)) return;
-	if (!_skillsByPlayer.TryGetValue(session.PlayerId, out var skills)) return;
+	if (!_state.SkillsByPlayer.TryGetValue(session.PlayerId, out var skills)) return;
 
 	var list = skills.Select(s =>
 	{
