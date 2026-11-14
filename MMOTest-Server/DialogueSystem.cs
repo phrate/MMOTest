@@ -20,12 +20,14 @@ internal sealed class DialogueSystem
     private readonly Gfs.FunctionRegistry _gfsFns;
     private readonly Gfs.PerTickManager _perTick;
     private readonly OutboundChannel _outbound;
+    private readonly Coordinator _coordinator;
 
     private readonly Dictionary<long, long> _pendingTalk = new(); // playerId -> npcId
 
     public DialogueSystem(Main main, ServerState state,
                           Gfs.GfsManager gfs, Gfs.FunctionRegistry gfsFns,
-                          Gfs.PerTickManager perTick, OutboundChannel outbound)
+                          Gfs.PerTickManager perTick, OutboundChannel outbound,
+                          Coordinator coordinator)
     {
         _main = main;
         _state = state;
@@ -33,6 +35,7 @@ internal sealed class DialogueSystem
         _gfsFns = gfsFns;
         _perTick = perTick;
         _outbound = outbound;
+        _coordinator = coordinator;
     }
 
     internal void ClearPendingFor(long playerId) => _pendingTalk.Remove(playerId);
@@ -158,10 +161,7 @@ internal sealed class DialogueSystem
             return;
         }
 
-        _main.CancelTradeForPlayer(playerId, ErrorKeys.TradeCancelDialogue);
-        _main.CancelTradeQueuesForPlayer(playerId, ErrorKeys.TradeCancelDialogue);
-        _main.CancelBankForPlayer(playerId, "");
-        _main.CancelPendingBankFor(playerId);
+        _coordinator.OnDialogueOpened(playerId);
         _perTick?.EndByStem(playerId, "follow_player");
         _main.RemovePlayerIntent(playerId);
         _state.PendingPickup.Remove(playerId);

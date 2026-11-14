@@ -61,6 +61,7 @@ internal sealed class TradeSystem
     private readonly InventoryRepository _inventory;
     private readonly Gfs.PerTickManager _perTick;
     private readonly OutboundChannel _outbound;
+    private readonly Coordinator _coordinator;
 
     private readonly Dictionary<long, PendingTradeInvite> _pendingTradeInvites = new();
     private readonly Dictionary<long, TradeSession> _tradeByPlayer = new();
@@ -69,7 +70,7 @@ internal sealed class TradeSystem
 
     public TradeSystem(Main main, ServerState state, ItemLookup items,
                        InventoryRepository inventory, Gfs.PerTickManager perTick,
-                       OutboundChannel outbound)
+                       OutboundChannel outbound, Coordinator coordinator)
     {
         _main = main;
         _state = state;
@@ -77,6 +78,7 @@ internal sealed class TradeSystem
         _inventory = inventory;
         _perTick = perTick;
         _outbound = outbound;
+        _coordinator = coordinator;
     }
 
     internal bool IsTradeInventoryLocked(long playerId) => _tradeByPlayer.ContainsKey(playerId);
@@ -94,11 +96,7 @@ internal sealed class TradeSystem
             SendTradeError(requesterId, ErrorKeys.TradeSelf);
             return;
         }
-        if (_state.DialogueByPlayer.ContainsKey(requesterId))
-            _main.CancelDialogueForPlayer(requesterId, "");
-        _main.CancelPendingTalkFor(requesterId);
-        _main.CancelBankForPlayer(requesterId, "");
-        _main.CancelPendingBankFor(requesterId);
+        _coordinator.OnTradeInitiated(requesterId);
         if (_state.DialogueByPlayer.ContainsKey(targetPlayerId))
         {
             SendTradeError(requesterId, ErrorKeys.TradeBusy);
@@ -381,14 +379,7 @@ internal sealed class TradeSystem
         if (_state.PeerByPlayerId.TryGetValue(recipient.PlayerId, out long recPeer))
             _state.Intents.Remove(recPeer);
 
-        _main.CancelDialogueForPlayer(recipient.PlayerId, "");
-        _main.CancelDialogueForPlayer(invite.RequesterId, "");
-        _main.CancelPendingTalkFor(recipient.PlayerId);
-        _main.CancelPendingTalkFor(invite.RequesterId);
-        _main.CancelBankForPlayer(recipient.PlayerId, "");
-        _main.CancelBankForPlayer(invite.RequesterId, "");
-        _main.CancelPendingBankFor(recipient.PlayerId);
-        _main.CancelPendingBankFor(invite.RequesterId);
+        _coordinator.OnTradeAccepted(invite.RequesterId, recipient.PlayerId);
 
         var trade = new TradeSession
         {

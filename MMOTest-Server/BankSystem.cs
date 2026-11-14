@@ -49,6 +49,7 @@ internal sealed class BankSystem
     private readonly InventoryRepository _inventory;
     private readonly Gfs.PerTickManager _perTick;
     private readonly OutboundChannel _outbound;
+    private readonly Coordinator _coordinator;
 
     private readonly Dictionary<long, List<BankEntry?>> _bankByPlayer = new();
     private readonly Dictionary<long, int> _bankCapacityByPlayer = new();
@@ -58,7 +59,8 @@ internal sealed class BankSystem
 
     public BankSystem(Main main, ServerState state, ItemLookup items,
                       BankRepository bankRepo, InventoryRepository inventory,
-                      Gfs.PerTickManager perTick, OutboundChannel outbound)
+                      Gfs.PerTickManager perTick, OutboundChannel outbound,
+                      Coordinator coordinator)
     {
         _main = main;
         _state = state;
@@ -67,6 +69,7 @@ internal sealed class BankSystem
         _inventory = inventory;
         _perTick = perTick;
         _outbound = outbound;
+        _coordinator = coordinator;
     }
 
     internal bool IsPlayerInBank(long playerId) => _bankSessionByPlayer.ContainsKey(playerId);
@@ -221,9 +224,7 @@ internal sealed class BankSystem
         if (!npc.IsBanker || npc.IsDead) return;
         if (!_bankByPlayer.ContainsKey(playerId)) return;
 
-        _main.CancelTradeForPlayer(playerId, ErrorKeys.TradeCancelDialogue);
-        _main.CancelTradeQueuesForPlayer(playerId, ErrorKeys.TradeCancelDialogue);
-        _main.CancelDialogueForPlayer(playerId, "");
+        _coordinator.OnBankOpened(playerId);
         _perTick?.EndByStem(playerId, "follow_player");
         _main.RemovePlayerIntent(playerId);
         _state.PendingPickup.Remove(playerId);

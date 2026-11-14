@@ -129,6 +129,7 @@ public partial class Main : Node
 	private BankSystem _bank;
 	private RecipeSystem _recipe;
 	private OutboundChannel _outbound;
+	private Coordinator _coordinator;
 
 	public override void _Ready()
 	{
@@ -248,10 +249,12 @@ public partial class Main : Node
 			_perTick = new Gfs.PerTickManager(_gfsFns);
 			_gfs.ScriptsChanged += OnGfsScriptsChanged;
 			_outbound = new OutboundChannel(_state, _items, SendBytes);
-			_trade = new TradeSystem(this, _state, _items, _db.Inventory, _perTick, _outbound);
-			_dialogue = new DialogueSystem(this, _state, _gfs, _gfsFns, _perTick, _outbound);
-			_bank = new BankSystem(this, _state, _items, _db.Bank, _db.Inventory, _perTick, _outbound);
+			_coordinator = new Coordinator();
+			_trade = new TradeSystem(this, _state, _items, _db.Inventory, _perTick, _outbound, _coordinator);
+			_dialogue = new DialogueSystem(this, _state, _gfs, _gfsFns, _perTick, _outbound, _coordinator);
+			_bank = new BankSystem(this, _state, _items, _db.Bank, _db.Inventory, _perTick, _outbound, _coordinator);
 			_recipe = new RecipeSystem(this, _state, _items, _db.Recipes, _db.Inventory, _db.Stats, _gfs, _gfsFns, _world, _outbound);
+			_coordinator.Wire(_trade, _dialogue, _bank);
 			_recipe.LoadRecipes();
 
 			_npcRender = new NpcRenderManager(new[]
@@ -697,10 +700,7 @@ public partial class Main : Node
 	private void OnPeerDisconnected(long peerId)
 	{
 		if (_state.Sessions.TryGetValue(peerId, out var departingSession))
-		{
-			_trade.CancelTradeForPlayer(departingSession.PlayerId, ErrorKeys.TradeCancelDisconnected);
-			_trade.CancelTradeQueuesForPlayer(departingSession.PlayerId, ErrorKeys.TradeCancelDisconnected);
-		}
+			_coordinator.OnPlayerDisconnected(departingSession.PlayerId);
 		_connectedPeers.Remove(peerId);
 		_authInProgress.Remove(peerId);
 		_state.Intents.Remove(peerId);
@@ -986,12 +986,7 @@ public partial class Main : Node
 		if (ast.Tags.Contains(Gfs.GfsTags.OncePerTick) && !ctx.EndScriptRequested)
 		{
 			if (scriptPath.EndsWith("follow_player.gfs"))
-			{
-				CancelDialogueForPlayer(session.PlayerId, ErrorKeys.DialogueCancelInterrupted);
-				CancelPendingTalkFor(session.PlayerId);
-				CancelBankForPlayer(session.PlayerId, ErrorKeys.BankCancelInterrupted);
-				CancelPendingBankFor(session.PlayerId);
-			}
+				_coordinator.OnFollowStarted(session.PlayerId);
 			_perTick.Start(session.PlayerId, scriptPath, ast, ctx);
 		}
 
@@ -1085,12 +1080,7 @@ public partial class Main : Node
 	// queues. Without clearing pickup, a queued pickup abandoned by walking
 	// elsewhere would fire the next time the player stepped on the item.
 	_perTick?.EndByStem(session.PlayerId, "follow_player");
-	_trade.CancelTradeForPlayer(session.PlayerId, ErrorKeys.TradeCancelMoved);
-	_trade.CancelTradeQueuesForPlayer(session.PlayerId, ErrorKeys.TradeCancelMoved);
-	CancelDialogueForPlayer(session.PlayerId, "");
-	CancelPendingTalkFor(session.PlayerId);
-	CancelBankForPlayer(session.PlayerId, "");        // silent
-	CancelPendingBankFor(session.PlayerId);
+	_coordinator.OnPlayerWalked(session.PlayerId);
 	_state.PendingEngage.Remove(session.PlayerId);
 	_state.PendingPickup.Remove(session.PlayerId);
 
@@ -1580,12 +1570,7 @@ private async Task CompleteLoginAsync(long peerId, PlayerRecord player)
 	private void RunScriptFromGfs(long playerId, string stem, Dictionary<string, object> args, Gfs.CallContext parentCtx)
 	{
 		if (stem == "follow_player")
-		{
-			CancelDialogueForPlayer(playerId, ErrorKeys.DialogueCancelInterrupted);
-			CancelPendingTalkFor(playerId);
-			CancelBankForPlayer(playerId, ErrorKeys.BankCancelInterrupted);
-			CancelPendingBankFor(playerId);
-		}
+			_coordinator.OnFollowStarted(playerId);
 		var (path, ast) = _gfs.ResolveByStem(stem);
 		if (ast == null) { GD.PrintErr($"[Server] RUN: script not found: {stem}"); return; }
 		var newCtx = new Gfs.CallContext
@@ -1941,12 +1926,7 @@ internal void RequestEngage(long playerId, long npcId)
 		return;
 	}
 
-	_trade.CancelTradeForPlayer(playerId, ErrorKeys.TradeCancelCombat);
-	_trade.CancelTradeQueuesForPlayer(playerId, ErrorKeys.TradeCancelCombat);
-	CancelDialogueForPlayer(playerId, ErrorKeys.DialogueCancelInterrupted);
-	CancelPendingTalkFor(playerId);
-	CancelBankForPlayer(playerId, ErrorKeys.BankCancelInterrupted);
-	CancelPendingBankFor(playerId);
+	_coordinator.OnCombatStarted(playerId);
 
 	if (ArePositionsAdjacent(playerId, npc))
 	{
@@ -1994,12 +1974,7 @@ internal void EngageNpc(long playerId, long npcId, bool initiatedByPlayer = true
 		return;
 	}
 
-	_trade.CancelTradeForPlayer(playerId, ErrorKeys.TradeCancelCombat);
-	_trade.CancelTradeQueuesForPlayer(playerId, ErrorKeys.TradeCancelCombat);
-	CancelDialogueForPlayer(playerId, ErrorKeys.DialogueCancelInterrupted);
-	CancelPendingTalkFor(playerId);
-	CancelBankForPlayer(playerId, ErrorKeys.BankCancelInterrupted);
-	CancelPendingBankFor(playerId);
+	_coordinator.OnCombatStarted(playerId);
 
 	var pair = new CombatPair
 	{
@@ -2362,12 +2337,7 @@ private void ProcessPlayerHealing()
 
 	private void HandlePlayerDeath(long playerId)
 	{
-		_trade.CancelTradeForPlayer(playerId, ErrorKeys.TradeCancelDeath);
-		_trade.CancelTradeQueuesForPlayer(playerId, ErrorKeys.TradeCancelDeath);
-		CancelDialogueForPlayer(playerId, ErrorKeys.DialogueCancelInterrupted);
-		CancelPendingTalkFor(playerId);
-		CancelBankForPlayer(playerId, ErrorKeys.BankCancelInterrupted);
-		CancelPendingBankFor(playerId);
+		_coordinator.OnPlayerDied(playerId);
 
 		long peerId = -1;
 		foreach (var kv in _state.Sessions) if (kv.Value.PlayerId == playerId) { peerId = kv.Key; break; }
