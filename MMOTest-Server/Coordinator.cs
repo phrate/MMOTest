@@ -12,11 +12,11 @@ namespace MMOTest.Server;
 /// </summary>
 internal sealed class Coordinator
 {
-    private TradeSystem _trade = null!;
-    private DialogueSystem _dialogue = null!;
-    private BankSystem _bank = null!;
+    private ITradeCanceller _trade = null!;
+    private IDialogueCanceller _dialogue = null!;
+    private IBankCanceller _bank = null!;
 
-    public void Wire(TradeSystem trade, DialogueSystem dialogue, BankSystem bank)
+    public void Wire(ITradeCanceller trade, IDialogueCanceller dialogue, IBankCanceller bank)
     {
         _trade = trade;
         _dialogue = dialogue;

@@ -13,7 +13,7 @@ namespace MMOTest.Server;
 /// Coupling note (temporary): holds Main for Send / ChatToPlayer / cross-cutting
 /// cancels and world helpers. Phase 4's Coordinator + OutboundChannel absorb these.
 /// </summary>
-internal sealed class BankSystem
+internal sealed class BankSystem : IBankCanceller
 {
     internal sealed class BankEntry
     {
@@ -189,7 +189,7 @@ internal sealed class BankSystem
             _movement.MovePlayerAdjacentToNpc(playerId, npc);
     }
 
-    internal void CancelPendingBankFor(long playerId) => _pendingBank.Remove(playerId);
+    public void CancelPendingBankFor(long playerId) => _pendingBank.Remove(playerId);
 
     internal void ProcessPendingBank()
     {
@@ -609,7 +609,7 @@ internal sealed class BankSystem
 
     // ---------- Cancel / notice / close ----------
 
-    internal void CancelBankForPlayer(long playerId, string errorKey)
+    public void CancelBankForPlayer(long playerId, string errorKey)
     {
         if (!_bankSessionByPlayer.TryGetValue(playerId, out var session)) return;
         CloseBank(session, silent: string.IsNullOrEmpty(errorKey), errorKey);

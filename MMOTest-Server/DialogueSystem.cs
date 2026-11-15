@@ -12,7 +12,7 @@ namespace MMOTest.Server;
 /// Coupling note (temporary): holds Main for Send / ChatToPlayer / cross-cutting
 /// cancels and NPC lookups. Phase 4's Coordinator + OutboundChannel absorb these.
 /// </summary>
-internal sealed class DialogueSystem
+internal sealed class DialogueSystem : IDialogueCanceller
 {
     private readonly NpcSystem _npc;
     private readonly MovementSystem _movement;
@@ -91,7 +91,7 @@ internal sealed class DialogueSystem
             _movement.MovePlayerAdjacentToNpc(playerId, npc);
     }
 
-    internal void CancelPendingTalkFor(long playerId) => _pendingTalk.Remove(playerId);
+    public void CancelPendingTalkFor(long playerId) => _pendingTalk.Remove(playerId);
 
     internal void ProcessPendingTalk()
     {
@@ -216,7 +216,7 @@ internal sealed class DialogueSystem
         ExecuteAndSendTopic(session, npc);
     }
 
-    internal void CancelDialogueForPlayer(long playerId, string errorKey)
+    public void CancelDialogueForPlayer(long playerId, string errorKey)
     {
         if (!_state.DialogueByPlayer.TryGetValue(playerId, out var session)) return;
         CloseDialogue(session, silent: string.IsNullOrEmpty(errorKey), errorKey);

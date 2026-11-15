@@ -15,7 +15,7 @@ namespace MMOTest.Server;
 /// Coordinator + OutboundChannel which replace these — swapping `_main` for
 /// `_coordinator` and `_outbound` will be a call-site rewrite, not a design change.
 /// </summary>
-internal sealed class TradeSystem
+internal sealed class TradeSystem : ITradeCanceller
 {
     private const long TradeInviteTimeoutTicks = 50;
     private const long TradeSessionTimeoutTicks = 1200;
@@ -512,7 +512,7 @@ internal sealed class TradeSystem
     // Cancel plumbing (called by Main and other systems)
     // ============================================================
 
-    internal void CancelTradeQueuesForPlayer(long playerId, string errorKey)
+    public void CancelTradeQueuesForPlayer(long playerId, string errorKey)
     {
         if (_pendingTradeInvites.Remove(playerId))
             SendTradeError(playerId, errorKey);
@@ -532,7 +532,7 @@ internal sealed class TradeSystem
         }
     }
 
-    internal void CancelTradeForPlayer(long playerId, string errorKey)
+    public void CancelTradeForPlayer(long playerId, string errorKey)
     {
         if (_tradeByPlayer.TryGetValue(playerId, out var trade))
             CancelTrade(trade, errorKey);
