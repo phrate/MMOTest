@@ -38,6 +38,53 @@ const TARGET_HEIGHT_BY_SLUG := {
 }
 
 const AI_PACKAGES := ["idle", "wander"]
+const UNIQUE_VIEW_SPEC := [
+	{"kind": "row", "fields": [
+		{"kind": "line_edit", "label": "label_name", "save": "name", "value_key": "name", "readonly": true},
+		{"kind": "line_edit", "label": "label_display", "save": "display", "value_key": "display"},
+	]},
+	{"kind": "row", "fields": [
+		{"kind": "dropdown", "label": "label_render", "save": "render_slug", "value_key": "render_slug", "options_key": "render_slugs"},
+		{"kind": "dropdown", "label": "label_dialogue_script", "save": "dialogue_script", "value_key": "dialogue_script", "options_key": "dialogue_scripts", "prepend": ["_none"], "label_to_value": {"_none": ""}},
+	]},
+	{"kind": "separator"},
+	{"kind": "row", "fields": [
+		{"kind": "dropdown", "label": "label_loot_table", "save": "loot_table_name", "value_key": "loot_table_name", "options_key": "loot_lists"},
+		{"kind": "dropdown", "label": "label_credits_table", "save": "credits_table_name", "value_key": "credits_table_name", "options_key": "credits_loot_lists"},
+	]},
+	{"kind": "row", "fields": [
+		{"kind": "dropdown", "label": "label_ai_package", "save": "ai_package_state", "value_key": "ai_package_state", "options_static": ["idle", "wander"]},
+	]},
+	{"kind": "row", "fields": [
+		{"kind": "textarea", "label": "label_spawn_flags", "save": "spawn_flags", "value_key": "spawn_flags"},
+	]},
+	{"kind": "separator"},
+	{"kind": "section", "key": "section_tile_spawn"},
+	{"kind": "row", "fields": [
+		{"kind": "spin", "label": "label_tile_x", "save": "tile_x", "value_key": "tile_x", "min": -999999, "max": 999999},
+		{"kind": "spin", "label": "label_tile_y", "save": "tile_y", "value_key": "tile_y", "min": -999999, "max": 999999},
+		{"kind": "spin", "label": "label_tile_z", "save": "tile_z", "value_key": "tile_z", "min": -999999, "max": 999999},
+	]},
+	{"kind": "separator"},
+	{"kind": "section", "key": "section_features"},
+	{"kind": "row", "fields": [
+		{"kind": "toggle", "label": "label_is_banker", "save": "is_banker", "value_key": "is_banker"},
+		{"kind": "toggle", "label": "label_attackable", "save": "attackable", "value_key": "attackable"},
+		{"kind": "toggle", "label": "label_aggressive", "save": "aggressive", "value_key": "aggressive"},
+	]},
+	{"kind": "separator"},
+	{"kind": "section", "key": "section_combat"},
+	{"kind": "combat_grid"},
+]
+
+const TEMPLATE_VIEW_SPEC := [
+	{"kind": "row", "fields": [
+		{"kind": "line_edit", "label": "slug_id", "save": "slug_id", "value_key": "slug_id", "readonly": true},
+	]},
+	{"kind": "separator"},
+	{"kind": "section", "key": "section_combat"},
+	{"kind": "combat_grid"},
+]
 
 @export var model_viewport_min_size: Vector2 = Vector2(280, 360)
 @export var default_orbit_yaw: float = 0.6
@@ -677,94 +724,76 @@ func _rebuild_right_panel() -> void:
 
 # ---------- Main view ----------
 func _build_main_view() -> void:
-	if _mode == "template":
-		_build_template_view()
-	else:
-		_build_unique_view()
+	var spec: Array = TEMPLATE_VIEW_SPEC if _mode == "template" else UNIQUE_VIEW_SPEC
+	_build_view_from_spec(spec)
 
 
-func _build_unique_view() -> void:
-	# Row 1: Name (readonly) | Display
-	var r1 := _field_row()
-	_add_line_edit_to_row(r1, "label_name", "name", str(_current_data.get("name", "")), true)
-	_add_line_edit_to_row(r1, "label_display", "display", str(_current_data.get("display", "")), false)
-	_fields_container.add_child(r1)
-
-	# Row 2: Render | Dialogue Script
-	var r2 := _field_row()
-	_add_dropdown_to_row(r2, "label_render", "render_slug",
-		str(_current_data.get("render_slug", "")),
-		_options.get("render_slugs", []))
-	_add_dropdown_to_row(r2, "label_dialogue_script", "dialogue_script",
-		str(_current_data.get("dialogue_script", "")),
-		["_none"] + _options.get("dialogue_scripts", []),
-		{"_none": ""})
-	_fields_container.add_child(r2)
-
-	_fields_container.add_child(HSeparator.new())
-
-	# Row 3: Loot Table | Credits Table
-	var r3 := _field_row()
-	_add_dropdown_to_row(r3, "label_loot_table", "loot_table_name",
-		str(_current_data.get("loot_table_name", "")),
-		_options.get("loot_lists", []))
-	_add_dropdown_to_row(r3, "label_credits_table", "credits_table_name",
-		str(_current_data.get("credits_table_name", "")),
-		_options.get("credits_loot_lists", []))
-	_fields_container.add_child(r3)
-
-	# Row 4: AI Package
-	var r4 := _field_row()
-	_add_dropdown_to_row(r4, "label_ai_package", "ai_package_state",
-		str(_current_data.get("ai_package_state", "idle")),
-		AI_PACKAGES)
-	_fields_container.add_child(r4)
-
-	# Row 6: Spawn Flags
-	var r6 := _field_row()
-	_add_textarea_to_row(r6, "label_spawn_flags", "spawn_flags",
-		str(_current_data.get("spawn_flags", "{}")))
-	_fields_container.add_child(r6)
-
-	# Row 7: Tile X | Y | Z
-	_fields_container.add_child(HSeparator.new())
-	_fields_container.add_child(_section_header("section_tile_spawn"))
-
-	var r_tile := _field_row()
-	_add_spin_to_row(r_tile, "label_tile_x", "tile_x", int(_current_data.get("tile_x", 0)), -999999, 999999)
-	_add_spin_to_row(r_tile, "label_tile_y", "tile_y", int(_current_data.get("tile_y", 0)), -999999, 999999)
-	_add_spin_to_row(r_tile, "label_tile_z", "tile_z", int(_current_data.get("tile_z", 100)), -999999, 999999)
-	_fields_container.add_child(r_tile)
-
-	_fields_container.add_child(HSeparator.new())
-
-	# FEATURES section
-	_fields_container.add_child(_section_header("section_features"))
-
-	var r_features := _field_row()
-	_add_checkbox_to_row(r_features, "label_is_banker", "is_banker", bool(_current_data.get("is_banker", false)))
-	_add_checkbox_to_row(r_features, "label_attackable", "attackable", bool(_current_data.get("attackable", true)))
-	_add_checkbox_to_row(r_features, "label_aggressive", "aggressive", bool(_current_data.get("aggressive", false)))
-	_fields_container.add_child(r_features)
-
-	_fields_container.add_child(HSeparator.new())
-
-	# COMBAT STATS section
-	_fields_container.add_child(_section_header("section_combat"))
-	_build_combat_stats_grid()
+func _build_view_from_spec(spec: Array) -> void:
+	for item in spec:
+		match str(item.get("kind", "")):
+			"row":
+				var r := _field_row()
+				for f in item["fields"]:
+					_add_field_widget(r, f)
+				_fields_container.add_child(r)
+			"section":
+				_fields_container.add_child(_section_header(str(item["key"])))
+			"separator":
+				_fields_container.add_child(HSeparator.new())
+			"combat_grid":
+				_build_combat_stats_grid()
 
 
-func _build_template_view() -> void:
-	var r1 := _field_row()
-	_add_readonly_to_row(r1, "slug_id", str(_current_data.get("slug_id", "")))
-	_fields_container.add_child(r1)
+func _add_field_widget(row: HBoxContainer, f: Dictionary) -> void:
+	var kind := str(f["kind"])
+	var value_key := str(f.get("value_key", ""))
+	var value: Variant = _current_data.get(value_key) if value_key != "" else null
 
-	_fields_container.add_child(HSeparator.new())
-	_fields_container.add_child(_section_header("section_combat"))
-	_build_combat_stats_grid()
-
+	match kind:
+		"line_edit":
+			_add_line_edit_to_row(
+				row,
+				str(f["label"]),
+				str(f["save"]),
+				str(value) if value != null else "",
+				bool(f.get("readonly", false)))
+		"spin":
+			_add_spin_to_row(
+				row,
+				str(f["label"]),
+				str(f["save"]),
+				int(value) if value != null else 0,
+				int(f.get("min", 0)),
+				int(f.get("max", 999999)))
+		"toggle":
+			_add_checkbox_to_row(
+				row,
+				str(f["label"]),
+				str(f["save"]),
+				bool(value) if value != null else false)
+		"textarea":
+			_add_textarea_to_row(
+				row,
+				str(f["label"]),
+				str(f["save"]),
+				str(value) if value != null else "")
+		"dropdown":
+			var options: Array = []
+			if f.has("options_static"):
+				options = (f["options_static"] as Array).duplicate()
+			elif f.has("options_key"):
+				options = (_options.get(str(f["options_key"]), []) as Array).duplicate()
+			if f.has("prepend"):
+				options = (f["prepend"] as Array) + options
+			var label_to_value: Dictionary = f.get("label_to_value", {})
+			_add_dropdown_to_row(
+				row,
+				str(f["label"]),
+				str(f["save"]),
+				str(value) if value != null else "",
+				options,
+				label_to_value)
 # ---------- Hitbox view ----------
-
 func _build_hitbox_view() -> void:
 	var is_capsule := str(_hitbox.get("type", "capsule")) == "capsule"
 

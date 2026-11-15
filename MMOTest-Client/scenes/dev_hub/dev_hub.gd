@@ -170,11 +170,16 @@ func _build_panels() -> void:
 
 	for def in DevPanelRegistry.PANELS:
 		var id: String = def["id"]
-		var script_path: String = def["script"]
-		if not ResourceLoader.exists(script_path):
-			push_error("[DevHub] Missing panel script '%s'" % script_path)
+		var scene_path: String = def["scene"]
+		if not ResourceLoader.exists(scene_path):
+			push_error("[DevHub] Missing panel scene '%s'" % scene_path)
 			continue
-		var panel: DevPanel = load(script_path).new()
+		var packed: PackedScene = load(scene_path)
+		var panel: DevPanel = packed.instantiate() as DevPanel
+		if panel == null:
+			push_error("[DevHub] Scene root does not extend DevPanel: '%s'" % scene_path)
+			continue
+		
 		panel.name = id
 		panel.visible = false
 		panel.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
