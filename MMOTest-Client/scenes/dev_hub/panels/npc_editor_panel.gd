@@ -1,36 +1,13 @@
 extends DevPanel
-## NPC editor — client-side port of the server NpcEditor.
+## NPC editor — type editor with Browse / Edit / Create sub-tabs.
 ##
-## Layout:
-##   Filter row (mode, search, npc dropdown)
-##   Split:
-##     Left: [Hitbox] [Scale] view toggles, then the 3D model preview
-##     Right: view-specific content + Save All button at bottom
+## Types are shared definitions (display, render, combat stats, loot, etc.).
+## Instances (placements) live in the world and are managed via WorldEditor.
+## Editing a type affects every instance of it on next respawn.
 ##
-## View modes:
-##   main    — full field inspector
-##   hitbox  — hitbox config fields + 3D drag gizmo
-##   scale   — mesh scale fields
-##
-## Hitbox and scale are keyed by render_slug, not NPC id. Multiple NPCs
-## sharing a render_slug share the same hitbox and scale. Templates share
-## the same slug as their uniques.
-##
-## Save semantics:
-##   - Local [Save] in hitbox/scale views saves just that piece
-##   - Save All saves everything dirty (fields + hitbox + scale)
-##   - Fields go via npc_editor_save or dev_npc_editor_save_template
-##   - Hitbox/scale go via npc_render_save_hitbox / npc_render_save_render
-##
-## FEATURES/COMBAT/EXTRA section headers organize the field list per the
-## design doc (npc-editor-ascii.txt).
-##
-## Deferred: mesh-scale view will eventually get its own drag gizmo (per the
-## design note). For now the fields are the only way to edit scale.
-##
-## Deferred: editing tile_x/y/z updates the DB immediately but the live NPC
-## keeps its current position until respawn. Kill via [Admin] Kill if you
-## need the new position now.
+## Hitbox and mesh scale are per-render_slug and live in the Edit sub-tab
+## next to the model viewer. Changing them affects every type/instance that
+## shares that render_slug.
 
 const TARGET_HEIGHT_BY_SLUG := {
 	"player": 1.8, "man": 1.8, "guard": 1.8,
@@ -38,9 +15,13 @@ const TARGET_HEIGHT_BY_SLUG := {
 }
 
 const AI_PACKAGES := ["idle", "wander"]
-const UNIQUE_VIEW_SPEC := [
+const TAB_BROWSE := 0
+const TAB_EDIT := 1
+const TAB_CREATE := 2
+
+const NPC_TYPE_VIEW_SPEC := [
 	{"kind": "row", "fields": [
-		{"kind": "line_edit", "label": "label_name", "save": "name", "value_key": "name", "readonly": true},
+		{"kind": "line_edit", "label": "label_slug_id", "save": "slug_id", "value_key": "slug_id"},
 		{"kind": "line_edit", "label": "label_display", "save": "display", "value_key": "display"},
 	]},
 	{"kind": "row", "fields": [
@@ -59,27 +40,11 @@ const UNIQUE_VIEW_SPEC := [
 		{"kind": "textarea", "label": "label_spawn_flags", "save": "spawn_flags", "value_key": "spawn_flags"},
 	]},
 	{"kind": "separator"},
-	{"kind": "section", "key": "section_tile_spawn"},
-	{"kind": "row", "fields": [
-		{"kind": "spin", "label": "label_tile_x", "save": "tile_x", "value_key": "tile_x", "min": -999999, "max": 999999},
-		{"kind": "spin", "label": "label_tile_y", "save": "tile_y", "value_key": "tile_y", "min": -999999, "max": 999999},
-		{"kind": "spin", "label": "label_tile_z", "save": "tile_z", "value_key": "tile_z", "min": -999999, "max": 999999},
-	]},
-	{"kind": "separator"},
 	{"kind": "section", "key": "section_features"},
 	{"kind": "row", "fields": [
 		{"kind": "toggle", "label": "label_is_banker", "save": "is_banker", "value_key": "is_banker"},
 		{"kind": "toggle", "label": "label_attackable", "save": "attackable", "value_key": "attackable"},
 		{"kind": "toggle", "label": "label_aggressive", "save": "aggressive", "value_key": "aggressive"},
-	]},
-	{"kind": "separator"},
-	{"kind": "section", "key": "section_combat"},
-	{"kind": "combat_grid"},
-]
-
-const TEMPLATE_VIEW_SPEC := [
-	{"kind": "row", "fields": [
-		{"kind": "line_edit", "label": "slug_id", "save": "slug_id", "value_key": "slug_id", "readonly": true},
 	]},
 	{"kind": "separator"},
 	{"kind": "section", "key": "section_combat"},
@@ -101,38 +66,39 @@ const TEMPLATE_VIEW_SPEC := [
 @export var field_widget_min_height: int = 60
 @export var save_all_button_height: int = 32
 @export var hitbox_capsule_alpha: float = 0.375
-# -- Grid constants --
-# Every cell in every row is exactly GRID_CELL_WIDTH px wide: label (fixed) +
-# separation + spin (fixed). Because every row contains exactly GRID_COLS
-# items at this width, columns align vertically by construction — no
-# dependence on GridContainer's "size columns to widest cell" heuristics.
+
+# Grid constants
 const GRID_COLS := 4
 const GRID_CELL_WIDTH := 151
 const GRID_LABEL_WIDTH := 85
 const GRID_SPIN_WIDTH := 62
 const GRID_LABEL_SPIN_SEP := 4
 const GRID_CELL_SEP := 12
-
-# -- Sizing --
 const LINE_EDIT_WIDTH := 130
 const DROPDOWN_WIDTH := 140
 const TEXTAREA_MIN_WIDTH := 200
 const TEXTAREA_MIN_HEIGHT := 100
 
-var _mode: String = "unique"
-var _view_mode: String = "main"   # "main", "hitbox", "scale"
+var _view_mode: String = "main"
 
-# Widgets
-var _mode_selector: OptionButton
-var _search_edit: LineEdit
-var _npc_selector: OptionButton
-var _preview_placeholder: Label
-var _fields_container: VBoxContainer
-var _save_all_button: Button
+# Sub-tabs
+var _subtab_container: TabContainer
+var _browse_tree: Tree
+var _browse_search: LineEdit
+var _browse_create_btn: Button
+
+# Edit tab widgets
+var _edit_fields_container: VBoxContainer
+var _edit_save_button: Button
+var _edit_delete_button: Button
 var _hitbox_toggle: Button
 var _scale_toggle: Button
 
-# Hitbox UI (rebuilt per view; kept as members so save handlers can reach)
+# Create tab widgets
+var _create_fields_container: VBoxContainer
+var _create_submit_button: Button
+
+# Hitbox controls
 var _hitbox_type_selector: OptionButton
 var _hitbox_radius_spin: SpinBox
 var _hitbox_height_spin: SpinBox
@@ -142,7 +108,7 @@ var _hitbox_offset_z_spin: SpinBox
 var _hitbox_save_button: Button
 var _hitbox_reset_button: Button
 
-# Scale UI
+# Scale controls
 var _scale_x_spin: SpinBox
 var _scale_y_spin: SpinBox
 var _scale_z_spin: SpinBox
@@ -157,6 +123,7 @@ var _model_holder: Node3D
 var _gizmo: HitboxGizmo = null
 var _current_model: Node3D = null
 var _current_slug: String = ""
+var _current_type_id: int = 0
 var _current_data: Dictionary = {}
 
 # Model state
@@ -166,22 +133,20 @@ var _hitbox: Dictionary = {}
 var _hitbox_dirty: bool = false
 var _scale_dirty: bool = false
 
-# Options cache (render slugs, dialogue scripts, loot lists, credits loot lists)
+# Options
 var _options: Dictionary = {}
 var _options_loaded: bool = false
 var _options_pending: bool = false
 
-# List state
-var _items: Array = []
-var _filtered_items: Array = []
-var _current_id: int = 0
-var _list_loaded: bool = false
-var _pending_npc_id: int = 0
+# Fields
+var _edit_fields: Dictionary = {}
+var _create_fields: Dictionary = {}
+var _active_field_target: Dictionary = {}
 
-# Field widgets
-var _fields: Dictionary = {}
+# Pending
+var _pending_type_id: int = 0
 
-# Orbit state
+# Orbit
 var _orbit_yaw: float = 0.6
 var _orbit_pitch: float = 0.35
 var _orbit_distance: float = 4.0
@@ -199,22 +164,20 @@ func _ready() -> void:
 	_orbit_pitch = default_orbit_pitch
 	_orbit_distance = default_orbit_distance
 	_request_options()
+	_request_type_list()
+	_subtab_container.current_tab = TAB_BROWSE
 
 # ---------- DevPanel hooks ----------
 
 func panel_opened() -> void:
-	if not _list_loaded:
-		_reload_list()
 	if not _options_loaded and not _options_pending:
 		_request_options()
 
 func on_hub_open_for_entity(entity_type: String, entity_id: int) -> void:
-	if entity_type != "npc": return
-	if _mode != "unique":
-		_set_mode("unique")
-	_pending_npc_id = entity_id
-	if _list_loaded:
-		_try_select_pending()
+	if entity_type != "npc_type": return
+	_pending_type_id = entity_id
+	Network.send_dev_npc_type_get(entity_id)
+	# Response handler switches to Edit when data arrives
 
 # ---------- Options ----------
 
@@ -227,8 +190,11 @@ func _on_options_result(ok: bool, options: Dictionary) -> void:
 	if not ok: return
 	_options = options
 	_options_loaded = true
-	if not _current_data.is_empty():
-		_rebuild_right_panel()
+	if _current_type_id != 0:
+		_rebuild_edit_panel()
+
+func _request_type_list() -> void:
+	Network.send_dev_npc_type_list()
 
 # ---------- UI construction ----------
 
@@ -238,51 +204,81 @@ func _build_ui() -> void:
 	vbox.add_theme_constant_override("separation", _style.panel_separation)
 	add_child(vbox)
 
-	# Filter row
-	var filter_row := HBoxContainer.new()
-	filter_row.add_theme_constant_override("separation", _style.panel_separation)
-	vbox.add_child(filter_row)
+	_subtab_container = TabContainer.new()
+	_subtab_container.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_subtab_container.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	vbox.add_child(_subtab_container)
 
-	_mode_selector = OptionButton.new()
-	_mode_selector.add_item(Texts.get_text("ui.dev_hub.npc_editor.mode_unique"), 0)
-	_mode_selector.add_item(Texts.get_text("ui.dev_hub.npc_editor.mode_template"), 1)
-	_mode_selector.select(0)
-	_mode_selector.item_selected.connect(_on_mode_selected)
-	filter_row.add_child(_mode_selector)
+	_build_browse_tab()
+	_build_edit_tab()
+	_build_create_tab()
 
-	_search_edit = LineEdit.new()
-	_search_edit.placeholder_text = Texts.get_text("ui.dev_hub.npc_editor.search_placeholder")
-	_search_edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	_search_edit.text_changed.connect(_on_search_changed)
-	filter_row.add_child(_search_edit)
+	_subtab_container.set_tab_title(TAB_BROWSE, Texts.get_text("ui.dev_hub.npc_editor.tab_browse"))
+	_subtab_container.set_tab_title(TAB_EDIT,   Texts.get_text("ui.dev_hub.npc_editor.tab_edit"))
+	_subtab_container.set_tab_title(TAB_CREATE, Texts.get_text("ui.dev_hub.npc_editor.tab_create"))
 
-	_npc_selector = OptionButton.new()
-	_npc_selector.custom_minimum_size = Vector2(280, 0)
-	_npc_selector.item_selected.connect(_on_npc_selected)
-	filter_row.add_child(_npc_selector)
+	_subtab_container.tab_changed.connect(_on_subtab_changed)
 
-	# Split
+func _build_browse_tab() -> void:
+	var browse := VBoxContainer.new()
+	browse.name = "Browse"
+	browse.add_theme_constant_override("separation", _style.panel_separation)
+	_subtab_container.add_child(browse)
+
+	var top := HBoxContainer.new()
+	top.add_theme_constant_override("separation", _style.panel_separation)
+	browse.add_child(top)
+
+	_browse_search = LineEdit.new()
+	_browse_search.placeholder_text = Texts.get_text("ui.dev_hub.npc_editor.browse_search_placeholder")
+	_browse_search.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_browse_search.text_changed.connect(_on_browse_filter_changed)
+	top.add_child(_browse_search)
+
+	_browse_create_btn = Button.new()
+	_browse_create_btn.text = Texts.get_text("ui.dev_hub.npc_editor.browse_create_button")
+	_browse_create_btn.focus_mode = Control.FOCUS_NONE
+	_browse_create_btn.pressed.connect(_on_browse_create_pressed)
+	top.add_child(_browse_create_btn)
+
+	_browse_tree = Tree.new()
+	_browse_tree.columns = 4
+	_browse_tree.column_titles_visible = true
+	_browse_tree.set_column_title(0, Texts.get_text("ui.dev_hub.npc_editor.browse_col_display"))
+	_browse_tree.set_column_title(1, Texts.get_text("ui.dev_hub.npc_editor.browse_col_slug"))
+	_browse_tree.set_column_title(2, Texts.get_text("ui.dev_hub.npc_editor.browse_col_render"))
+	_browse_tree.set_column_title(3, Texts.get_text("ui.dev_hub.npc_editor.browse_col_instances"))
+	_browse_tree.hide_root = true
+	_browse_tree.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	_browse_tree.item_activated.connect(_on_browse_tree_activated)
+	browse.add_child(_browse_tree)
+
+func _build_edit_tab() -> void:
+	var edit := VBoxContainer.new()
+	edit.name = "Edit"
+	edit.add_theme_constant_override("separation", _style.panel_separation)
+	_subtab_container.add_child(edit)
+
+	var top := HBoxContainer.new()
+	top.add_theme_constant_override("separation", 4)
+	edit.add_child(top)
+
+	_hitbox_toggle = _make_view_toggle(Texts.get_text("ui.dev_hub.npc_editor.view_hitbox"), "hitbox")
+	top.add_child(_hitbox_toggle)
+
+	_scale_toggle = _make_view_toggle(Texts.get_text("ui.dev_hub.npc_editor.view_scale"), "scale")
+	top.add_child(_scale_toggle)
+
 	var split := HSplitContainer.new()
 	split.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	split.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	vbox.add_child(split)
+	edit.add_child(split)
 
-	# Left column: view toggles + model preview
+	# Left column: model preview
 	var left := VBoxContainer.new()
 	left.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	left.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	left.add_theme_constant_override("separation", 4)
 	split.add_child(left)
-
-	var toggle_row := HBoxContainer.new()
-	toggle_row.add_theme_constant_override("separation", 4)
-	left.add_child(toggle_row)
-
-	_hitbox_toggle = _make_view_toggle(Texts.get_text("ui.dev_hub.npc_editor.view_hitbox"), "hitbox")
-	toggle_row.add_child(_hitbox_toggle)
-
-	_scale_toggle = _make_view_toggle(Texts.get_text("ui.dev_hub.npc_editor.view_scale"), "scale")
-	toggle_row.add_child(_scale_toggle)
 
 	_sub_viewport_container = SubViewportContainer.new()
 	_sub_viewport_container.custom_minimum_size = model_viewport_min_size
@@ -329,19 +325,7 @@ func _build_ui() -> void:
 	_gizmo.hitbox_changed.connect(_on_gizmo_hitbox_changed)
 	_gizmo.set_gizmo_visible(false)
 
-	_preview_placeholder = Label.new()
-	_preview_placeholder.text = Texts.get_text("ui.dev_hub.npc_editor.preview_placeholder")
-	_preview_placeholder.add_theme_font_size_override("font_size", _style.font_size_body)
-	_preview_placeholder.add_theme_color_override("font_color", _style.text_muted)
-	_preview_placeholder.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	_preview_placeholder.set_anchors_and_offsets_preset(Control.PRESET_CENTER_TOP)
-	_sub_viewport_container.add_child(_preview_placeholder)
-
-	# Right column: inset from the hub's right edge by the SAME amount the
-	# model viewer is inset from the left. The hub's content_margin already
-	# provides 16px on every side; we don't add extra right padding here or
-	# the columns will be visually asymmetric. clip_contents prevents
-	# wide children from pushing the split past the panel boundary.
+	# Right column
 	var right_margin := MarginContainer.new()
 	right_margin.add_theme_constant_override("margin_left", _style.panel_separation)
 	right_margin.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -363,25 +347,47 @@ func _build_ui() -> void:
 	scroll.clip_contents = true
 	right.add_child(scroll)
 
-	_fields_container = VBoxContainer.new()
-	_fields_container.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	_fields_container.add_theme_constant_override("separation", 4)
-	scroll.add_child(_fields_container)
+	_edit_fields_container = VBoxContainer.new()
+	_edit_fields_container.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_edit_fields_container.add_theme_constant_override("separation", 4)
+	scroll.add_child(_edit_fields_container)
 
-	_save_all_button = Button.new()
-	_save_all_button.text = Texts.get_text("ui.dev_hub.npc_editor.save_all")
-	_save_all_button.disabled = true
-	_save_all_button.focus_mode = Control.FOCUS_NONE
-	_save_all_button.custom_minimum_size = Vector2(0, save_all_button_height)
-	_save_all_button.add_theme_font_size_override("font_size", _style.font_size_body)
-	_save_all_button.add_theme_color_override("font_color", _style.text_primary)
-	_save_all_button.add_theme_color_override("font_hover_color", _style.text_primary)
-	_save_all_button.add_theme_color_override("font_pressed_color", _style.text_primary)
-	_save_all_button.add_theme_color_override("font_disabled_color", _style.text_muted)
-	_save_all_button.pressed.connect(_on_save_all_pressed)
-	right.add_child(_save_all_button)
+	var buttons_row := HBoxContainer.new()
+	buttons_row.add_theme_constant_override("separation", _style.panel_separation)
+	right.add_child(buttons_row)
 
-	# Split sizing
+	_edit_save_button = Button.new()
+	_edit_save_button.text = Texts.get_text("ui.dev_hub.npc_editor.save_all")
+	_edit_save_button.disabled = true
+	_edit_save_button.focus_mode = Control.FOCUS_NONE
+	_edit_save_button.custom_minimum_size = Vector2(0, save_all_button_height)
+	_edit_save_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_edit_save_button.add_theme_font_size_override("font_size", _style.font_size_body)
+	_edit_save_button.add_theme_color_override("font_color", _style.text_primary)
+	_edit_save_button.add_theme_color_override("font_hover_color", _style.text_primary)
+	_edit_save_button.add_theme_color_override("font_pressed_color", _style.text_primary)
+	_edit_save_button.add_theme_color_override("font_disabled_color", _style.text_muted)
+	_edit_save_button.pressed.connect(_on_edit_save_pressed)
+	buttons_row.add_child(_edit_save_button)
+
+	_edit_delete_button = Button.new()
+	_edit_delete_button.text = Texts.get_text("ui.dev_hub.npc_editor.delete_button")
+	_edit_delete_button.disabled = true
+	_edit_delete_button.focus_mode = Control.FOCUS_NONE
+	_edit_delete_button.custom_minimum_size = Vector2(0, save_all_button_height)
+	_edit_delete_button.add_theme_font_size_override("font_size", _style.font_size_body)
+	_edit_delete_button.add_theme_color_override("font_color", _style.text_primary)
+	_edit_delete_button.add_theme_color_override("font_hover_color", _style.text_primary)
+	_edit_delete_button.add_theme_color_override("font_pressed_color", _style.text_primary)
+	_edit_delete_button.add_theme_stylebox_override("normal",
+		DevStyle.instance.make_button_style(DevStyle.instance.button_close))
+	_edit_delete_button.add_theme_stylebox_override("hover",
+		DevStyle.instance.make_button_style(DevStyle.instance.button_close.lightened(0.12)))
+	_edit_delete_button.add_theme_stylebox_override("pressed",
+		DevStyle.instance.make_button_style(DevStyle.instance.button_close.darkened(0.12)))
+	_edit_delete_button.pressed.connect(_on_edit_delete_pressed)
+	buttons_row.add_child(_edit_delete_button)
+
 	_split = split
 	split.resized.connect(_recompute_split)
 	call_deferred("_recompute_split")
@@ -389,6 +395,47 @@ func _build_ui() -> void:
 	_update_camera_orbit()
 	_sync_view_toggles()
 
+func _build_create_tab() -> void:
+	var create := VBoxContainer.new()
+	create.name = "Create"
+	create.add_theme_constant_override("separation", _style.panel_separation)
+	_subtab_container.add_child(create)
+
+	var scroll := ScrollContainer.new()
+	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	scroll.clip_contents = true
+	create.add_child(scroll)
+
+	var inner := MarginContainer.new()
+	inner.add_theme_constant_override("margin_left", _style.panel_content_margin)
+	inner.add_theme_constant_override("margin_right", _style.panel_content_margin)
+	inner.add_theme_constant_override("margin_top", _style.panel_content_margin)
+	inner.add_theme_constant_override("margin_bottom", _style.panel_content_margin)
+	inner.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	scroll.add_child(inner)
+
+	_create_fields_container = VBoxContainer.new()
+	_create_fields_container.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_create_fields_container.add_theme_constant_override("separation", 4)
+	inner.add_child(_create_fields_container)
+
+	var btn_row := HBoxContainer.new()
+	btn_row.add_theme_constant_override("separation", _style.panel_separation)
+	create.add_child(btn_row)
+
+	_create_submit_button = Button.new()
+	_create_submit_button.text = Texts.get_text("ui.dev_hub.npc_editor.create_button")
+	_create_submit_button.focus_mode = Control.FOCUS_NONE
+	_create_submit_button.custom_minimum_size = Vector2(0, save_all_button_height)
+	_create_submit_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_create_submit_button.add_theme_font_size_override("font_size", _style.font_size_body)
+	_create_submit_button.add_theme_color_override("font_color", _style.text_primary)
+	_create_submit_button.add_theme_color_override("font_hover_color", _style.text_primary)
+	_create_submit_button.add_theme_color_override("font_pressed_color", _style.text_primary)
+	_create_submit_button.pressed.connect(_on_create_submit_pressed)
+	btn_row.add_child(_create_submit_button)
 
 func _recompute_split() -> void:
 	if _split == null: return
@@ -397,7 +444,6 @@ func _recompute_split() -> void:
 	var target := int(w * left_column_ratio) - w / 2
 	if _split.split_offset != target:
 		_split.split_offset = target
-
 
 func _make_view_toggle(text: String, view_id: String) -> Button:
 	var b := Button.new()
@@ -415,7 +461,239 @@ func _make_view_toggle(text: String, view_id: String) -> Button:
 	b.pressed.connect(_on_view_toggle_pressed.bind(view_id))
 	return b
 
-# ---------- View mode ----------
+# ---------- Sub-tab switching ----------
+
+func _on_subtab_changed(tab: int) -> void:
+	match tab:
+		TAB_BROWSE:
+			_request_type_list()
+		TAB_EDIT:
+			if _current_type_id == 0:
+				_edit_save_button.disabled = true
+				_edit_delete_button.disabled = true
+		TAB_CREATE:
+			_build_create_form()
+
+# ---------- Browse ----------
+
+func _on_browse_filter_changed(_t: String) -> void:
+	_apply_browse_filter()
+
+func _on_browse_create_pressed() -> void:
+	_subtab_container.current_tab = TAB_CREATE
+
+func _on_browse_tree_activated() -> void:
+	var selected := _browse_tree.get_selected()
+	if selected == null: return
+	var type_id = selected.get_metadata(0)
+	if type_id == null: return
+	_pending_type_id = int(type_id)
+	Network.send_dev_npc_type_get(int(type_id))
+
+func _on_type_list_result(ok: bool, items: Array) -> void:
+	if not ok: return
+	_browse_tree.clear()
+	var root := _browse_tree.create_item()
+	for it in items:
+		if typeof(it) != TYPE_DICTIONARY: continue
+		var row := _browse_tree.create_item(root)
+		row.set_text(0, str(it.get("display", "")))
+		row.set_text(1, str(it.get("slug_id", "")))
+		row.set_text(2, str(it.get("render_slug", "")))
+		row.set_text(3, str(it.get("instance_count", 0)))
+		row.set_metadata(0, int(it.get("id", 0)))
+	_apply_browse_filter()
+
+func _apply_browse_filter() -> void:
+	var filter := _browse_search.text.strip_edges().to_lower()
+	var root := _browse_tree.get_root()
+	if root == null: return
+	var child := root.get_first_child()
+	while child != null:
+		var my_match := filter.is_empty()
+		if not my_match:
+			for c in 3:
+				if child.get_text(c).to_lower().contains(filter):
+					my_match = true
+					break
+		child.visible = my_match
+		child = child.get_next()
+
+# ---------- Edit ----------
+
+func _on_type_data(ok: bool, data: Dictionary) -> void:
+	if not ok:
+		_pending_type_id = 0
+		return
+	_current_type_id = int(data.get("id", 0))
+	_current_data = data
+	_load_model(str(data.get("render_slug", "")))
+	_rebuild_edit_panel()
+	_edit_save_button.disabled = false
+	_edit_delete_button.disabled = false
+	_pending_type_id = 0
+	_subtab_container.current_tab = TAB_EDIT
+
+func _rebuild_edit_panel() -> void:
+	for c in _edit_fields_container.get_children():
+		_edit_fields_container.remove_child(c)
+		c.queue_free()
+	_edit_fields.clear()
+	_active_field_target = _edit_fields
+	match _view_mode:
+		"hitbox": _build_hitbox_view(_edit_fields_container)
+		"scale":  _build_scale_view(_edit_fields_container)
+		_:        _build_view_from_spec(NPC_TYPE_VIEW_SPEC, _edit_fields_container)
+	_edit_save_button.text = Texts.get_text("ui.dev_hub.npc_editor.save_all")
+
+# ---------- Create ----------
+
+func _build_create_form() -> void:
+	for c in _create_fields_container.get_children():
+		_create_fields_container.remove_child(c)
+		c.queue_free()
+	_create_fields.clear()
+	_active_field_target = _create_fields
+	# Temporarily clear _current_data so the spec falls back to defaults
+	# instead of pre-filling from the previously-edited type.
+	var saved_data := _current_data
+	_current_data = {}
+	_build_view_from_spec(NPC_TYPE_VIEW_SPEC, _create_fields_container)
+	_current_data = saved_data
+	# In Create mode, no field is readonly
+	if _create_fields.has("slug_id"):
+		var le = _create_fields["slug_id"]
+		if le is LineEdit:
+			le.editable = true
+
+func _on_create_submit_pressed() -> void:
+	var data := {}
+	for key in _create_fields.keys():
+		var c = _create_fields[key]
+		if c is SpinBox: data[key] = int((c as SpinBox).value)
+		elif c is LineEdit: data[key] = (c as LineEdit).text
+		elif c is TextEdit: data[key] = (c as TextEdit).text
+		elif c is OptionButton:
+			var idx: int = (c as OptionButton).selected
+			if idx >= 0:
+				var md = (c as OptionButton).get_item_metadata(idx)
+				data[key] = str(md) if md != null else ""
+			else:
+				data[key] = ""
+		elif c is Button:
+			data[key] = (c as Button).button_pressed
+	_create_submit_button.disabled = true
+	Network.send_dev_npc_type_create(data)
+
+func _on_type_created(ok: bool, type_id: int, error: String) -> void:
+	_create_submit_button.disabled = false
+	if ok:
+		_pending_type_id = type_id
+		Network.send_dev_npc_type_get(type_id)
+	else:
+		push_warning("[NpcEditor] Create failed: " + error)
+
+# ---------- Save ----------
+
+func _on_edit_save_pressed() -> void:
+	if _current_type_id == 0: return
+
+	# Flush hitbox and scale first
+	if _hitbox_dirty and _current_slug != "":
+		_write_hitbox_to_cache(_current_slug, _hitbox)
+		Network.send_npc_render_save_hitbox(_current_slug, _hitbox.duplicate())
+		_hitbox_dirty = false
+		if _hitbox_save_button: _hitbox_save_button.text = _hitbox_save_label()
+
+	if _scale_dirty and _current_slug != "":
+		var render := {
+			"scale_x": _user_scale.x,
+			"scale_y": _user_scale.y,
+			"scale_z": _user_scale.z,
+		}
+		_write_render_to_cache(_current_slug, render)
+		Network.send_npc_render_save_render(_current_slug, render)
+		_scale_dirty = false
+		if _scale_save_button: _scale_save_button.text = _scale_save_label()
+
+	# Send field updates
+	_edit_save_button.disabled = true
+	_edit_save_button.text = Texts.get_text("ui.dev_hub.npc_editor.save_all_saving")
+
+	# Start from the last-loaded server data so switching to hitbox/scale
+	# view (where _edit_fields is empty) doesn't wipe every field on save.
+	# Widget values in _edit_fields overwrite the baseline where the user
+	# actually edited something.
+	var data := _current_data.duplicate()
+	for key in _edit_fields.keys():
+		var c = _edit_fields[key]
+		if c is SpinBox: data[key] = int((c as SpinBox).value)
+		elif c is LineEdit: data[key] = (c as LineEdit).text
+		elif c is TextEdit: data[key] = (c as TextEdit).text
+		elif c is OptionButton:
+			var idx: int = (c as OptionButton).selected
+			if idx >= 0:
+				var md = (c as OptionButton).get_item_metadata(idx)
+				data[key] = str(md) if md != null else ""
+			else:
+				data[key] = ""
+		elif c is Button:
+			data[key] = (c as Button).button_pressed
+
+	Network.send_dev_npc_type_update(_current_type_id, data)
+
+func _on_type_updated(ok: bool, type_id: int) -> void:
+	if type_id != _current_type_id: return
+	_edit_save_button.disabled = false
+	if ok:
+		_edit_save_button.text = Texts.get_text("ui.dev_hub.npc_editor.save_all_saved")
+		Network.send_dev_npc_type_get(type_id)
+		await get_tree().create_timer(1.2).timeout
+		if _edit_save_button and _edit_save_button.text == Texts.get_text("ui.dev_hub.npc_editor.save_all_saved"):
+			_edit_save_button.text = Texts.get_text("ui.dev_hub.npc_editor.save_all")
+	else:
+		_edit_save_button.text = Texts.get_text("ui.dev_hub.npc_editor.save_all_failed")
+		await get_tree().create_timer(2.0).timeout
+		if _edit_save_button and _edit_save_button.text == Texts.get_text("ui.dev_hub.npc_editor.save_all_failed"):
+			_edit_save_button.text = Texts.get_text("ui.dev_hub.npc_editor.save_all")
+
+# ---------- Delete ----------
+
+func _on_edit_delete_pressed() -> void:
+	if _current_type_id == 0: return
+	var dlg := ConfirmationDialog.new()
+	dlg.dialog_text = Texts.get_text("ui.dev_hub.npc_editor.delete_confirm")
+	dlg.title = Texts.get_text("ui.dev_hub.npc_editor.delete_button")
+	dlg.ok_button_text = "Delete"
+	dlg.add_cancel_button("Cancel")
+	dlg.confirmed.connect(func():
+		Network.send_dev_npc_type_delete(_current_type_id)
+		dlg.queue_free())
+	dlg.canceled.connect(func(): dlg.queue_free())
+	add_child(dlg)
+	dlg.popup_centered()
+
+func _on_type_deleted(ok: bool, type_id: int) -> void:
+	if type_id != _current_type_id: return
+	if not ok: return
+	_current_type_id = 0
+	_current_data = {}
+	_clear_model_only()
+	_subtab_container.current_tab = TAB_BROWSE
+	_request_type_list()
+
+# ---------- Network ----------
+
+func _connect_network() -> void:
+	Network.dev_npc_editor_options_result.connect(_on_options_result)
+	Network.dev_npc_type_list_result.connect(_on_type_list_result)
+	Network.dev_npc_type_data.connect(_on_type_data)
+	Network.dev_npc_type_created.connect(_on_type_created)
+	Network.dev_npc_type_updated.connect(_on_type_updated)
+	Network.dev_npc_type_deleted.connect(_on_type_deleted)
+	Network.npc_render_save_result.connect(_on_npc_render_save_result)
+
+# ---------- View toggle (main / hitbox / scale) ----------
 
 func _on_view_toggle_pressed(view_id: String) -> void:
 	if _view_mode == view_id:
@@ -423,130 +701,304 @@ func _on_view_toggle_pressed(view_id: String) -> void:
 	else:
 		_view_mode = view_id
 	_sync_view_toggles()
-	_rebuild_right_panel()
+	_rebuild_edit_panel()
 	_update_hitbox_display()
 
 func _sync_view_toggles() -> void:
 	if _hitbox_toggle: _hitbox_toggle.set_pressed_no_signal(_view_mode == "hitbox")
 	if _scale_toggle:  _scale_toggle.set_pressed_no_signal(_view_mode == "scale")
 
-# ---------- Network ----------
+# ---------- Spec renderer ----------
 
-func _connect_network() -> void:
-	Network.dev_npc_editor_options_result.connect(_on_options_result)
-	Network.dev_npc_editor_list_result.connect(_on_list_result)
-	Network.dev_npc_editor_template_data.connect(_on_template_data)
-	Network.dev_npc_editor_template_saved.connect(_on_template_saved)
-	Network.npc_editor_data.connect(_on_npc_editor_data)
-	Network.npc_editor_saved.connect(_on_npc_editor_saved)
-	Network.npc_render_save_result.connect(_on_npc_render_save_result)
+func _build_view_from_spec(spec: Array, container: VBoxContainer) -> void:
+	for item in spec:
+		match str(item.get("kind", "")):
+			"row":
+				var r := _field_row()
+				for f in item["fields"]:
+					_add_field_widget(r, f)
+				container.add_child(r)
+			"section":
+				container.add_child(_section_header(str(item["key"])))
+			"separator":
+				container.add_child(HSeparator.new())
+			"combat_grid":
+				_build_combat_stats_grid(container)
 
-# ---------- List ----------
+func _add_field_widget(row: HBoxContainer, f: Dictionary) -> void:
+	var kind := str(f["kind"])
+	var value_key := str(f.get("value_key", ""))
+	var value: Variant = _current_data.get(value_key) if value_key != "" else null
 
-func _reload_list() -> void:
-	Network.send_dev_npc_editor_list(_mode)
+	match kind:
+		"line_edit":
+			_add_line_edit_to_row(row, str(f["label"]), str(f["save"]),
+				str(value) if value != null else "",
+				bool(f.get("readonly", false)))
+		"spin":
+			_add_spin_to_row(row, str(f["label"]), str(f["save"]),
+				int(value) if value != null else 0,
+				int(f.get("min", 0)), int(f.get("max", 999999)))
+		"toggle":
+			_add_checkbox_to_row(row, str(f["label"]), str(f["save"]),
+				bool(value) if value != null else false)
+		"textarea":
+			_add_textarea_to_row(row, str(f["label"]), str(f["save"]),
+				str(value) if value != null else "")
+		"dropdown":
+			var options: Array = []
+			if f.has("options_static"):
+				options = (f["options_static"] as Array).duplicate()
+			elif f.has("options_key"):
+				options = (_options.get(str(f["options_key"]), []) as Array).duplicate()
+			if f.has("prepend"):
+				options = (f["prepend"] as Array) + options
+			var label_to_value: Dictionary = f.get("label_to_value", {})
+			_add_dropdown_to_row(row, str(f["label"]), str(f["save"]),
+				str(value) if value != null else "",
+				options, label_to_value)
 
-func _on_list_result(ok: bool, mode: String, items: Array) -> void:
-	if mode != _mode: return
-	if not ok:
-		_items = []
-		_filtered_items = []
-		_npc_selector.clear()
-		_list_loaded = true
-		return
-	_items = items
-	_list_loaded = true
-	_rebuild_dropdown()
+# ---------- Combat stats grid ----------
 
-func _rebuild_dropdown() -> void:
-	_npc_selector.clear()
-	_filtered_items.clear()
-	var filter := _search_edit.text.strip_edges().to_lower()
-	for it in _items:
-		if typeof(it) != TYPE_DICTIONARY: continue
-		var label := str(it.get("name", it.get("slug_id", "")))
-		if filter.is_empty() or label.to_lower().contains(filter):
-			_filtered_items.append(it)
-			_npc_selector.add_item(label)
-	if _filtered_items.is_empty():
-		_current_id = 0
-		_current_slug = ""
-		_clear_model()
-		return
-	var selected_index := -1
-	for i in _filtered_items.size():
-		if int(_filtered_items[i].id) == _current_id:
-			selected_index = i
-			break
-	if selected_index < 0:
-		selected_index = 0
-		_current_id = int(_filtered_items[0].id)
-	_npc_selector.select(selected_index)
-	_load_current()
+func _build_combat_stats_grid(parent: VBoxContainer) -> void:
+	var grid := VBoxContainer.new()
+	grid.add_theme_constant_override("separation", 4)
+	parent.add_child(grid)
 
-func _on_npc_selected(idx: int) -> void:
-	if idx < 0 or idx >= _filtered_items.size(): return
-	_current_id = int(_filtered_items[idx].id)
-	_load_current()
+	_add_grid_row(grid, [
+		_grid_spec("label_attack_speed", "attack_speed", int(_current_data.get("attack_speed", 10)), 1, 999),
+		_grid_spec("label_aggro_range", "aggro_range", int(_current_data.get("aggro_range", 8)), 1, 999),
+		_grid_spec("label_spawn_timer", "spawn_timer", int(_current_data.get("spawn_timer", 3)), 0, 999999),
+	])
 
-func _on_search_changed(_t: String) -> void:
-	_rebuild_dropdown()
+	_add_grid_row(grid, [
+		_grid_spec("label_final_level", "final_level", int(_current_data.get("final_level", 1)), 1, 999),
+	])
 
-func _on_mode_selected(idx: int) -> void:
-	var new_mode := "unique" if idx == 0 else "template"
-	if new_mode == _mode: return
-	_set_mode(new_mode)
+	_add_grid_row(grid, [
+		_grid_spec("label_hitpoints", "max_hitpoints", int(_current_data.get("max_hitpoints", 10)), 1, 999999),
+	])
 
-func _set_mode(new_mode: String) -> void:
-	_mode = new_mode
-	_current_id = 0
-	_current_slug = ""
-	_list_loaded = false
-	_items = []
-	_filtered_items = []
-	_npc_selector.clear()
-	_clear_model()
-	_reload_list()
+	_add_grid_row(grid, [
+		_grid_spec("label_accuracy", "max_accuracy", int(_current_data.get("max_accuracy", 1)), 1, 999999),
+		_grid_spec("label_strength", "max_strength", int(_current_data.get("max_strength", 1)), 1, 999999),
+		_grid_spec("label_defence", "max_defence", int(_current_data.get("max_defence", 1)), 1, 999999),
+		_grid_spec("label_ether", "max_ether", int(_current_data.get("max_ether", 1)), 1, 999999),
+	])
 
-func _try_select_pending() -> void:
-	if _pending_npc_id == 0: return
-	for i in _filtered_items.size():
-		if int(_filtered_items[i].id) == _pending_npc_id:
-			_current_id = _pending_npc_id
-			_npc_selector.select(i)
-			_load_current()
-			_pending_npc_id = 0
-			return
-	_pending_npc_id = 0
+	_add_grid_row(grid, [
+		_grid_spec("label_melee_bonus", "melee_bonus", int(_current_data.get("melee_bonus", 0)), 0, 999999),
+		_grid_spec("label_ranged_bonus", "ranged_bonus", int(_current_data.get("ranged_bonus", 0)), 0, 999999),
+		_grid_spec("label_ether_bonus", "ether_bonus", int(_current_data.get("ether_bonus", 0)), 0, 999999),
+	])
 
-# ---------- Load current ----------
+	_add_grid_row(grid, [
+		_grid_spec("label_melee_defense", "melee_defense", int(_current_data.get("melee_defense", 0)), 0, 999999),
+		_grid_spec("label_ranged_defense", "ranged_defense", int(_current_data.get("ranged_defense", 0)), 0, 999999),
+		_grid_spec("label_ether_defense", "ether_defense", int(_current_data.get("ether_defense", 0)), 0, 999999),
+	])
 
-func _load_current() -> void:
-	if _current_id == 0:
-		_clear_model()
-		return
-	if _mode == "unique":
-		Network.send_npc_editor_get(_current_id)
+func _grid_spec(label_key: String, save_key: String, value: int, minv: int, maxv: int) -> Dictionary:
+	return {"label": label_key, "key": save_key, "val": value, "min": minv, "max": maxv}
+
+func _add_grid_row(parent: VBoxContainer, cells: Array) -> void:
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", GRID_CELL_SEP)
+	parent.add_child(row)
+	for i in range(GRID_COLS):
+		if i < cells.size():
+			_add_grid_cell(row, cells[i])
+		else:
+			_add_grid_spacer(row)
+
+func _add_grid_cell(row: HBoxContainer, spec: Dictionary) -> void:
+	var cell := HBoxContainer.new()
+	cell.custom_minimum_size = Vector2(GRID_CELL_WIDTH, 0)
+	cell.add_theme_constant_override("separation", GRID_LABEL_SPIN_SEP)
+
+	var lbl := Label.new()
+	lbl.text = Texts.get_text("ui.dev_hub.npc_editor." + spec["label"])
+	lbl.custom_minimum_size = Vector2(GRID_LABEL_WIDTH, 0)
+	lbl.clip_text = true
+	lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	lbl.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	lbl.add_theme_font_size_override("font_size", _style.font_size_small)
+	lbl.add_theme_color_override("font_color", _style.text_muted)
+	cell.add_child(lbl)
+
+	var sb := SpinBox.new()
+	sb.min_value = spec["min"]
+	sb.max_value = spec["max"]
+	sb.step = 1
+	sb.value = spec["val"]
+	sb.custom_minimum_size = Vector2(GRID_SPIN_WIDTH, 0)
+	sb.add_theme_font_size_override("font_size", _style.font_size_small)
+	cell.add_child(sb)
+
+	row.add_child(cell)
+	_active_field_target[spec["key"]] = sb
+
+func _add_grid_spacer(row: HBoxContainer) -> void:
+	var spacer := Control.new()
+	spacer.custom_minimum_size = Vector2(GRID_CELL_WIDTH, 0)
+	row.add_child(spacer)
+
+# ---------- Widget builders ----------
+
+func _field_row() -> HBoxContainer:
+	var r := HBoxContainer.new()
+	r.add_theme_constant_override("separation", field_row_separation)
+	return r
+
+func _inline_label(text: String) -> Label:
+	var l := Label.new()
+	l.text = text
+	l.custom_minimum_size = Vector2(field_label_width, 0)
+	l.clip_text = true
+	l.add_theme_font_size_override("font_size", _style.font_size_small)
+	l.add_theme_color_override("font_color", _style.text_muted)
+	l.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	return l
+
+func _compact_label(text: String) -> Label:
+	var l := Label.new()
+	l.text = text
+	l.add_theme_font_size_override("font_size", _style.font_size_small)
+	l.add_theme_color_override("font_color", _style.text_muted)
+	l.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	return l
+
+func _inline_spin(minv: float, maxv: float, step: float, val: float) -> SpinBox:
+	var s := SpinBox.new()
+	s.min_value = minv
+	s.max_value = maxv
+	s.step = step
+	s.value = val
+	s.custom_minimum_size = Vector2(72, 0)
+	s.add_theme_font_size_override("font_size", _style.font_size_small)
+	return s
+
+func _small_button(text: String) -> Button:
+	var b := Button.new()
+	b.text = text
+	b.focus_mode = Control.FOCUS_NONE
+	b.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	b.add_theme_font_size_override("font_size", _style.font_size_small)
+	b.add_theme_color_override("font_color", _style.text_primary)
+	b.add_theme_color_override("font_hover_color", _style.text_primary)
+	b.add_theme_color_override("font_pressed_color", _style.text_primary)
+	return b
+
+func _section_header(key: String) -> Control:
+	var box := CenterContainer.new()
+	var lbl := Label.new()
+	lbl.text = Texts.get_text("ui.dev_hub.npc_editor." + key)
+	lbl.add_theme_font_size_override("font_size", _style.font_size_tab)
+	lbl.add_theme_color_override("font_color", _style.text_heading)
+	box.add_child(lbl)
+	return box
+
+func _add_widget_with_label(row: HBoxContainer, label_text: String, widget: Control) -> void:
+	row.add_child(_compact_label(label_text))
+	row.add_child(widget)
+
+func _add_line_edit_to_row(row: HBoxContainer, label_key: String, save_key: String, value: String, readonly: bool) -> void:
+	var le := LineEdit.new()
+	le.text = value
+	le.custom_minimum_size = Vector2(LINE_EDIT_WIDTH, 0)
+	le.add_theme_font_size_override("font_size", _style.font_size_small)
+	if readonly:
+		le.editable = false
+	row.add_child(_inline_label(Texts.get_text("ui.dev_hub.npc_editor." + label_key)))
+	row.add_child(le)
+	_active_field_target[save_key] = le
+
+func _add_spin_to_row(row: HBoxContainer, label_key: String, save_key: String, value: int, minv: int, maxv: int) -> void:
+	row.add_child(_compact_label(Texts.get_text("ui.dev_hub.npc_editor." + label_key)))
+	var sb := _inline_spin(minv, maxv, 1, value)
+	row.add_child(sb)
+	_active_field_target[save_key] = sb
+
+func _add_checkbox_to_row(row: HBoxContainer, label_key: String, save_key: String, pressed: bool) -> void:
+	var btn := Button.new()
+	btn.toggle_mode = true
+	btn.button_pressed = pressed
+	btn.focus_mode = Control.FOCUS_NONE
+	btn.add_theme_font_size_override("font_size", _style.font_size_body)
+	btn.add_theme_color_override("font_color", _style.text_primary)
+	btn.add_theme_color_override("font_hover_color", _style.text_primary)
+	btn.add_theme_color_override("font_pressed_color", Color(0.75, 1.0, 0.75))
+	btn.add_theme_color_override("font_hover_pressed_color", Color(0.9, 1.0, 0.9))
+	btn.add_theme_color_override("font_disabled_color", _style.text_muted)
+	_apply_toggle_style(btn, pressed, label_key)
+	btn.toggled.connect(func(p: bool) -> void: _apply_toggle_style(btn, p, label_key))
+	row.add_child(btn)
+	_active_field_target[save_key] = btn
+
+func _apply_toggle_style(btn: Button, on: bool, label_key: String) -> void:
+	var base_text := Texts.get_text("ui.dev_hub.npc_editor." + label_key)
+	btn.text = ("[x] " if on else "[ ] ") + base_text
+	var sb := StyleBoxFlat.new()
+	if on:
+		sb.bg_color = Color(0.18, 0.32, 0.18, 1.0)
+		sb.border_color = Color(0.45, 0.85, 0.45, 1.0)
 	else:
-		Network.send_dev_npc_editor_get_template(_current_id)
+		sb.bg_color = Color(0.20, 0.20, 0.24, 1.0)
+		sb.border_color = Color(0.38, 0.38, 0.44, 1.0)
+	sb.border_width_left = 1
+	sb.border_width_right = 1
+	sb.border_width_top = 1
+	sb.border_width_bottom = 1
+	sb.corner_radius_top_left = 3
+	sb.corner_radius_top_right = 3
+	sb.corner_radius_bottom_left = 3
+	sb.corner_radius_bottom_right = 3
+	sb.content_margin_left = 10
+	sb.content_margin_right = 10
+	sb.content_margin_top = 5
+	sb.content_margin_bottom = 5
+	btn.add_theme_stylebox_override("normal", sb)
+	btn.add_theme_stylebox_override("hover", sb)
+	btn.add_theme_stylebox_override("pressed", sb)
+	btn.add_theme_stylebox_override("hover_pressed", sb)
+	btn.add_theme_stylebox_override("disabled", sb)
 
-func _on_npc_editor_data(npc: Dictionary) -> void:
-	if _mode != "unique": return
-	if int(npc.get("id", 0)) != _current_id: return
-	_current_data = npc
-	_load_model(str(npc.get("render_slug", "")))
-	_rebuild_right_panel()
+func _add_textarea_to_row(row: HBoxContainer, label_key: String, save_key: String, value: String) -> void:
+	row.add_child(_inline_label(Texts.get_text("ui.dev_hub.npc_editor." + label_key)))
+	var te := TextEdit.new()
+	te.text = value
+	te.custom_minimum_size = Vector2(TEXTAREA_MIN_WIDTH, TEXTAREA_MIN_HEIGHT)
+	te.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	te.add_theme_font_size_override("font_size", _style.font_size_small)
+	row.add_child(te)
+	_active_field_target[save_key] = te
 
-func _on_template_data(ok: bool, template: Dictionary) -> void:
-	if _mode != "template": return
-	if not ok: return
-	if int(template.get("id", 0)) != _current_id: return
-	_current_data = template
-	var sid := str(template.get("slug_id", ""))
-	_load_model(sid.trim_prefix("npc_"))
-	_rebuild_right_panel()
+func _add_dropdown_to_row(row: HBoxContainer, label_key: String, save_key: String, current: String, options: Array, label_to_value: Dictionary = {}) -> void:
+	row.add_child(_inline_label(Texts.get_text("ui.dev_hub.npc_editor." + label_key)))
+	var dd := OptionButton.new()
+	dd.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	dd.add_theme_font_size_override("font_size", _style.font_size_small)
+	dd.fit_to_longest_item = false
+	dd.custom_minimum_size = Vector2(DROPDOWN_WIDTH, 0)
+	var found := false
+	for opt in options:
+		var opt_str := str(opt)
+		var idx := dd.item_count
+		dd.add_item(opt_str)
+		var value: String = str(label_to_value.get(opt_str, opt_str))
+		dd.set_item_metadata(idx, value)
+		if value == current or opt_str == current:
+			dd.select(idx)
+			found = true
+	if not found:
+		if current == "":
+			dd.select(-1)
+		elif dd.item_count > 0:
+			dd.select(0)
+	row.add_child(dd)
+	_active_field_target[save_key] = dd
 
-# ---------- Model ----------
+# ---------- Model / camera (unchanged from before) ----------
 
 func _load_model(slug: String) -> void:
 	if slug == "":
@@ -557,18 +1009,13 @@ func _load_model(slug: String) -> void:
 	_current_slug = slug
 
 	var scene := NpcRender.get_scene(slug)
-	if scene == null:
-		_clear_model_only()
-		return
+	if scene == null: return
 
 	var inst := scene.instantiate() as Node3D
-	if inst == null:
-		_clear_model_only()
-		return
+	if inst == null: return
 
 	_model_holder.add_child(inst)
 	_current_model = inst
-	_preview_placeholder.visible = false
 
 	_user_scale = _load_scale_for_slug(slug)
 	_compute_base_fit(slug)
@@ -604,17 +1051,13 @@ func _measure_world_aabb(root: Node3D) -> AABB:
 	for mi in _find_mesh_instances(root):
 		if mi.mesh == null: continue
 		var world_box: AABB = mi.global_transform * mi.mesh.get_aabb()
-		if first:
-			result = world_box
-			first = false
-		else:
-			result = result.merge(world_box)
+		if first: result = world_box; first = false
+		else: result = result.merge(world_box)
 	return result
 
 func _find_mesh_instances(node: Node) -> Array:
 	var out := []
-	if node is MeshInstance3D:
-		out.append(node)
+	if node is MeshInstance3D: out.append(node)
 	for c in node.get_children():
 		out.append_array(_find_mesh_instances(c))
 	return out
@@ -623,28 +1066,7 @@ func _clear_model_only() -> void:
 	if _current_model != null and is_instance_valid(_current_model):
 		_current_model.queue_free()
 	_current_model = null
-	if _preview_placeholder:
-		_preview_placeholder.visible = true
-	if _gizmo:
-		_gizmo.set_gizmo_visible(false)
-
-func _clear_model() -> void:
-	_clear_model_only()
-	_current_data = {}
-	_current_slug = ""
-	_hitbox = {}
-	_hitbox_dirty = false
-	_scale_dirty = false
-	if _fields_container:
-		for c in _fields_container.get_children():
-			_fields_container.remove_child(c)
-			c.queue_free()
-	_fields.clear()
-	if _save_all_button:
-		_save_all_button.disabled = true
-		_save_all_button.text = Texts.get_text("ui.dev_hub.npc_editor.save_all")
-
-# ---------- Camera ----------
+	if _gizmo: _gizmo.set_gizmo_visible(false)
 
 func _frame_camera(root: Node3D) -> void:
 	var aabb := _measure_world_aabb(root)
@@ -664,10 +1086,7 @@ func _update_camera_orbit() -> void:
 	_camera.global_position = _orbit_target + offset
 	_camera.look_at(_orbit_target, Vector3.UP)
 
-# ---------- Viewport input ----------
-
 func _on_viewport_input(event: InputEvent) -> void:
-	# Gizmo gets first crack at left-click/motion when in hitbox view
 	if _gizmo != null and _view_mode == "hitbox":
 		if event is InputEventMouseButton or event is InputEventMouseMotion:
 			if _gizmo.handle_input(event, event.position):
@@ -693,141 +1112,40 @@ func _on_viewport_input(event: InputEvent) -> void:
 	elif event is InputEventMouseMotion and _orbiting:
 		var mm := event as InputEventMouseMotion
 		_orbit_yaw -= mm.relative.x * orbit_mouse_sensitivity
-		_orbit_pitch = clampf(
-			_orbit_pitch + mm.relative.y * orbit_mouse_sensitivity,
+		_orbit_pitch = clampf(_orbit_pitch + mm.relative.y * orbit_mouse_sensitivity,
 			-orbit_pitch_clamp, orbit_pitch_clamp)
 		_update_camera_orbit()
 
-# ---------- Right panel rebuild ----------
-
-func _rebuild_right_panel() -> void:
-	for c in _fields_container.get_children():
-		_fields_container.remove_child(c)
-		c.queue_free()
-	_fields.clear()
-
-	if _current_data.is_empty():
-		_save_all_button.disabled = true
-		return
-
-	match _view_mode:
-		"hitbox":
-			_build_hitbox_view()
-		"scale":
-			_build_scale_view()
-		_:
-			_build_main_view()
-
-	_save_all_button.disabled = false
-	_save_all_button.text = Texts.get_text("ui.dev_hub.npc_editor.save_all")
-
-
-# ---------- Main view ----------
-func _build_main_view() -> void:
-	var spec: Array = TEMPLATE_VIEW_SPEC if _mode == "template" else UNIQUE_VIEW_SPEC
-	_build_view_from_spec(spec)
-
-
-func _build_view_from_spec(spec: Array) -> void:
-	for item in spec:
-		match str(item.get("kind", "")):
-			"row":
-				var r := _field_row()
-				for f in item["fields"]:
-					_add_field_widget(r, f)
-				_fields_container.add_child(r)
-			"section":
-				_fields_container.add_child(_section_header(str(item["key"])))
-			"separator":
-				_fields_container.add_child(HSeparator.new())
-			"combat_grid":
-				_build_combat_stats_grid()
-
-
-func _add_field_widget(row: HBoxContainer, f: Dictionary) -> void:
-	var kind := str(f["kind"])
-	var value_key := str(f.get("value_key", ""))
-	var value: Variant = _current_data.get(value_key) if value_key != "" else null
-
-	match kind:
-		"line_edit":
-			_add_line_edit_to_row(
-				row,
-				str(f["label"]),
-				str(f["save"]),
-				str(value) if value != null else "",
-				bool(f.get("readonly", false)))
-		"spin":
-			_add_spin_to_row(
-				row,
-				str(f["label"]),
-				str(f["save"]),
-				int(value) if value != null else 0,
-				int(f.get("min", 0)),
-				int(f.get("max", 999999)))
-		"toggle":
-			_add_checkbox_to_row(
-				row,
-				str(f["label"]),
-				str(f["save"]),
-				bool(value) if value != null else false)
-		"textarea":
-			_add_textarea_to_row(
-				row,
-				str(f["label"]),
-				str(f["save"]),
-				str(value) if value != null else "")
-		"dropdown":
-			var options: Array = []
-			if f.has("options_static"):
-				options = (f["options_static"] as Array).duplicate()
-			elif f.has("options_key"):
-				options = (_options.get(str(f["options_key"]), []) as Array).duplicate()
-			if f.has("prepend"):
-				options = (f["prepend"] as Array) + options
-			var label_to_value: Dictionary = f.get("label_to_value", {})
-			_add_dropdown_to_row(
-				row,
-				str(f["label"]),
-				str(f["save"]),
-				str(value) if value != null else "",
-				options,
-				label_to_value)
 # ---------- Hitbox view ----------
-func _build_hitbox_view() -> void:
+
+func _build_hitbox_view(container: VBoxContainer) -> void:
 	var is_capsule := str(_hitbox.get("type", "capsule")) == "capsule"
 
-	# Type
 	var r_type := _field_row()
-	var type_lbl := _inline_label(Texts.get_text("ui.dev_hub.npc_editor.view_hitbox_type"))
 	_hitbox_type_selector = OptionButton.new()
 	_hitbox_type_selector.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_hitbox_type_selector.add_item(Texts.get_text("ui.dev_hub.npc_editor.hitbox_type_sphere"), 0)
 	_hitbox_type_selector.add_item(Texts.get_text("ui.dev_hub.npc_editor.hitbox_type_capsule"), 1)
 	_hitbox_type_selector.select(1 if is_capsule else 0)
 	_hitbox_type_selector.item_selected.connect(_on_hitbox_type_selected)
-	r_type.add_child(type_lbl)
-	r_type.add_child(_hitbox_type_selector)
-	_fields_container.add_child(r_type)
+	_add_widget_with_label(r_type, Texts.get_text("ui.dev_hub.npc_editor.hitbox_type"), _hitbox_type_selector)
+	container.add_child(r_type)
 
-	# Radius
 	var r_rad := _field_row()
 	_hitbox_radius_spin = _inline_spin(0.05, 10.0, 0.05, float(_hitbox.get("radius", 0.4)))
 	_hitbox_radius_spin.value_changed.connect(_on_hitbox_radius_changed)
 	_add_widget_with_label(r_rad, Texts.get_text("ui.dev_hub.npc_editor.hitbox_radius"), _hitbox_radius_spin)
-	_fields_container.add_child(r_rad)
+	container.add_child(r_rad)
 
-	# Height (only for capsule)
 	if is_capsule:
 		var r_h := _field_row()
 		_hitbox_height_spin = _inline_spin(0.1, 10.0, 0.05, float(_hitbox.get("height", 1.8)))
 		_hitbox_height_spin.value_changed.connect(_on_hitbox_height_changed)
 		_add_widget_with_label(r_h, Texts.get_text("ui.dev_hub.npc_editor.hitbox_height"), _hitbox_height_spin)
-		_fields_container.add_child(r_h)
+		container.add_child(r_h)
 	else:
 		_hitbox_height_spin = null
 
-	# X Y Z offset
 	var r_off := _field_row()
 	_hitbox_offset_x_spin = _inline_spin(-10.0, 10.0, 0.05, float(_hitbox.get("offset_x", 0.0)))
 	_hitbox_offset_x_spin.value_changed.connect(_on_hitbox_offset_changed)
@@ -840,9 +1158,8 @@ func _build_hitbox_view() -> void:
 	_hitbox_offset_z_spin = _inline_spin(-10.0, 10.0, 0.05, float(_hitbox.get("offset_z", 0.0)))
 	_hitbox_offset_z_spin.value_changed.connect(_on_hitbox_offset_changed)
 	_add_widget_with_label(r_off, Texts.get_text("ui.dev_hub.npc_editor.hitbox_offset_z"), _hitbox_offset_z_spin)
-	_fields_container.add_child(r_off)
+	container.add_child(r_off)
 
-	# Save / Reset
 	var r_btns := _field_row()
 	_hitbox_save_button = _small_button(_hitbox_save_label())
 	_hitbox_save_button.pressed.connect(_on_hitbox_save_pressed)
@@ -851,13 +1168,13 @@ func _build_hitbox_view() -> void:
 	_hitbox_reset_button = _small_button(Texts.get_text("ui.dev_hub.npc_editor.hitbox_reset"))
 	_hitbox_reset_button.pressed.connect(_on_hitbox_reset_pressed)
 	r_btns.add_child(_hitbox_reset_button)
-	_fields_container.add_child(r_btns)
+	container.add_child(r_btns)
 
 	_push_hitbox_to_gizmo()
 
 # ---------- Scale view ----------
 
-func _build_scale_view() -> void:
+func _build_scale_view(container: VBoxContainer) -> void:
 	var r1 := _field_row()
 	_scale_x_spin = _inline_spin(0.1, 5.0, 0.05, _user_scale.x)
 	_scale_x_spin.value_changed.connect(_on_scale_changed)
@@ -870,7 +1187,7 @@ func _build_scale_view() -> void:
 	_scale_z_spin = _inline_spin(0.1, 5.0, 0.05, _user_scale.z)
 	_scale_z_spin.value_changed.connect(_on_scale_changed)
 	_add_widget_with_label(r1, Texts.get_text("ui.dev_hub.npc_editor.scale_z"), _scale_z_spin)
-	_fields_container.add_child(r1)
+	container.add_child(r1)
 
 	var r2 := _field_row()
 	_scale_save_button = _small_button(_scale_save_label())
@@ -880,288 +1197,10 @@ func _build_scale_view() -> void:
 	_scale_reset_button = _small_button(Texts.get_text("ui.dev_hub.npc_editor.scale_reset"))
 	_scale_reset_button.pressed.connect(_on_scale_reset_pressed)
 	r2.add_child(_scale_reset_button)
-	_fields_container.add_child(r2)
+	container.add_child(r2)
 
+# ---------- Hitbox state (same logic as before) ----------
 
-# ---------- Widget builders ----------
-func _field_row() -> HBoxContainer:
-	var r := HBoxContainer.new()
-	r.add_theme_constant_override("separation", field_row_separation)
-	return r
-
-
-func _inline_label(text: String) -> Label:
-	var l := Label.new()
-	l.text = text
-	l.custom_minimum_size = Vector2(field_label_width, 0)
-	l.clip_text = true
-	l.add_theme_font_size_override("font_size", _style.font_size_small)
-	l.add_theme_color_override("font_color", _style.text_muted)
-	l.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-	return l
-
-
-func _add_spin_to_row(row: HBoxContainer, label_key: String, save_key: String, value: int, minv: int, maxv: int) -> void:
-	# Compact label — sized to its own text, no fixed min-width. Right for
-	# short labels like "X", "Y", "Z" and "Spawn Timer" where the label
-	# should sit directly against its spinner.
-	var lbl := Label.new()
-	lbl.text = Texts.get_text("ui.dev_hub.npc_editor." + label_key)
-	lbl.add_theme_font_size_override("font_size", _style.font_size_small)
-	lbl.add_theme_color_override("font_color", _style.text_muted)
-	lbl.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-	row.add_child(lbl)
-	var sb := _inline_spin(minv, maxv, 1, value)
-	row.add_child(sb)
-	_fields[save_key] = sb
-
-
-func _inline_spin(minv: float, maxv: float, step: float, val: float) -> SpinBox:
-	var s := SpinBox.new()
-	s.min_value = minv
-	s.max_value = maxv
-	s.step = step
-	s.value = val
-	s.custom_minimum_size = Vector2(72, 0)
-	s.add_theme_font_size_override("font_size", _style.font_size_small)
-	return s
-
-
-func _small_button(text: String) -> Button:
-	var b := Button.new()
-	b.text = text
-	b.focus_mode = Control.FOCUS_NONE
-	b.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	b.add_theme_font_size_override("font_size", _style.font_size_small)
-	b.add_theme_color_override("font_color", _style.text_primary)
-	b.add_theme_color_override("font_hover_color", _style.text_primary)
-	b.add_theme_color_override("font_pressed_color", _style.text_primary)
-	return b
-
-
-func _build_combat_stats_grid() -> void:
-	var grid := VBoxContainer.new()
-	grid.add_theme_constant_override("separation", 4)
-	_fields_container.add_child(grid)
-
-	# Row 1: Attack Speed, Aggro Range, Spawn Timer
-	_add_grid_row(grid, [
-		_grid_spec("label_attack_speed", "attack_speed", int(_current_data.get("attack_speed", 10)), 1, 999),
-		_grid_spec("label_aggro_range", "aggro_range", int(_current_data.get("aggro_range", 8)), 1, 999),
-		_grid_spec("label_spawn_timer", "spawn_timer", int(_current_data.get("spawn_timer", 3)), 0, 999999),
-	])
-
-	# Row 2: Final Level
-	_add_grid_row(grid, [
-		_grid_spec("label_final_level", "final_level", int(_current_data.get("final_level", 1)), 1, 999),
-	])
-
-	# Row 3: Hitpoints
-	_add_grid_row(grid, [
-		_grid_spec("label_hitpoints", "max_hitpoints", int(_current_data.get("max_hitpoints", 10)), 1, 999999),
-	])
-
-	# Row 4: Accuracy, Strength, Defence, Ether
-	_add_grid_row(grid, [
-		_grid_spec("label_accuracy", "max_accuracy", int(_current_data.get("max_accuracy", 1)), 1, 999999),
-		_grid_spec("label_strength", "max_strength", int(_current_data.get("max_strength", 1)), 1, 999999),
-		_grid_spec("label_defence", "max_defence", int(_current_data.get("max_defence", 1)), 1, 999999),
-		_grid_spec("label_ether", "max_ether", int(_current_data.get("max_ether", 1)), 1, 999999),
-	])
-
-	# Row 5: Melee Bonus, Ranged Bonus, Ether Bonus
-	_add_grid_row(grid, [
-		_grid_spec("label_melee_bonus", "melee_bonus", int(_current_data.get("melee_bonus", 0)), 0, 999999),
-		_grid_spec("label_ranged_bonus", "ranged_bonus", int(_current_data.get("ranged_bonus", 0)), 0, 999999),
-		_grid_spec("label_ether_bonus", "ether_bonus", int(_current_data.get("ether_bonus", 0)), 0, 999999),
-	])
-
-	# Row 6: Melee Defense, Ranged Defense, Ether Defense
-	_add_grid_row(grid, [
-		_grid_spec("label_melee_defense", "melee_defense", int(_current_data.get("melee_defense", 0)), 0, 999999),
-		_grid_spec("label_ranged_defense", "ranged_defense", int(_current_data.get("ranged_defense", 0)), 0, 999999),
-		_grid_spec("label_ether_defense", "ether_defense", int(_current_data.get("ether_defense", 0)), 0, 999999),
-	])
-
-
-func _grid_spec(label_key: String, save_key: String, value: int, minv: int, maxv: int) -> Dictionary:
-	return {"label": label_key, "key": save_key, "val": value, "min": minv, "max": maxv}
-
-
-func _add_grid_row(parent: VBoxContainer, cells: Array) -> void:
-	var row := HBoxContainer.new()
-	row.add_theme_constant_override("separation", GRID_CELL_SEP)
-	parent.add_child(row)
-	for i in range(GRID_COLS):
-		if i < cells.size():
-			_add_grid_cell(row, cells[i])
-		else:
-			_add_grid_spacer(row)
-
-
-func _add_grid_cell(row: HBoxContainer, spec: Dictionary) -> void:
-	# Fixed-width cell: fixed-width label + fixed-width spin + fixed
-	# separation. Every cell in every row uses these same constants, so
-	# columns align vertically regardless of label text length. The label
-	# uses clip_text so long text (e.g. "Ranged Defense") can't force the
-	# cell wider than GRID_CELL_WIDTH.
-	var cell := HBoxContainer.new()
-	cell.custom_minimum_size = Vector2(GRID_CELL_WIDTH, 0)
-	cell.add_theme_constant_override("separation", GRID_LABEL_SPIN_SEP)
-
-	var lbl := Label.new()
-	lbl.text = Texts.get_text("ui.dev_hub.npc_editor." + spec["label"])
-	lbl.custom_minimum_size = Vector2(GRID_LABEL_WIDTH, 0)
-	lbl.clip_text = true
-	lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
-	lbl.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-	lbl.add_theme_font_size_override("font_size", _style.font_size_small)
-	lbl.add_theme_color_override("font_color", _style.text_muted)
-	cell.add_child(lbl)
-
-	var sb := SpinBox.new()
-	sb.min_value = spec["min"]
-	sb.max_value = spec["max"]
-	sb.step = 1
-	sb.value = spec["val"]
-	sb.custom_minimum_size = Vector2(GRID_SPIN_WIDTH, 0)
-	sb.add_theme_font_size_override("font_size", _style.font_size_small)
-	cell.add_child(sb)
-
-	row.add_child(cell)
-	_fields[spec["key"]] = sb
-
-
-func _add_grid_spacer(row: HBoxContainer) -> void:
-	var spacer := Control.new()
-	spacer.custom_minimum_size = Vector2(GRID_CELL_WIDTH, 0)
-	row.add_child(spacer)
-
-
-func _apply_toggle_style(btn: Button, on: bool, label_key: String) -> void:
-	var base_text := Texts.get_text("ui.dev_hub.npc_editor." + label_key)
-	btn.text = ("[x] " if on else "[ ] ") + base_text
-	var sb := StyleBoxFlat.new()
-	if on:
-		sb.bg_color = Color(0.18, 0.32, 0.18, 1.0)
-		sb.border_color = Color(0.45, 0.85, 0.45, 1.0)
-	else:
-		sb.bg_color = Color(0.20, 0.20, 0.24, 1.0)
-		sb.border_color = Color(0.38, 0.38, 0.44, 1.0)
-	sb.border_width_left = 1
-	sb.border_width_right = 1
-	sb.border_width_top = 1
-	sb.border_width_bottom = 1
-	sb.corner_radius_top_left = 3
-	sb.corner_radius_top_right = 3
-	sb.corner_radius_bottom_left = 3
-	sb.corner_radius_bottom_right = 3
-	sb.content_margin_left = 10
-	sb.content_margin_right = 10
-	sb.content_margin_top = 5
-	sb.content_margin_bottom = 5
-	btn.add_theme_stylebox_override("normal", sb)
-	btn.add_theme_stylebox_override("hover", sb)
-	btn.add_theme_stylebox_override("pressed", sb)
-	btn.add_theme_stylebox_override("hover_pressed", sb)
-	btn.add_theme_stylebox_override("disabled", sb)
-
-
-func _section_header(key: String) -> Control:
-	var box := CenterContainer.new()
-	var lbl := Label.new()
-	lbl.text = Texts.get_text("ui.dev_hub.npc_editor." + key)
-	lbl.add_theme_font_size_override("font_size", _style.font_size_tab)
-	lbl.add_theme_color_override("font_color", _style.text_heading)
-	box.add_child(lbl)
-	return box
-
-
-func _add_widget_with_label(row: HBoxContainer, label_text: String, widget: Control) -> void:
-	row.add_child(_inline_label(label_text))
-	row.add_child(widget)
-
-
-func _add_line_edit_to_row(row: HBoxContainer, label_key: String, save_key: String, value: String, readonly: bool) -> void:
-	var le := LineEdit.new()
-	le.text = value
-	le.custom_minimum_size = Vector2(LINE_EDIT_WIDTH, 0)
-	le.add_theme_font_size_override("font_size", _style.font_size_small)
-	if readonly:
-		le.editable = false
-	row.add_child(_inline_label(Texts.get_text("ui.dev_hub.npc_editor." + label_key)))
-	row.add_child(le)
-	_fields[save_key] = le
-
-
-func _add_readonly_to_row(row: HBoxContainer, label_text: String, value: String) -> void:
-	var lbl := Label.new()
-	lbl.text = value
-	lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	lbl.add_theme_font_size_override("font_size", _style.font_size_small)
-	lbl.add_theme_color_override("font_color", _style.text_muted)
-	row.add_child(_inline_label(label_text))
-	row.add_child(lbl)
-
-
-func _add_checkbox_to_row(row: HBoxContainer, label_key: String, save_key: String, pressed: bool) -> void:
-	var btn := Button.new()
-	btn.toggle_mode = true
-	btn.button_pressed = pressed
-	btn.focus_mode = Control.FOCUS_NONE
-	btn.add_theme_font_size_override("font_size", _style.font_size_body)
-	btn.add_theme_color_override("font_color", _style.text_primary)
-	btn.add_theme_color_override("font_hover_color", _style.text_primary)
-	btn.add_theme_color_override("font_pressed_color", Color(0.75, 1.0, 0.75))
-	btn.add_theme_color_override("font_hover_pressed_color", Color(0.9, 1.0, 0.9))
-	btn.add_theme_color_override("font_disabled_color", _style.text_muted)
-	_apply_toggle_style(btn, pressed, label_key)
-	btn.toggled.connect(func(p: bool) -> void: _apply_toggle_style(btn, p, label_key))
-	row.add_child(btn)
-	_fields[save_key] = btn
-
-
-func _add_textarea_to_row(row: HBoxContainer, label_key: String, save_key: String, value: String) -> void:
-	row.add_child(_inline_label(Texts.get_text("ui.dev_hub.npc_editor." + label_key)))
-	var te := TextEdit.new()
-	te.text = value
-	te.custom_minimum_size = Vector2(TEXTAREA_MIN_WIDTH, TEXTAREA_MIN_HEIGHT)
-	te.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	te.add_theme_font_size_override("font_size", _style.font_size_small)
-	row.add_child(te)
-	_fields[save_key] = te
-
-
-func _add_dropdown_to_row(row: HBoxContainer, label_key: String, save_key: String, current: String, options: Array, label_to_value: Dictionary = {}) -> void:
-	row.add_child(_inline_label(Texts.get_text("ui.dev_hub.npc_editor." + label_key)))
-	var dd := OptionButton.new()
-	dd.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	dd.add_theme_font_size_override("font_size", _style.font_size_small)
-	dd.fit_to_longest_item = false
-	dd.custom_minimum_size = Vector2(DROPDOWN_WIDTH, 0)
-	var found := false
-	for opt in options:
-		var opt_str := str(opt)
-		var idx := dd.item_count
-		dd.add_item(opt_str)
-		var value: String = str(label_to_value.get(opt_str, opt_str))
-		dd.set_item_metadata(idx, value)
-		if value == current or opt_str == current:
-			dd.select(idx)
-			found = true
-	if not found:
-		if current == "":
-			# Preserve an empty value: no selection means save writes "".
-			# Needed for optional fields like Credits Table where the NPC
-			# may legitimately have no value.
-			dd.select(-1)
-		elif dd.item_count > 0:
-			dd.select(0)
-	row.add_child(dd)
-	_fields[save_key] = dd
-
-
-# ---------- Hitbox ----------
 func _load_hitbox_for_slug(slug: String) -> Dictionary:
 	var hb := NpcRender.get_hitbox(slug)
 	if not hb.is_empty():
@@ -1177,41 +1216,26 @@ func _load_hitbox_for_slug(slug: String) -> Dictionary:
 
 func _default_hitbox_for_model() -> Dictionary:
 	if _current_model == null:
-		return {
-			"type": "capsule", "radius": 0.4, "height": 1.8,
-			"offset_x": 0.0, "offset_y": 0.9, "offset_z": 0.0,
-		}
+		return {"type": "capsule", "radius": 0.4, "height": 1.8,
+				"offset_x": 0.0, "offset_y": 0.9, "offset_z": 0.0}
 	var aabb := _measure_world_aabb(_current_model)
 	if aabb.size == Vector3.ZERO:
-		return {
-			"type": "capsule", "radius": 0.4, "height": 1.8,
-			"offset_x": 0.0, "offset_y": 0.9, "offset_z": 0.0,
-		}
+		return {"type": "capsule", "radius": 0.4, "height": 1.8,
+				"offset_x": 0.0, "offset_y": 0.9, "offset_z": 0.0}
 	var center := aabb.get_center()
 	var radius := maxf(maxf(aabb.size.x, aabb.size.z) * 0.5, 0.1)
 	var height := maxf(aabb.size.y, radius * 2.0 + 0.1)
-	return {
-		"type": "capsule",
-		"radius": radius,
-		"height": height,
-		"offset_x": center.x,
-		"offset_y": center.y,
-		"offset_z": center.z,
-	}
-
+	return {"type": "capsule", "radius": radius, "height": height,
+			"offset_x": center.x, "offset_y": center.y, "offset_z": center.z}
 
 func _update_hitbox_display() -> void:
 	if _gizmo == null: return
 	var should_show := _view_mode == "hitbox" and _current_slug != ""
 	_gizmo.set_gizmo_visible(should_show)
-	if should_show:
-		_gizmo.set_hitbox(_hitbox)
-
+	if should_show: _gizmo.set_hitbox(_hitbox)
 
 func _push_hitbox_to_gizmo() -> void:
-	if _gizmo != null:
-		_gizmo.set_hitbox(_hitbox)
-
+	if _gizmo != null: _gizmo.set_hitbox(_hitbox)
 
 func _on_gizmo_hitbox_changed(new_config: Dictionary) -> void:
 	_hitbox = new_config.duplicate()
@@ -1222,13 +1246,11 @@ func _on_gizmo_hitbox_changed(new_config: Dictionary) -> void:
 	if _hitbox_offset_z_spin: _hitbox_offset_z_spin.set_value_no_signal(float(_hitbox.get("offset_z", 0.0)))
 	_mark_hitbox_dirty()
 
-
 func _on_hitbox_type_selected(idx: int) -> void:
 	_hitbox["type"] = "capsule" if idx == 1 else "sphere"
 	_push_hitbox_to_gizmo()
 	_mark_hitbox_dirty()
-	_rebuild_right_panel()
-
+	_rebuild_edit_panel()
 
 func _on_hitbox_radius_changed(v: float) -> void:
 	_hitbox["radius"] = v
@@ -1238,12 +1260,10 @@ func _on_hitbox_radius_changed(v: float) -> void:
 	_push_hitbox_to_gizmo()
 	_mark_hitbox_dirty()
 
-
 func _on_hitbox_height_changed(v: float) -> void:
 	_hitbox["height"] = v
 	_push_hitbox_to_gizmo()
 	_mark_hitbox_dirty()
-
 
 func _on_hitbox_offset_changed(_v: float) -> void:
 	_hitbox["offset_x"] = _hitbox_offset_x_spin.value
@@ -1252,40 +1272,31 @@ func _on_hitbox_offset_changed(_v: float) -> void:
 	_push_hitbox_to_gizmo()
 	_mark_hitbox_dirty()
 
-
 func _mark_hitbox_dirty() -> void:
 	_hitbox_dirty = true
 	if _hitbox_save_button: _hitbox_save_button.text = _hitbox_save_label()
-
 
 func _hitbox_save_label() -> String:
 	var base := Texts.get_text("ui.dev_hub.npc_editor.hitbox_save")
 	return (base + " *") if _hitbox_dirty else base
 
-
 func _on_hitbox_save_pressed() -> void:
-	if _current_slug == "":
-		if _hitbox_save_button: _hitbox_save_button.text = "No Slug"
-		await get_tree().create_timer(1.2).timeout
-		if _hitbox_save_button: _hitbox_save_button.text = _hitbox_save_label()
-		return
+	if _current_slug == "": return
 	if _hitbox_save_button: _hitbox_save_button.disabled = true
 	_write_hitbox_to_cache(_current_slug, _hitbox)
 	Network.send_npc_render_save_hitbox(_current_slug, _hitbox.duplicate())
-
 
 func _on_hitbox_reset_pressed() -> void:
 	_hitbox = _default_hitbox_for_model()
 	_hitbox_dirty = true
 	_push_hitbox_to_gizmo()
-	_rebuild_right_panel()
-	if _current_slug == "":
-		return
+	_rebuild_edit_panel()
+	if _current_slug == "": return
 	_write_hitbox_to_cache(_current_slug, _hitbox)
 	Network.send_npc_render_save_hitbox(_current_slug, _hitbox.duplicate())
 
+# ---------- Scale state ----------
 
-# ---------- Scale ----------
 func _load_scale_for_slug(slug: String) -> Vector3:
 	var rc := NpcRender.get_render_config(slug)
 	if rc.is_empty(): return Vector3.ONE
@@ -1294,35 +1305,23 @@ func _load_scale_for_slug(slug: String) -> Vector3:
 		float(rc.get("scale_y", 1.0)),
 		float(rc.get("scale_z", 1.0)))
 
-
 func _mark_scale_dirty() -> void:
 	_scale_dirty = true
 	if _scale_save_button: _scale_save_button.text = _scale_save_label()
 
-
 func _scale_save_label() -> String:
 	var base := Texts.get_text("ui.dev_hub.npc_editor.scale_save")
 	return (base + " *") if _scale_dirty else base
-
 
 func _on_scale_changed(_v: float) -> void:
 	_user_scale = Vector3(_scale_x_spin.value, _scale_y_spin.value, _scale_z_spin.value)
 	_apply_model_scale()
 	_mark_scale_dirty()
 
-
 func _on_scale_save_pressed() -> void:
-	if _current_slug == "":
-		if _scale_save_button: _scale_save_button.text = "No Slug"
-		await get_tree().create_timer(1.2).timeout
-		if _scale_save_button: _scale_save_button.text = _scale_save_label()
-		return
+	if _current_slug == "": return
 	if _scale_save_button: _scale_save_button.disabled = true
-	var render := {
-		"scale_x": _user_scale.x,
-		"scale_y": _user_scale.y,
-		"scale_z": _user_scale.z,
-	}
+	var render := {"scale_x": _user_scale.x, "scale_y": _user_scale.y, "scale_z": _user_scale.z}
 	_write_render_to_cache(_current_slug, render)
 	Network.send_npc_render_save_render(_current_slug, render)
 
@@ -1330,99 +1329,13 @@ func _on_scale_reset_pressed() -> void:
 	_user_scale = Vector3.ONE
 	_scale_dirty = true
 	_apply_model_scale()
-	_rebuild_right_panel()
-	if _current_slug == "":
-		return
+	_rebuild_edit_panel()
+	if _current_slug == "": return
 	var render := {"scale_x": 1.0, "scale_y": 1.0, "scale_z": 1.0}
 	_write_render_to_cache(_current_slug, render)
 	Network.send_npc_render_save_render(_current_slug, render)
 
-
-# ---------- Save All ----------
-func _on_save_all_pressed() -> void:
-	if _current_id == 0: return
-
-	# Flush dirty hitbox and scale first, writing each to cache at send time
-	if _hitbox_dirty and _current_slug != "":
-		_write_hitbox_to_cache(_current_slug, _hitbox)
-		Network.send_npc_render_save_hitbox(_current_slug, _hitbox.duplicate())
-		_hitbox_dirty = false
-		if _hitbox_save_button: _hitbox_save_button.text = _hitbox_save_label()
-
-	if _scale_dirty and _current_slug != "":
-		var render := {
-			"scale_x": _user_scale.x,
-			"scale_y": _user_scale.y,
-			"scale_z": _user_scale.z,
-		}
-		_write_render_to_cache(_current_slug, render)
-		Network.send_npc_render_save_render(_current_slug, render)
-		_scale_dirty = false
-		if _scale_save_button: _scale_save_button.text = _scale_save_label()
-
-	# Save fields
-	_save_all_button.disabled = true
-	_save_all_button.text = Texts.get_text("ui.dev_hub.npc_editor.save_all_saving")
-
-	var updates := {}
-	for key in _fields.keys():
-		var c = _fields[key]
-		if c is SpinBox: updates[key] = int((c as SpinBox).value)
-		elif c is LineEdit: updates[key] = (c as LineEdit).text
-		elif c is TextEdit: updates[key] = (c as TextEdit).text
-		elif c is OptionButton:
-			# MUST come before Button — OptionButton extends Button
-			var idx: int = (c as OptionButton).selected
-			if idx >= 0:
-				var md = (c as OptionButton).get_item_metadata(idx)
-				updates[key] = str(md) if md != null else ""
-			else:
-				updates[key] = ""
-		elif c is Button:
-			# Checkboxes are Button-in-toggle-mode now
-			updates[key] = (c as Button).button_pressed
-
-	if _mode == "unique":
-		Network.send_npc_editor_save(_current_id, updates)
-	else:
-		Network.send_dev_npc_editor_save_template(_current_id, updates)
-
-
-# ---------- Save callbacks ----------
-func _on_npc_editor_saved(ok: bool, npc_id: int) -> void:
-	if _mode != "unique": return
-	if npc_id != _current_id: return
-	if not _save_all_button: return
-	_save_all_button.disabled = false
-	if ok:
-		_save_all_button.text = Texts.get_text("ui.dev_hub.npc_editor.save_all_saved")
-		Network.send_npc_editor_get(_current_id)
-		await get_tree().create_timer(1.2).timeout
-		if _save_all_button and _save_all_button.text == Texts.get_text("ui.dev_hub.npc_editor.save_all_saved"):
-			_save_all_button.text = Texts.get_text("ui.dev_hub.npc_editor.save_all")
-	else:
-		_save_all_button.text = Texts.get_text("ui.dev_hub.npc_editor.save_all_failed")
-		await get_tree().create_timer(2.0).timeout
-		if _save_all_button and _save_all_button.text == Texts.get_text("ui.dev_hub.npc_editor.save_all_failed"):
-			_save_all_button.text = Texts.get_text("ui.dev_hub.npc_editor.save_all")
-
-
-func _on_template_saved(ok: bool, template_id: int) -> void:
-	if _mode != "template": return
-	if template_id != _current_id: return
-	if not _save_all_button: return
-	_save_all_button.disabled = false
-	if ok:
-		_save_all_button.text = Texts.get_text("ui.dev_hub.npc_editor.save_all_saved")
-		Network.send_dev_npc_editor_get_template(_current_id)
-		await get_tree().create_timer(1.2).timeout
-		if _save_all_button and _save_all_button.text == Texts.get_text("ui.dev_hub.npc_editor.save_all_saved"):
-			_save_all_button.text = Texts.get_text("ui.dev_hub.npc_editor.save_all")
-	else:
-		_save_all_button.text = Texts.get_text("ui.dev_hub.npc_editor.save_all_failed")
-		await get_tree().create_timer(2.0).timeout
-		if _save_all_button and _save_all_button.text == Texts.get_text("ui.dev_hub.npc_editor.save_all_failed"):
-			_save_all_button.text = Texts.get_text("ui.dev_hub.npc_editor.save_all")
+# ---------- Hitbox save result callback ----------
 
 func _on_npc_render_save_result(ok: bool, kind: String, slug: String) -> void:
 	if slug != _current_slug: return
@@ -1435,12 +1348,6 @@ func _on_npc_render_save_result(ok: bool, kind: String, slug: String) -> void:
 				await get_tree().create_timer(1.2).timeout
 				if _hitbox_save_button and _hitbox_save_button.text == Texts.get_text("ui.dev_hub.npc_editor.hitbox_saved"):
 					_hitbox_save_button.text = _hitbox_save_label()
-		else:
-			if _hitbox_save_button:
-				_hitbox_save_button.text = Texts.get_text("ui.dev_hub.npc_editor.hitbox_save_failed")
-				await get_tree().create_timer(1.5).timeout
-				if _hitbox_save_button and _hitbox_save_button.text == Texts.get_text("ui.dev_hub.npc_editor.hitbox_save_failed"):
-					_hitbox_save_button.text = _hitbox_save_label()
 	elif kind == "render":
 		if _scale_save_button: _scale_save_button.disabled = false
 		if ok:
@@ -1450,15 +1357,9 @@ func _on_npc_render_save_result(ok: bool, kind: String, slug: String) -> void:
 				await get_tree().create_timer(1.2).timeout
 				if _scale_save_button and _scale_save_button.text == Texts.get_text("ui.dev_hub.npc_editor.scale_saved"):
 					_scale_save_button.text = _scale_save_label()
-		else:
-			if _scale_save_button:
-				_scale_save_button.text = Texts.get_text("ui.dev_hub.npc_editor.scale_save_failed")
-				await get_tree().create_timer(1.5).timeout
-				if _scale_save_button and _scale_save_button.text == Texts.get_text("ui.dev_hub.npc_editor.scale_save_failed"):
-					_scale_save_button.text = _scale_save_label()
-
 
 # ---------- Cache writes ----------
+
 func _write_hitbox_to_cache(slug: String, hitbox: Dictionary) -> void:
 	if slug.is_empty(): return
 	var dir := "%s/%s" % [NpcRender.CACHE_DIR, slug]
@@ -1467,7 +1368,6 @@ func _write_hitbox_to_cache(slug: String, hitbox: Dictionary) -> void:
 	if f == null: return
 	f.store_string(JSON.stringify(hitbox, "\t"))
 	f.close()
-
 
 func _write_render_to_cache(slug: String, render: Dictionary) -> void:
 	if slug.is_empty(): return

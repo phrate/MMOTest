@@ -176,7 +176,8 @@ public partial class Main : Node
 			});
 			_npcRender.LoadAll();
 
-			_npc = new NpcSystem(_state, _world, _outbound, _db.Npcs, _gfs, _npcRender, _pathfinder, NpcViewChunkRadius, DiagNpcWander);
+			_npc = new NpcSystem(_state, _world, _outbound, _db.Npcs, _gfs, _npcRender, _pathfinder, NpcViewChunkRadius, DiagNpcWander,
+    _lootTablesBySlug, _creditsLootBySlug);
 			_npc.LoadAll();
 			_inv = new ItemSystem(_state, _outbound, _items, _db.Inventory, _db.Stats, _trade, _combatRng, _db.Players);
 			_ground = new GroundItemSystem(_state, _world, _outbound, _items, _inv, _trade, _db.Inventory, _pathfinder, NpcViewChunkRadius);
@@ -465,12 +466,12 @@ public partial class Main : Node
 				case "login":       await _auth.HandleLoginAsync(peerId, GetString(root, "username"), GetString(root, "password"), GetString(root, "reason")); break;
 				case "world_info":  _worldFiles.HandleWorldInfo(peerId); break;
 				case "world_fetch": _worldFiles.HandleWorldFetch(peerId); break;
-				case "npc_editor_get":  _npc.HandleNpcEditorGet(peerId, root); break;
-				case "npc_editor_save": await _npc.HandleNpcEditorSaveAsync(peerId, root); break;
-				case "dev_npc_editor_list":          _npc.HandleDevNpcEditorList(peerId, root); break;
-				case "dev_npc_editor_get_template":  _npc.HandleDevNpcEditorGetTemplate(peerId, root); break;
-				case "dev_npc_editor_save_template": _npc.HandleDevNpcEditorSaveTemplate(peerId, root); break;
 				case "dev_npc_editor_options": _npc.HandleDevNpcEditorOptions(peerId); break;
+				case "dev_npc_type_list":    _npc.HandleDevNpcTypeList(peerId, root); break;
+				case "dev_npc_type_get":     _npc.HandleDevNpcTypeGet(peerId, root); break;
+				case "dev_npc_type_create":  _npc.HandleDevNpcTypeCreate(peerId, root); break;
+				case "dev_npc_type_update":  _npc.HandleDevNpcTypeUpdate(peerId, root); break;
+				case "dev_npc_type_delete":  _npc.HandleDevNpcTypeDelete(peerId, root); break;
 				case "dev_auto_login": await _auth.HandleDevAutoLoginAsync(peerId); break;
 				case "player_walk": _walk.HandlePlayerWalk(peerId, root); break;
 				case "inventory_swap": _inv.HandleInventorySwap(peerId, root); break;

@@ -34,12 +34,16 @@ internal sealed class NpcSystem
     private readonly Dictionary<long, (long PlayerId, long Sid)> _npcLookAt = new();
     private double _wanderAccumulator;
     private readonly Random _wanderRng = new();
+    private readonly Dictionary<string, Dictionary<string, (int Min, int Max)>> _lootTables;
+    private readonly Dictionary<string, (int Min, int Max)> _creditsLoot;
 
     public int NpcViewChunkRadius { get; }
 
     public NpcSystem(ServerState state, WorldService world, OutboundChannel outbound,
-                     NpcRepository npcRepo, Gfs.GfsManager gfs, NpcRenderManager npcRender,
-                     Pathfinder pathfinder, int npcViewChunkRadius, bool diagNpcWander)
+                    NpcRepository npcRepo, Gfs.GfsManager gfs, NpcRenderManager npcRender,
+                    Pathfinder pathfinder, int npcViewChunkRadius, bool diagNpcWander,
+                    Dictionary<string, Dictionary<string, (int Min, int Max)>> lootTables,
+                    Dictionary<string, (int Min, int Max)> creditsLoot)
     {
         _state = state;
         _world = world;
@@ -50,6 +54,8 @@ internal sealed class NpcSystem
         _pathfinder = pathfinder;
         NpcViewChunkRadius = npcViewChunkRadius;
         _diagNpcWander = diagNpcWander;
+        _lootTables = lootTables;
+        _creditsLoot = creditsLoot;
     }
 
     // ============================================================
@@ -488,9 +494,6 @@ internal sealed class NpcSystem
         }
     }
 
-    // ============================================================
-    // Admin open (still works; opens the panel which is UI-stubbed)
-    // ============================================================
 
     internal void OpenNpcEditorForPlayer(long playerId, long npcId)
     {
@@ -502,93 +505,41 @@ internal sealed class NpcSystem
             _outbound.ChatToPlayer(playerId, "Admin only.");
             return;
         }
-        if (!_npcs.ContainsKey(npcId)) return;
-        _outbound.Send(peerId, new { type = "npc_editor_open", npc_id = npcId });
-    }
-
-    // ============================================================
-    // NPC editor — Phase A stubs
-    // ============================================================
-    //
-    // The editor backend is fully stubbed pending Phase B. Every handler
-    // returns a "not available" reply so the client's UI degrades gracefully
-    // (empty lists, save-failed indicators). The runtime path — loading,
-    // movement, visibility, combat, respawn — is unaffected.
-    //
-    // Phase B will replace these with type CRUD (list, get, create, update,
-    // delete) plus hitbox/scale saves routed through the type's render_slug.
-
-    internal void HandleNpcEditorGet(long peerId, System.Text.Json.JsonElement root)
-    {
-        if (!_state.Sessions.TryGetValue(peerId, out var session)) return;
-        if (!session.IsAdmin) return;
-        // Phase A: no response. Client shows empty NPC data.
-    }
-
-    internal Task HandleNpcEditorSaveAsync(long peerId, System.Text.Json.JsonElement root)
-    {
-        if (!_state.Sessions.TryGetValue(peerId, out var session)) return Task.CompletedTask;
-        if (!session.IsAdmin) return Task.CompletedTask;
-        _outbound.Send(peerId, new
-        {
-            type = "npc_editor_saved",
-            ok = false,
-            npc_id = 0,
-        });
-        return Task.CompletedTask;
-    }
-
-    internal void HandleDevNpcEditorList(long peerId, System.Text.Json.JsonElement root)
-    {
-        if (!_state.Sessions.TryGetValue(peerId, out var session)) return;
-        if (!session.IsAdmin) return;
-        _outbound.Send(peerId, new
-        {
-            type = "dev_npc_editor_list_result",
-            ok = true,
-            mode = "unique",
-            items = new List<object>(),
-        });
-    }
-
-    internal void HandleDevNpcEditorGetTemplate(long peerId, System.Text.Json.JsonElement root)
-    {
-        if (!_state.Sessions.TryGetValue(peerId, out var session)) return;
-        if (!session.IsAdmin) return;
-        _outbound.Send(peerId, new
-        {
-            type = "dev_npc_editor_template_data",
-            ok = false,
-            template = new Dictionary<string, object>(),
-        });
-    }
-
-    internal void HandleDevNpcEditorSaveTemplate(long peerId, System.Text.Json.JsonElement root)
-    {
-        if (!_state.Sessions.TryGetValue(peerId, out var session)) return;
-        if (!session.IsAdmin) return;
-        _outbound.Send(peerId, new
-        {
-            type = "dev_npc_editor_template_saved",
-            ok = false,
-            template_id = 0,
-        });
+        if (!_npcs.TryGetValue(npcId, out var npc)) return;
+        _outbound.Send(peerId, new { type = "npc_editor_open", type_id = npc.Type.Id });
     }
 
     internal void HandleDevNpcEditorOptions(long peerId)
     {
         if (!_state.Sessions.TryGetValue(peerId, out var session)) return;
         if (!session.IsAdmin) return;
+
+        var renderSlugs = _npcRender.GetManifest().Keys.OrderBy(k => k).ToList();
+
+        var dialogueScripts = new List<string>();
+        foreach (var path in _gfs.GetAllScriptPaths())
+        {
+            if (!path.StartsWith("dialogue/npc_")) continue;
+            if (!path.EndsWith(".gfs")) continue;
+            string shortName = path.Substring("dialogue/".Length);
+            shortName = shortName.Substring(0, shortName.Length - 4);
+            dialogueScripts.Add(shortName);
+        }
+        dialogueScripts.Sort();
+
+        var lootLists = _lootTables.Keys.OrderBy(k => k).ToList();
+        var creditsLootLists = _creditsLoot.Keys.OrderBy(k => k).ToList();
+
         _outbound.Send(peerId, new
         {
             type = "dev_npc_editor_options_result",
-            ok = false,
+            ok = true,
             options = new
             {
-                render_slugs = new List<string>(),
-                dialogue_scripts = new List<string>(),
-                loot_lists = new List<string>(),
-                credits_loot_lists = new List<string>(),
+                render_slugs = renderSlugs,
+                dialogue_scripts = dialogueScripts,
+                loot_lists = lootLists,
+                credits_loot_lists = creditsLootLists,
             }
         });
     }
@@ -597,25 +548,332 @@ internal sealed class NpcSystem
     {
         if (!_state.Sessions.TryGetValue(peerId, out var session)) return;
         if (!session.IsAdmin) return;
+
+        string slug = GetStringProp(root, "slug");
+        if (!IsSafeSlug(slug)) return;
+        if (!root.TryGetProperty("hitbox", out var hbEl)) return;
+        if (hbEl.ValueKind != System.Text.Json.JsonValueKind.Object) return;
+
+        string json = hbEl.GetRawText();
+        bool ok = WriteUserNpcRenderFile(slug, "hitbox.json", json);
         _outbound.Send(peerId, new
         {
             type = "npc_render_save_result",
-            ok = false,
+            ok,
             kind = "hitbox",
-            slug = "",
+            slug,
         });
+    }
+
+    private static string GetStringProp(System.Text.Json.JsonElement root, string name)
+    {
+        if (!root.TryGetProperty(name, out var el)) return "";
+        if (el.ValueKind != System.Text.Json.JsonValueKind.String) return "";
+        return el.GetString() ?? "";
+    }
+
+    private static bool IsSafeSlug(string slug)
+    {
+        if (string.IsNullOrEmpty(slug)) return false;
+        foreach (char c in slug)
+            if (!char.IsLetterOrDigit(c) && c != '_' && c != '-') return false;
+        return true;
+    }
+
+    private static bool WriteUserNpcRenderFile(string slug, string fileName, string contents)
+    {
+        try
+        {
+            string baseDir = ProjectSettings.GlobalizePath("user://npc_render");
+            string target = System.IO.Path.Combine(baseDir, slug);
+            System.IO.Directory.CreateDirectory(target);
+            System.IO.File.WriteAllText(System.IO.Path.Combine(target, fileName), contents);
+            return true;
+        }
+        catch (System.Exception e)
+        {
+            GD.PrintErr($"[NpcSystem] WriteUserNpcRenderFile({slug}, {fileName}): {e.Message}");
+            return false;
+        }
     }
 
     internal void HandleNpcRenderSaveRender(long peerId, System.Text.Json.JsonElement root)
     {
         if (!_state.Sessions.TryGetValue(peerId, out var session)) return;
         if (!session.IsAdmin) return;
+
+        string slug = GetStringProp(root, "slug");
+        if (!IsSafeSlug(slug)) return;
+        if (!root.TryGetProperty("render", out var rEl)) return;
+        if (rEl.ValueKind != System.Text.Json.JsonValueKind.Object) return;
+
+        string json = rEl.GetRawText();
+        bool ok = WriteUserNpcRenderFile(slug, "render.json", json);
         _outbound.Send(peerId, new
         {
             type = "npc_render_save_result",
-            ok = false,
+            ok,
             kind = "render",
-            slug = "",
+            slug,
         });
     }
+
+    // ============================================================
+    // NPC type CRUD
+    // ============================================================
+
+    internal void HandleDevNpcTypeList(long peerId, System.Text.Json.JsonElement root)
+    {
+        if (!_state.Sessions.TryGetValue(peerId, out var session)) return;
+        if (!session.IsAdmin) return;
+
+        var types = _npcRepo.GetAllTypesSync();
+        var items = new List<object>();
+        foreach (var t in types)
+        {
+            int instanceCount = _npcRepo.CountInstancesByTypeSync(t.Id);
+            items.Add(new
+            {
+                id = t.Id,
+                slug_id = t.SlugId,
+                display = t.Display,
+                render_slug = t.RenderSlug,
+                instance_count = instanceCount,
+            });
+        }
+
+        _outbound.Send(peerId, new
+        {
+            type = "dev_npc_type_list_result",
+            ok = true,
+            items,
+        });
+    }
+
+    internal void HandleDevNpcTypeGet(long peerId, System.Text.Json.JsonElement root)
+    {
+        if (!_state.Sessions.TryGetValue(peerId, out var session)) return;
+        if (!session.IsAdmin) return;
+        if (!root.TryGetProperty("type_id", out var idEl)
+            || !idEl.TryGetInt64(out long typeId)) return;
+
+        var record = _npcRepo.GetTypeByIdSync(typeId);
+        if (record == null)
+        {
+            _outbound.Send(peerId, new { type = "dev_npc_type_data", ok = false });
+            return;
+        }
+
+        _outbound.Send(peerId, new
+        {
+            type = "dev_npc_type_data",
+            ok = true,
+            data = NpcTypeRecordToDict(record),
+        });
+    }
+
+    internal void HandleDevNpcTypeCreate(long peerId, System.Text.Json.JsonElement root)
+    {
+        if (!_state.Sessions.TryGetValue(peerId, out var session)) return;
+        if (!session.IsAdmin) return;
+        if (!root.TryGetProperty("data", out var dataEl)
+            || dataEl.ValueKind != System.Text.Json.JsonValueKind.Object) return;
+
+        var updates = ParseJsonToDict(dataEl);
+        _ = CreateTypeAndReply(peerId, updates);
+    }
+
+    private async Task CreateTypeAndReply(long peerId, Dictionary<string, object> updates)
+    {
+        try
+        {
+            long newId = await _npcRepo.CreateTypeAsync(updates);
+            _outbound.Send(peerId, new
+            {
+                type = "dev_npc_type_created",
+                ok = true,
+                type_id = newId,
+            });
+        }
+        catch (Exception e)
+        {
+            GD.PrintErr($"[NpcSystem] CreateType failed: {e.Message}");
+            _outbound.Send(peerId, new
+            {
+                type = "dev_npc_type_created",
+                ok = false,
+                type_id = 0L,
+                error = e.Message,
+            });
+        }
+    }
+
+    internal void HandleDevNpcTypeUpdate(long peerId, System.Text.Json.JsonElement root)
+    {
+        if (!_state.Sessions.TryGetValue(peerId, out var session)) return;
+        if (!session.IsAdmin) return;
+        if (!root.TryGetProperty("type_id", out var idEl)
+            || !idEl.TryGetInt64(out long typeId)) return;
+        if (!root.TryGetProperty("data", out var dataEl)
+            || dataEl.ValueKind != System.Text.Json.JsonValueKind.Object) return;
+
+        var updates = ParseJsonToDict(dataEl);
+        _ = UpdateTypeAndReply(peerId, typeId, updates);
+    }
+
+    private async Task UpdateTypeAndReply(long peerId, long typeId, Dictionary<string, object> updates)
+    {
+        bool ok;
+        try { ok = await _npcRepo.UpdateTypeAsync(typeId, updates); }
+        catch (Exception e)
+        {
+            GD.PrintErr($"[NpcSystem] UpdateType failed: {e.Message}");
+            ok = false;
+        }
+
+        if (ok)
+        {
+            // Refresh the in-memory NpcTypeRecord (shared by reference across
+            // every instance of this type) and broadcast npc_updated so clients
+            // reflect the change immediately — no respawn needed.
+            var reloaded = _npcRepo.GetTypeByIdSync(typeId);
+            if (reloaded != null)
+            {
+                var affected = new List<ActiveNpc>();
+                foreach (var npc in _npcs.Values)
+                    if (npc.Type.Id == typeId) affected.Add(npc);
+
+                if (affected.Count > 0)
+                {
+                    CopyTypeFields(reloaded, affected[0].Type);
+                    foreach (var npc in affected)
+                        _outbound.Broadcast(new { type = "npc_updated", npc = NpcToPacket(npc) });
+                    NotifyNpcVisibilityChanged();
+                }
+            }
+        }
+
+        _outbound.Send(peerId, new
+        {
+            type = "dev_npc_type_updated",
+            ok,
+            type_id = typeId,
+        });
+    }
+
+    private static void CopyTypeFields(NpcTypeRecord src, NpcTypeRecord dst)
+    {
+        dst.SlugId            = src.SlugId;
+        dst.Display           = src.Display;
+        dst.RenderSlug        = src.RenderSlug;
+        dst.DialogueScript    = src.DialogueScript;
+        dst.IsBanker          = src.IsBanker;
+        dst.Attackable        = src.Attackable;
+        dst.Aggressive        = src.Aggressive;
+        dst.AggroRangeTiles   = src.AggroRangeTiles;
+        dst.AiPackageState    = src.AiPackageState;
+        dst.SpawnTimerSeconds = src.SpawnTimerSeconds;
+        dst.SpawnFlags        = src.SpawnFlags;
+        dst.LootTableName     = src.LootTableName;
+        dst.CreditsTableName  = src.CreditsTableName;
+        dst.FinalLevel        = src.FinalLevel;
+        dst.MaxHitpoints      = src.MaxHitpoints;
+        dst.MaxAccuracy       = src.MaxAccuracy;
+        dst.MaxStrength       = src.MaxStrength;
+        dst.MaxDefence        = src.MaxDefence;
+        dst.MaxEther          = src.MaxEther;
+        dst.MeleeBonus        = src.MeleeBonus;
+        dst.RangedBonus       = src.RangedBonus;
+        dst.EtherBonus        = src.EtherBonus;
+        dst.MeleeDefense      = src.MeleeDefense;
+        dst.RangedDefense     = src.RangedDefense;
+        dst.EtherDefense      = src.EtherDefense;
+        dst.AttackSpeedTicks  = src.AttackSpeedTicks;
+    }
+
+    internal void HandleDevNpcTypeDelete(long peerId, System.Text.Json.JsonElement root)
+    {
+        if (!_state.Sessions.TryGetValue(peerId, out var session)) return;
+        if (!session.IsAdmin) return;
+        if (!root.TryGetProperty("type_id", out var idEl)
+            || !idEl.TryGetInt64(out long typeId)) return;
+
+        _ = DeleteTypeAndReply(peerId, typeId);
+    }
+
+    private async Task DeleteTypeAndReply(long peerId, long typeId)
+    {
+        bool ok;
+        try { ok = await _npcRepo.DeleteTypeAsync(typeId); }
+        catch (Exception e)
+        {
+            GD.PrintErr($"[NpcSystem] DeleteType failed: {e.Message}");
+            ok = false;
+        }
+
+        if (ok)
+        {
+            // Remove any live instances of the deleted type from memory
+            var toRemove = new List<long>();
+            foreach (var npc in _npcs.Values)
+                if (npc.Type.Id == typeId) toRemove.Add(npc.Id);
+            foreach (var id in toRemove) _npcs.Remove(id);
+            if (toRemove.Count > 0) NotifyNpcVisibilityChanged();
+        }
+
+        _outbound.Send(peerId, new
+        {
+            type = "dev_npc_type_deleted",
+            ok,
+            type_id = typeId,
+        });
+    }
+
+    private Dictionary<string, object> ParseJsonToDict(System.Text.Json.JsonElement obj)
+    {
+        var result = new Dictionary<string, object>();
+        foreach (var prop in obj.EnumerateObject())
+        {
+            result[prop.Name] = prop.Value.ValueKind switch
+            {
+                System.Text.Json.JsonValueKind.True => true,
+                System.Text.Json.JsonValueKind.False => false,
+                System.Text.Json.JsonValueKind.String => prop.Value.GetString() ?? "",
+                System.Text.Json.JsonValueKind.Number => prop.Value.TryGetInt64(out long l) ? l : 0L,
+                _ => (object)0L,
+            };
+        }
+        return result;
+    }
+
+    private static Dictionary<string, object> NpcTypeRecordToDict(NpcTypeRecord t) => new()
+    {
+        ["id"] = t.Id,
+        ["slug_id"] = t.SlugId,
+        ["display"] = t.Display,
+        ["render_slug"] = t.RenderSlug,
+        ["dialogue_script"] = t.DialogueScript,
+        ["is_banker"] = t.IsBanker,
+        ["attackable"] = t.Attackable,
+        ["aggressive"] = t.Aggressive,
+        ["aggro_range"] = t.AggroRangeTiles,
+        ["ai_package_state"] = t.AiPackageState,
+        ["spawn_timer"] = t.SpawnTimerSeconds,
+        ["spawn_flags"] = t.SpawnFlags,
+        ["loot_table_name"] = t.LootTableName,
+        ["credits_table_name"] = t.CreditsTableName,
+        ["final_level"] = t.FinalLevel,
+        ["max_hitpoints"] = t.MaxHitpoints,
+        ["max_accuracy"] = t.MaxAccuracy,
+        ["max_strength"] = t.MaxStrength,
+        ["max_defence"] = t.MaxDefence,
+        ["max_ether"] = t.MaxEther,
+        ["melee_bonus"] = t.MeleeBonus,
+        ["ranged_bonus"] = t.RangedBonus,
+        ["ether_bonus"] = t.EtherBonus,
+        ["melee_defense"] = t.MeleeDefense,
+        ["ranged_defense"] = t.RangedDefense,
+        ["ether_defense"] = t.EtherDefense,
+        ["attack_speed"] = t.AttackSpeedTicks,
+    };
 }

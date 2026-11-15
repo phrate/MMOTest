@@ -262,8 +262,13 @@ func _instantiate_npc(entry: Dictionary) -> void:
 			float(entry.get("y", 0.0)),
 			float(entry.get("z", 0.0))),
 		float(entry.get("yaw", 0.0)))
+	# Only replay the persisted anim if it's a state EntityVisuals can't
+	# derive. Idle/walk come from per-frame movement velocity, and one-shot
+	# combat anims arrive via npc_anim_changed broadcasts — replaying
+	# idle/walk here would lock _scripted_anim forever and block the derived
+	# animation system.
 	var anim := str(entry.get("anim", ""))
-	if anim != "":
+	if anim != "" and anim != "idle" and anim != "walk":
 		node.play_scripted_anim(anim, 0)
 
 
@@ -337,9 +342,9 @@ func _on_network_player_combat_state(player_id: int, in_combat: bool, npc_id: in
 
 
 
-func _on_npc_editor_open(npc_id: int) -> void:
+func _on_npc_editor_open(type_id: int) -> void:
 	if _dev_hub:
-		_dev_hub.open_at("npc_editor", "npc", npc_id)
+		_dev_hub.open_at("npc_editor", "npc_type", type_id)
 
 
 # ---------- Target HP bar ----------

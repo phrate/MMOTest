@@ -50,14 +50,15 @@ signal npc_hp_updated(npc_id: int, hitpoints: int, max_hitpoints: int)
 signal damage_number(target_type: String, target_id: int, amount: int)
 signal npc_updated(npc: Dictionary)
 signal npc_combat_state(npc_id: int, in_combat: bool)
-signal npc_editor_open(npc_id: int)
-signal npc_editor_data(npc: Dictionary)
-signal npc_editor_saved(ok: bool, npc_id: int)
-signal dev_npc_editor_list_result(ok: bool, mode: String, items: Array)
-signal dev_npc_editor_template_data(ok: bool, template: Dictionary)
-signal dev_npc_editor_template_saved(ok: bool, template_id: int)
-signal dev_npc_editor_options_result(ok: bool, options: Dictionary)
+
+signal npc_editor_open(type_id: int)
 signal npc_render_save_result(ok: bool, kind: String, slug: String)
+signal dev_npc_editor_options_result(ok: bool, options: Dictionary)
+signal dev_npc_type_list_result(ok: bool, items: Array)
+signal dev_npc_type_data(ok: bool, data: Dictionary)
+signal dev_npc_type_created(ok: bool, type_id: int, error: String)
+signal dev_npc_type_updated(ok: bool, type_id: int)
+signal dev_npc_type_deleted(ok: bool, type_id: int)
 
 signal ground_item_dropped(item: Dictionary)
 signal ground_item_removed(id: int)
@@ -186,14 +187,6 @@ func send_walk_path(path: Array) -> void:
 	send({"type": "player_walk", "path": arr})
 
 
-func send_npc_editor_get(npc_id: int) -> void:
-	send({"type": "npc_editor_get", "npc_id": npc_id})
-
-
-func send_npc_editor_save(npc_id: int, updates: Dictionary) -> void:
-	send({"type": "npc_editor_save", "npc_id": npc_id, "updates": updates})
-
-
 func send_npc_render_save_hitbox(slug: String, hitbox: Dictionary) -> void:
 	send({"type": "npc_render_save_hitbox", "slug": slug, "hitbox": hitbox})
 
@@ -202,20 +195,28 @@ func send_npc_render_save_render(slug: String, render: Dictionary) -> void:
 	send({"type": "npc_render_save_render", "slug": slug, "render": render})
 
 
-func send_dev_npc_editor_list(mode: String) -> void:
-	send({"type": "dev_npc_editor_list", "mode": mode})
-
-
 func send_dev_npc_editor_options_request() -> void:
 	send({"type": "dev_npc_editor_options"})
 
 
-func send_dev_npc_editor_get_template(template_id: int) -> void:
-	send({"type": "dev_npc_editor_get_template", "template_id": template_id})
+func send_dev_npc_type_list() -> void:
+	send({"type": "dev_npc_type_list"})
 
 
-func send_dev_npc_editor_save_template(template_id: int, updates: Dictionary) -> void:
-	send({"type": "dev_npc_editor_save_template", "template_id": template_id, "updates": updates})
+func send_dev_npc_type_get(type_id: int) -> void:
+	send({"type": "dev_npc_type_get", "type_id": type_id})
+
+
+func send_dev_npc_type_create(data: Dictionary) -> void:
+	send({"type": "dev_npc_type_create", "data": data})
+
+
+func send_dev_npc_type_update(type_id: int, data: Dictionary) -> void:
+	send({"type": "dev_npc_type_update", "type_id": type_id, "data": data})
+
+
+func send_dev_npc_type_delete(type_id: int) -> void:
+	send({"type": "dev_npc_type_delete", "type_id": type_id})
 
 
 func send_chat(message: String) -> void:
@@ -489,36 +490,32 @@ func _on_packet(_id: int, packet: PackedByteArray) -> void:
 				int(msg.get("npc_id", 0)),
 				bool(msg.get("in_combat", false)))
 		"npc_editor_open":
-			npc_editor_open.emit(int(msg.get("npc_id", 0)))
-		"npc_editor_data":
-			var ndata: Variant = msg.get("npc", {})
-			if typeof(ndata) == TYPE_DICTIONARY:
-				npc_editor_data.emit(ndata)
-		"npc_editor_saved":
-			npc_editor_saved.emit(
-				bool(msg.get("ok", false)),
-				int(msg.get("npc_id", 0)))
-		"dev_npc_editor_list_result":
-			var items_el: Variant = msg.get("items", [])
-			if typeof(items_el) == TYPE_ARRAY:
-				dev_npc_editor_list_result.emit(
-					bool(msg.get("ok", false)),
-					String(msg.get("mode", "unique")),
-					items_el)
-			else:
-				push_warning("dev_npc_editor_list_result missing 'items' array")
-		"dev_npc_editor_template_data":
-			var tmpl: Variant = msg.get("template", {})
-			if typeof(tmpl) == TYPE_DICTIONARY:
-				dev_npc_editor_template_data.emit(bool(msg.get("ok", false)), tmpl)
+			npc_editor_open.emit(int(msg.get("type_id", 0)))
 		"dev_npc_editor_options_result":
 			var opts: Variant = msg.get("options", {})
 			if typeof(opts) == TYPE_DICTIONARY:
 				dev_npc_editor_options_result.emit(bool(msg.get("ok", false)), opts)
-		"dev_npc_editor_template_saved":
-			dev_npc_editor_template_saved.emit(
+		"dev_npc_type_list_result":
+			var items_el: Variant = msg.get("items", [])
+			if typeof(items_el) == TYPE_ARRAY:
+				dev_npc_type_list_result.emit(bool(msg.get("ok", false)), items_el)
+		"dev_npc_type_data":
+			var data_el: Variant = msg.get("data", {})
+			if typeof(data_el) == TYPE_DICTIONARY:
+				dev_npc_type_data.emit(bool(msg.get("ok", false)), data_el)
+		"dev_npc_type_created":
+			dev_npc_type_created.emit(
 				bool(msg.get("ok", false)),
-				int(msg.get("template_id", 0)))
+				int(msg.get("type_id", 0)),
+				String(msg.get("error", "")))
+		"dev_npc_type_updated":
+			dev_npc_type_updated.emit(
+				bool(msg.get("ok", false)),
+				int(msg.get("type_id", 0)))
+		"dev_npc_type_deleted":
+			dev_npc_type_deleted.emit(
+				bool(msg.get("ok", false)),
+				int(msg.get("type_id", 0)))
 		"damage_number":
 			damage_number.emit(
 				String(msg.get("target_type", "")),

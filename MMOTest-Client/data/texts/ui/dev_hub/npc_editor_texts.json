@@ -64,5 +64,21 @@
 	"save_all": "Save All",
 	"save_all_saving": "Saving...",
 	"save_all_saved": "Saved ✓",
-	"save_all_failed": "Save Failed"
+	"save_all_failed": "Save Failed",
+	
+	"tab_browse": "Browse",
+	"tab_edit": "Edit",
+	"tab_create": "Create",
+	"browse_create_button": "Create NPC",
+	"browse_search_placeholder": "Search by display, slug, or render...",
+	"browse_col_display": "Display",
+	"browse_col_slug": "Slug",
+	"browse_col_render": "Render",
+	"browse_col_instances": "Instances",
+	"browse_empty": "No NPC types yet. Click Create NPC to start.",
+	"label_slug_id": "Slug ID",
+	"delete_button": "Delete Type",
+	"delete_confirm": "Delete this type and ALL its instances?",
+	"create_button": "Create Type",
+	"edit_empty": "Select an NPC from Browse, or create a new one."
 }
