@@ -22,6 +22,8 @@ func on_hub_open_for_entity(entity_type: String, entity_id: int) -> void:
 
 ## Standard "under construction" placeholder. Call from _ready() in stub panels.
 func _build_placeholder(panel_id: String) -> void:
+	var style := DevStyle.instance
+
 	var vbox := VBoxContainer.new()
 	vbox.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	vbox.alignment = BoxContainer.ALIGNMENT_CENTER
@@ -30,14 +32,14 @@ func _build_placeholder(panel_id: String) -> void:
 
 	var heading := Label.new()
 	heading.text = Texts.get_text("ui.dev_hub.placeholder.heading")
-	heading.add_theme_font_size_override("font_size", DevStyle.FONT_SIZE_TITLE)
-	heading.add_theme_color_override("font_color", DevStyle.TEXT_HEADING)
+	heading.add_theme_font_size_override("font_size", style.font_size_title)
+	heading.add_theme_color_override("font_color", style.text_heading)
 	heading.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	vbox.add_child(heading)
 
 	var body := Label.new()
 	body.text = Texts.get_text("ui.dev_hub.placeholder.body", {"panel": panel_id.capitalize()})
-	body.add_theme_font_size_override("font_size", DevStyle.FONT_SIZE_BODY)
-	body.add_theme_color_override("font_color", DevStyle.TEXT_MUTED)
+	body.add_theme_font_size_override("font_size", style.font_size_body)
+	body.add_theme_color_override("font_color", style.text_muted)
 	body.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	vbox.add_child(body)

@@ -1,382 +1,504 @@
-extends VBoxContainer
-## Reusable NPC editor panel. Configured with `mode`: "template" or "unique".
+extends DevPanel
+## NPC editor — client-side port of the server NpcEditor.
 ##
-## Two responsibilities:
-##   1. Combat/inspector editing (fields in InspectorFields; saved via NpcEditorBridge)
-##   2. Hitbox authoring (controls in HitboxControls; saved to user://npc_render/<slug>/hitbox.json)
+## Browse + preview + full field inspector + save.
+## Piece 2c will add hitbox and scale authoring (visible next to the fields
+## when those controls land).
+##
+## Two modes:
+##   unique   — live NPCs (npcs table + their levels_combat instance)
+##   template — combat definitions shared by many NPCs
+##
+## Note on tile position: changing tile_x/y/z saves to the DB immediately,
+## but the live NPC keeps its current position until it respawns. Kill it
+## via [Admin] Kill if you need the new position now.
 
-@export var mode: String = "template"
-
-# ---------- Constants ----------
-const Y_BOT_PATH := "res://models/y-bot-4.gltf"
 const TARGET_HEIGHT_BY_SLUG := {
 	"player": 1.8, "man": 1.8, "guard": 1.8,
 	"goblin": 1.4, "chicken": 0.4,
 }
-const HITBOX_COLOR := Color(0.2, 1.0, 0.2)
-const AXIS_COL_X  := Color(1.0, 0.3, 0.3)
-const AXIS_COL_Y  := Color(0.3, 1.0, 0.3)
-const AXIS_COL_Z  := Color(0.3, 0.5, 1.0)
-const AXIS_COL_R  := Color(1.0, 0.6, 0.1)
-const AXIS_COL_H  := Color(0.2, 0.9, 0.9)
-const MODEL_TRANSPARENCY := 0.5
 
-# ---------- @onready ----------
-@onready var search_edit: LineEdit = %SearchEdit
-@onready var npc_selector: OptionButton = %NpcSelector
-@onready var anim_selector: OptionButton = %AnimSelector
-@onready var inspector_fields: VBoxContainer = %InspectorFields
-@onready var save_button: Button = %SaveButton
-@onready var reload_button: Button = %ReloadButton
-@onready var sub_viewport: SubViewport = %SubViewport
-@onready var camera: Camera3D = %Camera3D
+@export var model_viewport_min_size: Vector2 = Vector2(400, 400)
+@export var default_orbit_yaw: float = 0.6
+@export var default_orbit_pitch: float = 0.35
+@export var default_orbit_distance: float = 4.0
+@export var orbit_mouse_sensitivity: float = 0.008
+@export var orbit_zoom_step: float = 0.9
+@export var orbit_min_distance: float = 0.5
+@export var orbit_max_distance: float = 50.0
+@export var orbit_pitch_clamp: float = 1.4
+@export var left_column_ratio: float = 0.30
+@export var field_label_width: int = 160
+@export var field_row_separation: int = 8
+@export var field_widget_min_height: int = 60
 
-# ---------- Panel state ----------
-var _all_items: Array = []
-var _filtered_items: Array = []
-var _current_id: int = 0
-var _current_data: Dictionary = {}
+var _mode: String = "unique"
+
+# Widgets
+var _mode_selector: OptionButton
+var _search_edit: LineEdit
+var _npc_selector: OptionButton
+var _preview_placeholder: Label
+var _fields_container: VBoxContainer
+var _save_button: Button
+
+# SubViewport 3D
+var _sub_viewport: SubViewport
+var _sub_viewport_container: SubViewportContainer
+var _camera: Camera3D
+var _model_holder: Node3D
 var _current_model: Node3D = null
 var _current_slug: String = ""
-var _reloading: bool = false
+var _current_data: Dictionary = {}
+
+# List state
+var _items: Array = []
+var _filtered_items: Array = []
+var _current_id: int = 0
+var _list_loaded: bool = false
+var _pending_npc_id: int = 0
+
+# Field widgets keyed by field name
 var _fields: Dictionary = {}
 
-# ---------- Hitbox UI controls ----------
-var hitbox_toggle: CheckBox
-var hitbox_type_selector: OptionButton
-var hitbox_radius_spin: SpinBox
-var hitbox_height_spin: SpinBox
-var hitbox_height_label: Label
-var hitbox_offset_x_spin: SpinBox
-var hitbox_offset_y_spin: SpinBox
-var hitbox_offset_z_spin: SpinBox
-var hitbox_save_button: Button
-var hitbox_reset_button: Button
-
-# ---------- Hitbox state ----------
-var _hitbox: Dictionary = {
-	"type": "capsule",
-	"radius": 0.4,
-	"height": 1.8,
-	"offset": Vector3(0, 0.9, 0),
-}
-var _hitbox_visible: bool = false
-var _hitbox_dirty: bool = false
-
-# ---------- Scale state ----------
-var scale_x_spin: SpinBox
-var scale_y_spin: SpinBox
-var scale_z_spin: SpinBox
-var scale_save_button: Button
-var scale_reset_button: Button
-var _user_scale: Vector3 = Vector3.ONE
-var _base_fit_factor: float = 1.0
-var _scale_dirty: bool = false
-
-# ---------- Hitbox 3D nodes ----------
-var _hitbox_visual: MeshInstance3D
-var _gizmo_root: Node3D
-var _gizmo_handles: Array = []         # [{node, kind, axis}]
-var _handle_labels: Dictionary = {}    # kind -> Label3D
-var _poles: Dictionary = {}            # kind -> MeshInstance3D
-
-# ---------- Model transparency ----------
-var _transparency_meshes: Array = []   # [[MeshInstance3D, [Material per surface]]]
-
-# ---------- Camera orbit ----------
+# Orbit state
 var _orbit_yaw: float = 0.6
 var _orbit_pitch: float = 0.35
 var _orbit_distance: float = 4.0
 var _orbit_target: Vector3 = Vector3(0, 1, 0)
 var _orbiting: bool = false
 
-# ---------- Drag ----------
-var _dragging_handle: Dictionary = {}
-var _drag_plane: Plane
-var _drag_initial: Vector3
-var _drag_initial_value: float
-var _drag_initial_offset: Vector3
-
-
-# ============================================================
-# Lifecycle
-# ============================================================
+var _style: DevStyle = null
 
 func _ready() -> void:
-	_build_hitbox_ui()
-	_build_scale_ui()
-	_build_hitbox_nodes()
+	_style = DevStyle.instance
+	_build_ui()
+	_connect_network()
+	_orbit_yaw = default_orbit_yaw
+	_orbit_pitch = default_orbit_pitch
+	_orbit_distance = default_orbit_distance
 
-	search_edit.text_changed.connect(_on_search_changed)
-	npc_selector.item_selected.connect(_on_npc_selected)
-	anim_selector.item_selected.connect(_on_anim_selected)
-	save_button.pressed.connect(_on_save_pressed)
-	reload_button.pressed.connect(_refresh_from_db)
+# ---------- DevPanel hooks ----------
 
-	var container := sub_viewport.get_parent() as SubViewportContainer
-	if container != null:
-		container.gui_input.connect(_on_viewer_input)
+func panel_opened() -> void:
+	if not _list_loaded:
+		_reload_list()
 
-	_reload_items()
+func on_hub_open_for_entity(entity_type: String, entity_id: int) -> void:
+	if entity_type != "npc":
+		return
+	if _mode != "unique":
+		_set_mode("unique")
+	_pending_npc_id = entity_id
+	if _list_loaded:
+		_try_select_pending()
 
+# ---------- UI construction ----------
 
-func _process(_delta: float) -> void:
+func _build_ui() -> void:
+	var vbox := VBoxContainer.new()
+	vbox.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	vbox.add_theme_constant_override("separation", _style.panel_separation)
+	add_child(vbox)
+
+	# Row 1: mode + search + dropdown
+	var filter_row := HBoxContainer.new()
+	filter_row.add_theme_constant_override("separation", _style.panel_separation)
+	vbox.add_child(filter_row)
+
+	_mode_selector = OptionButton.new()
+	_mode_selector.add_item(Texts.get_text("ui.dev_hub.npc_editor.mode_unique"), 0)
+	_mode_selector.add_item(Texts.get_text("ui.dev_hub.npc_editor.mode_template"), 1)
+	_mode_selector.select(0)
+	_mode_selector.item_selected.connect(_on_mode_selected)
+	filter_row.add_child(_mode_selector)
+
+	_search_edit = LineEdit.new()
+	_search_edit.placeholder_text = Texts.get_text("ui.dev_hub.npc_editor.search_placeholder")
+	_search_edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_search_edit.text_changed.connect(_on_search_changed)
+	filter_row.add_child(_search_edit)
+
+	_npc_selector = OptionButton.new()
+	_npc_selector.custom_minimum_size = Vector2(280, 0)
+	_npc_selector.item_selected.connect(_on_npc_selected)
+	filter_row.add_child(_npc_selector)
+
+	# Row 2: split — model | fields
+	var split := HSplitContainer.new()
+	split.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	split.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	vbox.add_child(split)
+
+	# Left: model preview
+	var left := VBoxContainer.new()
+	left.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	left.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	split.add_child(left)
+
+	_sub_viewport_container = SubViewportContainer.new()
+	_sub_viewport_container.custom_minimum_size = model_viewport_min_size
+	_sub_viewport_container.stretch = true
+	_sub_viewport_container.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_sub_viewport_container.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	_sub_viewport_container.gui_input.connect(_on_viewport_input)
+	left.add_child(_sub_viewport_container)
+
+	_sub_viewport = SubViewport.new()
+	_sub_viewport.own_world_3d = true
+	_sub_viewport.handle_input_locally = false
+	_sub_viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS
+	_sub_viewport_container.add_child(_sub_viewport)
+
+	var env := Environment.new()
+	env.background_mode = Environment.BG_COLOR
+	env.background_color = Color(0.15, 0.15, 0.18, 1.0)
+	env.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
+	env.ambient_light_color = Color(1, 1, 1)
+	env.ambient_light_energy = 0.5
+	var world_env := WorldEnvironment.new()
+	world_env.environment = env
+	_sub_viewport.add_child(world_env)
+
+	_camera = Camera3D.new()
+	_camera.current = true
+	_sub_viewport.add_child(_camera)
+
+	var light := DirectionalLight3D.new()
+	light.rotation_degrees = Vector3(-50, -30, 0)
+	light.light_energy = 1.2
+	light.shadow_enabled = true
+	_sub_viewport.add_child(light)
+
+	_model_holder = Node3D.new()
+	_model_holder.name = "ModelHolder"
+	_sub_viewport.add_child(_model_holder)
+
+	_preview_placeholder = Label.new()
+	_preview_placeholder.text = Texts.get_text("ui.dev_hub.npc_editor.preview_placeholder")
+	_preview_placeholder.add_theme_font_size_override("font_size", _style.font_size_body)
+	_preview_placeholder.add_theme_color_override("font_color", _style.text_muted)
+	_preview_placeholder.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_preview_placeholder.set_anchors_and_offsets_preset(Control.PRESET_CENTER_TOP)
+	_sub_viewport_container.add_child(_preview_placeholder)
+
+	# Right: fields + save
+	var right := VBoxContainer.new()
+	right.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	right.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	right.add_theme_constant_override("separation", _style.panel_separation)
+	split.add_child(right)
+
+	var scroll := ScrollContainer.new()
+	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	right.add_child(scroll)
+
+	_fields_container = VBoxContainer.new()
+	_fields_container.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_fields_container.add_theme_constant_override("separation", 4)
+	scroll.add_child(_fields_container)
+
+	var save_row := HBoxContainer.new()
+	right.add_child(save_row)
+
+	_save_button = Button.new()
+	_save_button.text = "Save"
+	_save_button.disabled = true
+	_save_button.focus_mode = Control.FOCUS_NONE
+	_save_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_save_button.add_theme_font_size_override("font_size", _style.font_size_body)
+	_save_button.add_theme_color_override("font_color", _style.text_primary)
+	_save_button.add_theme_color_override("font_hover_color", _style.text_primary)
+	_save_button.add_theme_color_override("font_pressed_color", _style.text_primary)
+	_save_button.add_theme_color_override("font_disabled_color", _style.text_muted)
+	_save_button.pressed.connect(_on_save_pressed)
+	save_row.add_child(_save_button)
+
+	split.split_offset = int(DevStyle.instance.panel_max_width * left_column_ratio)
 	_update_camera_orbit()
 
+# ---------- Network ----------
 
-func _as_bool(v) -> bool:
-	if typeof(v) == TYPE_BOOL: return v
-	if typeof(v) == TYPE_INT or typeof(v) == TYPE_FLOAT: return v != 0
-	if typeof(v) == TYPE_STRING: return not v.is_empty()
-	return false
-# ============================================================
-# Item loading
-# ============================================================
+func _connect_network() -> void:
+	Network.dev_npc_editor_list_result.connect(_on_list_result)
+	Network.dev_npc_editor_template_data.connect(_on_template_data)
+	Network.dev_npc_editor_template_saved.connect(_on_template_saved)
+	Network.npc_editor_data.connect(_on_npc_editor_data)
+	Network.npc_editor_saved.connect(_on_npc_editor_saved)
 
-func _reload_items() -> void:
-	_all_items = []
-	if mode == "template":
-		_all_items = NpcEditorBridge.GetTemplates()
-	else:
-		_all_items = NpcEditorBridge.GetNpcs()
+# ---------- List ----------
+
+func _reload_list() -> void:
+	Network.send_dev_npc_editor_list(_mode)
+
+func _on_list_result(ok: bool, mode: String, items: Array) -> void:
+	if mode != _mode: return
+	if not ok:
+		_items = []
+		_filtered_items = []
+		_npc_selector.clear()
+		_list_loaded = true
+		return
+	_items = items
+	_list_loaded = true
 	_rebuild_dropdown()
-
-
-func _refresh_from_db() -> void:
-	_reloading = true
-	_reload_items()
-	_reloading = false
-
-
-func _on_search_changed(_t: String) -> void:
-	_rebuild_dropdown()
-
 
 func _rebuild_dropdown() -> void:
-	npc_selector.clear()
+	_npc_selector.clear()
 	_filtered_items.clear()
-	var filter := search_edit.text.strip_edges().to_lower()
-	for it in _all_items:
-		var lbl: String = str(it.get("slug_id", it.get("name", "")))
-		if filter.is_empty() or lbl.to_lower().contains(filter):
+	var filter := _search_edit.text.strip_edges().to_lower()
+	for it in _items:
+		if typeof(it) != TYPE_DICTIONARY: continue
+		var label := str(it.get("name", it.get("slug_id", "")))
+		if filter.is_empty() or label.to_lower().contains(filter):
 			_filtered_items.append(it)
-			npc_selector.add_item(lbl)
+			_npc_selector.add_item(label)
 	if _filtered_items.is_empty():
-		_clear_all()
+		_current_id = 0
+		_current_slug = ""
+		_clear_model()
 		return
+	var selected_index := -1
 	for i in _filtered_items.size():
 		if int(_filtered_items[i].id) == _current_id:
-			npc_selector.select(i)
-			_load_current()
-			return
-	npc_selector.select(0)
-	_current_id = int(_filtered_items[0].id)
+			selected_index = i
+			break
+	if selected_index < 0:
+		selected_index = 0
+		_current_id = int(_filtered_items[0].id)
+	_npc_selector.select(selected_index)
 	_load_current()
-
 
 func _on_npc_selected(idx: int) -> void:
 	if idx < 0 or idx >= _filtered_items.size(): return
 	_current_id = int(_filtered_items[idx].id)
 	_load_current()
 
+func _on_search_changed(_t: String) -> void:
+	_rebuild_dropdown()
+
+func _on_mode_selected(idx: int) -> void:
+	var new_mode := "unique" if idx == 0 else "template"
+	if new_mode == _mode: return
+	_set_mode(new_mode)
+
+func _set_mode(new_mode: String) -> void:
+	_mode = new_mode
+	_current_id = 0
+	_current_slug = ""
+	_list_loaded = false
+	_items = []
+	_filtered_items = []
+	_npc_selector.clear()
+	_clear_model()
+	_reload_list()
+
+func _try_select_pending() -> void:
+	if _pending_npc_id == 0: return
+	for i in _filtered_items.size():
+		if int(_filtered_items[i].id) == _pending_npc_id:
+			_current_id = _pending_npc_id
+			_npc_selector.select(i)
+			_load_current()
+			_pending_npc_id = 0
+			return
+	_pending_npc_id = 0
+
+# ---------- Load current ----------
 
 func _load_current() -> void:
-	if not _reloading and _hitbox_dirty and _current_slug != "":
-		_maybe_save_hitbox()
-	if not _reloading and _scale_dirty and _current_slug != "":
-		_maybe_save_scale()
-
 	if _current_id == 0:
-		_clear_all()
+		_clear_model()
 		return
-	if mode == "template":
-		_current_data = NpcEditorBridge.GetTemplate(_current_id)
+	if _mode == "unique":
+		Network.send_npc_editor_get(_current_id)
 	else:
-		_current_data = NpcEditorBridge.GetNpcFull(_current_id)
-	if _current_data == null: _current_data = {}
+		Network.send_dev_npc_editor_get_template(_current_id)
+
+func _on_npc_editor_data(npc: Dictionary) -> void:
+	if _mode != "unique": return
+	if int(npc.get("id", 0)) != _current_id: return
+	_current_data = npc
+	_load_model(str(npc.get("render_slug", "")))
 	_build_inspector()
-	_load_model()
-	_load_hitbox_for_slug()
-	_update_hitbox_controls()
-	_update_hitbox_display()
 
+func _on_template_data(ok: bool, template: Dictionary) -> void:
+	if _mode != "template": return
+	if not ok: return
+	if int(template.get("id", 0)) != _current_id: return
+	_current_data = template
+	var sid := str(template.get("slug_id", ""))
+	_load_model(sid.trim_prefix("npc_"))
+	_build_inspector()
 
-func _clear_all() -> void:
-	_current_id = 0
-	_current_data = {}
-	_current_slug = ""
-	_hitbox_dirty = false
-	_update_hitbox_save_button()
-	_clear_model()
-	for c in inspector_fields.get_children(): c.queue_free()
+# ---------- Inspector ----------
 
+func _build_inspector() -> void:
+	for c in _fields_container.get_children():
+		_fields_container.remove_child(c)
+		c.queue_free()
+	_fields.clear()
 
-# ============================================================
-# Model viewer
-# ============================================================
+	var specs := _unique_fields() if _mode == "unique" else _template_fields()
+	for spec in specs:
+		if str(spec.get("type", "")) == "separator":
+			_fields_container.add_child(HSeparator.new())
+			continue
+		_add_field_row(spec)
 
-func _render_slug_for_current() -> String:
-	if mode == "template":
-		return str(_current_data.get("slug_id", "")).trim_prefix("npc_")
-	var rs := str(_current_data.get("render_slug", ""))
-	if rs != "": return rs
-	var ts := str(_current_data.get("template_slug", ""))
-	if ts != "": return ts.trim_prefix("npc_")
-	var cs := str(_current_data.get("combat_slug", ""))
-	var stripped := cs.trim_prefix("npc_")
-	var at := stripped.find("@")
-	return stripped.substr(0, at) if at >= 0 else stripped
+	_save_button.disabled = false
+	_save_button.text = "Save"
 
+func _add_field_row(spec: Dictionary) -> void:
+	var key: String = spec["key"]
+	var label_text: String = spec["label"]
+	var type: String = spec["type"]
+	var value: Variant = _current_data.get(key)
 
-func _load_model() -> void:
-	_clear_model()
-	var slug := _render_slug_for_current()
-	_current_slug = slug
-	var inst: Node3D = null
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", field_row_separation)
+	_fields_container.add_child(row)
 
-	if slug != "":
-		var path := "res://npc_render/%s/%s.tscn" % [slug, slug]
-		if ResourceLoader.exists(path):
-			var scene := load(path) as PackedScene
-			if scene != null:
-				inst = scene.instantiate() as Node3D
+	var lbl := Label.new()
+	lbl.text = label_text
+	lbl.custom_minimum_size = Vector2(field_label_width, 0)
+	lbl.add_theme_font_size_override("font_size", _style.font_size_body)
+	lbl.add_theme_color_override("font_color", _style.text_primary)
+	row.add_child(lbl)
 
-	if inst == null and ResourceLoader.exists(Y_BOT_PATH):
-		var scene := load(Y_BOT_PATH) as PackedScene
-		if scene != null:
-			inst = scene.instantiate() as Node3D
+	match type:
+		"readonly":
+			var l := Label.new()
+			l.text = str(value) if value != null else ""
+			l.add_theme_font_size_override("font_size", _style.font_size_body)
+			l.add_theme_color_override("font_color", _style.text_muted)
+			l.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			row.add_child(l)
+		"readonly_bool":
+			var l := Label.new()
+			l.text = "yes" if bool(value) else "no"
+			l.add_theme_font_size_override("font_size", _style.font_size_body)
+			l.add_theme_color_override("font_color", _style.text_muted)
+			l.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			row.add_child(l)
+		"string":
+			var le := LineEdit.new()
+			le.text = str(value) if value != null else ""
+			le.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			row.add_child(le)
+			_fields[key] = le
+		"int":
+			var sb := SpinBox.new()
+			sb.min_value = int(spec.get("min", -999999))
+			sb.max_value = 999999
+			sb.step = 1
+			sb.value = int(value) if value != null else 0
+			sb.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			row.add_child(sb)
+			_fields[key] = sb
+		"bool":
+			var cb := CheckBox.new()
+			cb.button_pressed = bool(value) if value != null else false
+			row.add_child(cb)
+			_fields[key] = cb
+		"text":
+			var te := TextEdit.new()
+			te.text = str(value) if value != null else ""
+			te.custom_minimum_size = Vector2(0, field_widget_min_height)
+			te.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			row.add_child(te)
+			_fields[key] = te
 
-	if inst == null:
-		inst = _build_fallback_model()
+func _on_save_pressed() -> void:
+	if _current_id == 0: return
+	_save_button.disabled = true
+	_save_button.text = "Saving..."
 
-	_current_model = inst
-	var holder := sub_viewport.get_node_or_null("ModelHolder")
-	if holder == null:
-		holder = Node3D.new()
-		holder.name = "ModelHolder"
-		sub_viewport.add_child(holder)
-	holder.add_child(inst)
+	var updates := {}
+	for key in _fields.keys():
+		var c = _fields[key]
+		if c is SpinBox: updates[key] = int((c as SpinBox).value)
+		elif c is LineEdit: updates[key] = (c as LineEdit).text
+		elif c is CheckBox: updates[key] = (c as CheckBox).button_pressed
+		elif c is TextEdit: updates[key] = (c as TextEdit).text
 
-	# Compute the auto-fit factor once, then apply scale + anchor.
-	var aabb := _compute_aabb(inst)
-	if aabb.size.y > 0.001:
-		var target_h: float = TARGET_HEIGHT_BY_SLUG.get(slug, 1.8)
-		_base_fit_factor = target_h / aabb.size.y
+	if _mode == "unique":
+		Network.send_npc_editor_save(_current_id, updates)
 	else:
-		_base_fit_factor = 1.0
+		Network.send_dev_npc_editor_save_template(_current_id, updates)
 
-	# Load user scale for this slug.
-	_user_scale = _load_render_scale(slug)
-	scale_x_spin.set_value_no_signal(_user_scale.x)
-	scale_y_spin.set_value_no_signal(_user_scale.y)
-	scale_z_spin.set_value_no_signal(_user_scale.z)
-	_scale_dirty = false
-	_update_scale_save_button()
+# ---------- Save callbacks ----------
 
-	_apply_scale_and_anchor()
-	_rebuild_anim_dropdown()
+func _on_npc_editor_saved(ok: bool, npc_id: int) -> void:
+	if _mode != "unique": return
+	if npc_id != _current_id: return
+	if not _save_button: return
+	_save_button.disabled = false
+	if ok:
+		_save_button.text = "Saved ✓"
+		Network.send_npc_editor_get(_current_id)
+		await get_tree().create_timer(1.2).timeout
+		if _save_button and _save_button.text == "Saved ✓":
+			_save_button.text = "Save"
+	else:
+		_save_button.text = "Save Failed"
+		await get_tree().create_timer(2.0).timeout
+		if _save_button and _save_button.text == "Save Failed":
+			_save_button.text = "Save"
+
+func _on_template_saved(ok: bool, template_id: int) -> void:
+	if _mode != "template": return
+	if template_id != _current_id: return
+	if not _save_button: return
+	_save_button.disabled = false
+	if ok:
+		_save_button.text = "Saved ✓"
+		Network.send_dev_npc_editor_get_template(_current_id)
+		await get_tree().create_timer(1.2).timeout
+		if _save_button and _save_button.text == "Saved ✓":
+			_save_button.text = "Save"
+	else:
+		_save_button.text = "Save Failed"
+		await get_tree().create_timer(2.0).timeout
+		if _save_button and _save_button.text == "Save Failed":
+			_save_button.text = "Save"
+
+# ---------- Model ----------
+
+func _load_model(slug: String) -> void:
+	if slug == "":
+		_clear_model_only()
+		return
+	_clear_model_only()
+	_current_slug = slug
+	var scene := NpcRender.get_scene(slug)
+	if scene == null:
+		_clear_model_only()
+		return
+	var inst := scene.instantiate() as Node3D
+	if inst == null:
+		_clear_model_only()
+		return
+	_model_holder.add_child(inst)
+	_current_model = inst
+	_preview_placeholder.visible = false
+	_apply_model_fit(slug)
 	_frame_camera(inst)
-
-
-func _apply_scale_and_anchor() -> void:
-	if _current_model == null: return
-	_current_model.scale = Vector3.ONE * _base_fit_factor * _user_scale
-	_current_model.position = Vector3.ZERO
-	var aabb := _compute_aabb(_current_model)
-	_current_model.position.y -= aabb.position.y
-
-
-func _build_fallback_model() -> Node3D:
-	var root := Node3D.new()
-	root.name = "Fallback"
-	var mesh := MeshInstance3D.new()
-	var cap := CapsuleMesh.new()
-	cap.radius = 0.4
-	cap.height = 1.8
-	mesh.mesh = cap
-	mesh.position = Vector3(0, 0.9, 0)
-	var mat := StandardMaterial3D.new()
-	mat.albedo_color = Color(0.6, 0.6, 0.6)
-	mesh.material_override = mat
-	root.add_child(mesh)
-	return root
-
-
-func _clear_model() -> void:
-	_restore_model_transparency()
-	if _current_model != null and is_instance_valid(_current_model):
-		_current_model.queue_free()
-	_current_model = null
-	anim_selector.clear()
-	anim_selector.disabled = true
-
-
-func _rebuild_anim_dropdown() -> void:
-	anim_selector.clear()
-	if _current_model == null:
-		anim_selector.disabled = true
-		return
-	var ap := _find_anim_player(_current_model)
-	if ap == null:
-		anim_selector.add_item("(no animations)")
-		anim_selector.disabled = true
-		return
-	anim_selector.disabled = false
-	var names := ap.get_animation_list()
-	var idle_idx := -1
-	for i in names.size():
-		anim_selector.add_item(names[i])
-		if names[i] == "idle_1" or names[i] == "idle":
-			idle_idx = i
-	var pick := idle_idx if idle_idx >= 0 else (0 if names.size() > 0 else -1)
-	if pick >= 0:
-		anim_selector.select(pick)
-		ap.play(names[pick])
-
-
-func _on_anim_selected(idx: int) -> void:
-	if _current_model == null or idx < 0: return
-	var ap := _find_anim_player(_current_model)
-	if ap == null: return
-	var name := anim_selector.get_item_text(idx)
-	if ap.has_animation(name):
-		ap.play(name)
-
-
-func _find_anim_player(node: Node) -> AnimationPlayer:
-	if node is AnimationPlayer: return node
-	for c in node.get_children():
-		var ap := _find_anim_player(c)
-		if ap != null: return ap
-	return null
-
-
-# ============================================================
-# Camera
-# ============================================================
-
-func _frame_camera(root: Node3D) -> void:
-	var aabb := _compute_aabb(root)
-	if aabb.size == Vector3.ZERO:
-		aabb = AABB(Vector3(-1, 0, -1), Vector3(2, 2, 2))
-	_orbit_target = aabb.get_center()
-	var size := maxf(aabb.size.x, maxf(aabb.size.y, aabb.size.z))
-	_orbit_distance = maxf(size, 0.5) * 2.5
 	_update_camera_orbit()
 
+func _apply_model_fit(slug: String) -> void:
+	if _current_model == null: return
+	var aabb := _measure_world_aabb(_current_model)
+	if aabb.size.y < 0.001: return
+	var target_h: float = TARGET_HEIGHT_BY_SLUG.get(slug, 1.8)
+	var fit_factor := target_h / aabb.size.y
+	_current_model.scale = _current_model.scale * fit_factor
+	aabb = _measure_world_aabb(_current_model)
+	_current_model.position.y -= aabb.position.y
 
-func _update_camera_orbit() -> void:
-	if camera == null: return
-	var cp := cos(_orbit_pitch)
-	var sp := sin(_orbit_pitch)
-	var cy := cos(_orbit_yaw)
-	var sy := sin(_orbit_yaw)
-	var offset := Vector3(_orbit_distance * cp * sy, _orbit_distance * sp, _orbit_distance * cp * cy)
-	camera.global_position = _orbit_target + offset
-	camera.look_at(_orbit_target, Vector3.UP)
-
-
-func _compute_aabb(root: Node3D) -> AABB:
+func _measure_world_aabb(root: Node3D) -> AABB:
 	var first := true
 	var result := AABB()
 	for mi in _find_mesh_instances(root):
@@ -389,7 +511,6 @@ func _compute_aabb(root: Node3D) -> AABB:
 			result = result.merge(world_box)
 	return result
 
-
 func _find_mesh_instances(node: Node) -> Array:
 	var out := []
 	if node is MeshInstance3D:
@@ -398,626 +519,71 @@ func _find_mesh_instances(node: Node) -> Array:
 		out.append_array(_find_mesh_instances(c))
 	return out
 
+func _clear_model_only() -> void:
+	if _current_model != null and is_instance_valid(_current_model):
+		_current_model.queue_free()
+	_current_model = null
+	if _preview_placeholder:
+		_preview_placeholder.visible = true
 
-# ============================================================
-# Viewer input (orbit / zoom / drag)
-# ============================================================
+func _clear_model() -> void:
+	_clear_model_only()
+	_current_data = {}
+	_current_slug = ""
+	if _fields_container:
+		for c in _fields_container.get_children():
+			_fields_container.remove_child(c)
+			c.queue_free()
+	_fields.clear()
+	if _save_button:
+		_save_button.disabled = true
+		_save_button.text = "Save"
 
-func _on_viewer_input(event: InputEvent) -> void:
+# ---------- Camera ----------
+
+func _frame_camera(root: Node3D) -> void:
+	var aabb := _measure_world_aabb(root)
+	if aabb.size == Vector3.ZERO:
+		aabb = AABB(Vector3(-1, 0, -1), Vector3(2, 2, 2))
+	_orbit_target = aabb.get_center()
+	var size := maxf(aabb.size.x, maxf(aabb.size.y, aabb.size.z))
+	_orbit_distance = maxf(size, 0.5) * 2.5
+
+func _update_camera_orbit() -> void:
+	if _camera == null: return
+	var cp := cos(_orbit_pitch)
+	var sp := sin(_orbit_pitch)
+	var cy := cos(_orbit_yaw)
+	var sy := sin(_orbit_yaw)
+	var offset := Vector3(_orbit_distance * cp * sy, _orbit_distance * sp, _orbit_distance * cp * cy)
+	_camera.global_position = _orbit_target + offset
+	_camera.look_at(_orbit_target, Vector3.UP)
+
+# ---------- Input ----------
+
+func _on_viewport_input(event: InputEvent) -> void:
 	if event is InputEventMouseButton:
 		var mb := event as InputEventMouseButton
 		if mb.button_index == MOUSE_BUTTON_MIDDLE:
 			_orbiting = mb.pressed
 			return
 		if mb.button_index == MOUSE_BUTTON_WHEEL_UP and mb.pressed:
-			_orbit_distance = maxf(0.5, _orbit_distance * 0.9)
+			_orbit_distance = maxf(orbit_min_distance, _orbit_distance * orbit_zoom_step)
+			_update_camera_orbit()
 			return
 		if mb.button_index == MOUSE_BUTTON_WHEEL_DOWN and mb.pressed:
-			_orbit_distance = minf(50.0, _orbit_distance * 1.1)
+			_orbit_distance = minf(orbit_max_distance, _orbit_distance / orbit_zoom_step)
+			_update_camera_orbit()
 			return
-		if mb.button_index == MOUSE_BUTTON_LEFT:
-			if mb.pressed:
-				_try_start_drag(mb.position)
-			else:
-				_dragging_handle = {}
-			return
-	elif event is InputEventMouseMotion:
+	elif event is InputEventMouseMotion and _orbiting:
 		var mm := event as InputEventMouseMotion
-		if _orbiting:
-			_orbit_yaw -= mm.relative.x * 0.008
-			_orbit_pitch = clampf(_orbit_pitch + mm.relative.y * 0.008, -1.4, 1.4)
-			return
-		if not _dragging_handle.is_empty():
-			_update_drag(mm.position)
-
-
-# ============================================================
-# Hitbox UI construction
-# ============================================================
-
-func _build_hitbox_ui() -> void:
-	var inspector_container := %InspectorContainer as VBoxContainer
-	if inspector_container == null:
-		push_warning("[NpcEditor] InspectorContainer not found; hitbox UI skipped")
-		return
-
-	var controls := VBoxContainer.new()
-	controls.name = "HitboxControls"
-	inspector_container.add_child(controls)
-	inspector_container.move_child(controls, 0)
-
-	var row1 := HBoxContainer.new()
-	controls.add_child(row1)
-
-	hitbox_toggle = CheckBox.new()
-	hitbox_toggle.text = "Show Hitbox"
-	hitbox_toggle.button_pressed = false
-	row1.add_child(hitbox_toggle)
-
-	row1.add_child(VSeparator.new())
-
-	var tl := Label.new()
-	tl.text = "Type:"
-	row1.add_child(tl)
-
-	hitbox_type_selector = OptionButton.new()
-	hitbox_type_selector.add_item("Sphere", 0)
-	hitbox_type_selector.add_item("Capsule", 1)
-	hitbox_type_selector.select(1)
-	row1.add_child(hitbox_type_selector)
-
-	hitbox_save_button = Button.new()
-	hitbox_save_button.text = "Save Hitbox"
-	row1.add_child(hitbox_save_button)
-
-	hitbox_reset_button = Button.new()
-	hitbox_reset_button.text = "Reset Hitbox"
-	row1.add_child(hitbox_reset_button)
-
-	var row2 := HBoxContainer.new()
-	controls.add_child(row2)
-
-	row2.add_child(_mk_label("Radius:"))
-	hitbox_radius_spin = _mk_spin(0.05, 10.0, 0.05, 0.4)
-	row2.add_child(hitbox_radius_spin)
-
-	hitbox_height_label = _mk_label("  Height:")
-	row2.add_child(hitbox_height_label)
-	hitbox_height_spin = _mk_spin(0.1, 10.0, 0.05, 1.8)
-	row2.add_child(hitbox_height_spin)
-
-	row2.add_child(_mk_label("  Off X:"))
-	hitbox_offset_x_spin = _mk_spin(-10.0, 10.0, 0.05, 0.0)
-	row2.add_child(hitbox_offset_x_spin)
-
-	row2.add_child(_mk_label("Y:"))
-	hitbox_offset_y_spin = _mk_spin(-10.0, 10.0, 0.05, 0.9)
-	row2.add_child(hitbox_offset_y_spin)
-
-	row2.add_child(_mk_label("Z:"))
-	hitbox_offset_z_spin = _mk_spin(-10.0, 10.0, 0.05, 0.0)
-	row2.add_child(hitbox_offset_z_spin)
-
-	hitbox_toggle.toggled.connect(_on_hitbox_toggle)
-	hitbox_type_selector.item_selected.connect(_on_hitbox_type_selected)
-	hitbox_radius_spin.value_changed.connect(_on_hitbox_radius_changed)
-	hitbox_height_spin.value_changed.connect(_on_hitbox_height_changed)
-	hitbox_offset_x_spin.value_changed.connect(_on_hitbox_offset_changed)
-	hitbox_offset_y_spin.value_changed.connect(_on_hitbox_offset_changed)
-	hitbox_offset_z_spin.value_changed.connect(_on_hitbox_offset_changed)
-	hitbox_save_button.pressed.connect(_on_save_hitbox_pressed)
-	hitbox_reset_button.pressed.connect(_on_reset_hitbox_pressed)
-
-
-func _mk_label(t: String) -> Label:
-	var l := Label.new()
-	l.text = t
-	return l
-
-
-func _mk_spin(minv: float, maxv: float, step: float, value: float) -> SpinBox:
-	var s := SpinBox.new()
-	s.min_value = minv
-	s.max_value = maxv
-	s.step = step
-	s.value = value
-	s.custom_minimum_size = Vector2(70, 0)
-	return s
-
-
-# ============================================================
-# Hitbox 3D nodes
-# ============================================================
-
-func _build_hitbox_nodes() -> void:
-	_hitbox_visual = MeshInstance3D.new()
-	_hitbox_visual.name = "HitboxVisual"
-	_hitbox_visual.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-	var mat := StandardMaterial3D.new()
-	mat.albedo_color = HITBOX_COLOR
-	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-	mat.cull_mode = BaseMaterial3D.CULL_DISABLED
-	_hitbox_visual.material_override = mat
-	_hitbox_visual.transparency = MODEL_TRANSPARENCY
-	_hitbox_visual.visible = false
-	sub_viewport.add_child(_hitbox_visual)
-
-	_gizmo_root = Node3D.new()
-	_gizmo_root.name = "GizmoRoot"
-	_gizmo_root.visible = false
-	sub_viewport.add_child(_gizmo_root)
-	_build_gizmo_handles()
-
-
-func _build_gizmo_handles() -> void:
-	_gizmo_handles.clear()
-	_handle_labels.clear()
-	_poles.clear()
-
-	_build_pole("translate_x", AXIS_COL_X)
-	_build_pole("translate_y", AXIS_COL_Y)
-	_build_pole("translate_z", AXIS_COL_Z)
-	_build_pole("radius",      AXIS_COL_R)
-	_build_pole("height",      AXIS_COL_H)
-
-	_add_handle("translate_x", Vector3(1, 0, 0), AXIS_COL_X, "X")
-	_add_handle("translate_y", Vector3(0, 1, 0), AXIS_COL_Y, "Y")
-	_add_handle("translate_z", Vector3(0, 0, 1), AXIS_COL_Z, "Z")
-	_add_handle("radius",      Vector3(1, 0, 0), AXIS_COL_R, "Width")
-	_add_handle("height",      Vector3(0, 1, 0), AXIS_COL_H, "Height")
-
-
-func _build_pole(kind: String, color: Color) -> void:
-	var mi := MeshInstance3D.new()
-	var box := BoxMesh.new()
-	box.size = Vector3(1.0, 0.015, 0.015)
-	mi.mesh = box
-	var mat := StandardMaterial3D.new()
-	mat.albedo_color = color
-	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-	mat.no_depth_test = true
-	mi.material_override = mat
-	mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-	mi.visible = false
-	_gizmo_root.add_child(mi)
-	_poles[kind] = mi
-
-
-func _add_handle(kind: String, axis: Vector3, color: Color, label_text: String) -> void:
-	var mi := MeshInstance3D.new()
-	var sphere := SphereMesh.new()
-	sphere.radius = 0.09
-	sphere.height = 0.18
-	mi.mesh = sphere
-	var mat := StandardMaterial3D.new()
-	mat.albedo_color = color
-	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-	mat.no_depth_test = true
-	mi.material_override = mat
-	mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-	_gizmo_root.add_child(mi)
-	_gizmo_handles.append({"node": mi, "kind": kind, "axis": axis})
-
-	var lbl := Label3D.new()
-	lbl.text = label_text
-	lbl.billboard = BaseMaterial3D.BILLBOARD_ENABLED
-	lbl.no_depth_test = true
-	lbl.font_size = 28
-	lbl.pixel_size = 0.006
-	lbl.modulate = color
-	lbl.outline_modulate = Color(0, 0, 0, 1)
-	lbl.outline_size = 6
-	lbl.visible = false
-	_gizmo_root.add_child(lbl)
-	_handle_labels[kind] = lbl
-
-
-# ============================================================
-# Hitbox persistence
-# ============================================================
-
-func _hitbox_path(slug: String) -> String:
-	return "user://npc_render/%s/hitbox.json" % slug
-
-
-func _load_hitbox_for_slug() -> void:
-	_hitbox = _default_hitbox_for_model()
-	_hitbox_dirty = false
-	if _current_slug == "":
-		_update_hitbox_save_button()
-		return
-	var path := _hitbox_path(_current_slug)
-	if FileAccess.file_exists(path):
-		var f := FileAccess.open(path, FileAccess.READ)
-		if f != null:
-			var text := f.get_as_text()
-			f.close()
-			var parsed: Variant = JSON.parse_string(text)
-			if typeof(parsed) == TYPE_DICTIONARY:
-				var d: Dictionary = parsed
-				_hitbox = {
-					"type": str(d.get("type", "capsule")),
-					"radius": float(d.get("radius", 0.4)),
-					"height": float(d.get("height", 1.8)),
-					"offset": Vector3(
-						float(d.get("offset_x", 0.0)),
-						float(d.get("offset_y", 0.9)),
-						float(d.get("offset_z", 0.0))),
-				}
-	_update_hitbox_save_button()
-
-
-func _default_hitbox_for_model() -> Dictionary:
-	if _current_model == null:
-		return {"type": "capsule", "radius": 0.4, "height": 1.8, "offset": Vector3(0, 0.9, 0)}
-	var aabb := _compute_aabb(_current_model)
-	if aabb.size == Vector3.ZERO:
-		return {"type": "capsule", "radius": 0.4, "height": 1.8, "offset": Vector3(0, 0.9, 0)}
-	var center := aabb.get_center()
-	var radius := maxf(aabb.size.x, aabb.size.z) * 0.5
-	var height := aabb.size.y
-	return {
-		"type": "capsule",
-		"radius": maxf(radius, 0.1),
-		"height": maxf(height, radius * 2.0 + 0.1),
-		"offset": center,
-	}
-
-
-func _save_hitbox_to_disk() -> bool:
-	if _current_slug == "":
-		return false
-	var dir := "user://npc_render/%s" % _current_slug
-	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(dir))
-	var f := FileAccess.open(_hitbox_path(_current_slug), FileAccess.WRITE)
-	if f == null:
-		return false
-	var d := {
-		"type": _hitbox.type,
-		"radius": float(_hitbox.radius),
-		"height": float(_hitbox.height),
-		"offset_x": _hitbox.offset.x,
-		"offset_y": _hitbox.offset.y,
-		"offset_z": _hitbox.offset.z,
-	}
-	f.store_string(JSON.stringify(d, "\t"))
-	f.close()
-	print("[NpcEditor] Saved hitbox '%s' -> %s" % [_current_slug, _hitbox_path(_current_slug)])
-	return true
-
-
-func _maybe_save_hitbox() -> bool:
-	if not _hitbox_dirty:
-		return true
-	if _current_slug == "":
-		return false
-	if _save_hitbox_to_disk():
-		_hitbox_dirty = false
-		_update_hitbox_save_button()
-		return true
-	return false
-
-
-func _mark_hitbox_dirty() -> void:
-	_hitbox_dirty = true
-	_update_hitbox_save_button()
-
-
-func _update_hitbox_save_button() -> void:
-	if hitbox_save_button == null: return
-	hitbox_save_button.text = "Save Hitbox *" if _hitbox_dirty else "Save Hitbox"
-
-
-# ============================================================
-# Hitbox UI handlers
-# ============================================================
-
-func _update_hitbox_controls() -> void:
-	if hitbox_type_selector == null: return
-	hitbox_type_selector.select(1 if str(_hitbox.type) == "capsule" else 0)
-	hitbox_radius_spin.set_value_no_signal(float(_hitbox.radius))
-	hitbox_height_spin.set_value_no_signal(float(_hitbox.height))
-	hitbox_offset_x_spin.set_value_no_signal(_hitbox.offset.x)
-	hitbox_offset_y_spin.set_value_no_signal(_hitbox.offset.y)
-	hitbox_offset_z_spin.set_value_no_signal(_hitbox.offset.z)
-	var is_capsule := str(_hitbox.type) == "capsule"
-	hitbox_height_spin.visible = is_capsule
-	hitbox_height_label.visible = is_capsule
-
-
-func _on_hitbox_toggle(pressed: bool) -> void:
-	_hitbox_visible = pressed
-	_update_hitbox_display()
-
-
-func _on_hitbox_type_selected(idx: int) -> void:
-	_hitbox.type = "capsule" if idx == 1 else "sphere"
-	_mark_hitbox_dirty()
-	_update_hitbox_controls()
-	_update_hitbox_display()
-
-
-func _on_hitbox_radius_changed(v: float) -> void:
-	_hitbox.radius = v
-	if str(_hitbox.type) == "capsule" and _hitbox.height < v * 2.0 + 0.05:
-		_hitbox.height = v * 2.0 + 0.05
-		hitbox_height_spin.set_value_no_signal(_hitbox.height)
-	_mark_hitbox_dirty()
-	_update_hitbox_display()
-
-
-func _on_hitbox_height_changed(v: float) -> void:
-	_hitbox.height = v
-	_mark_hitbox_dirty()
-	_update_hitbox_display()
-
-
-func _on_hitbox_offset_changed(_v: float) -> void:
-	_hitbox.offset = Vector3(
-		hitbox_offset_x_spin.value,
-		hitbox_offset_y_spin.value,
-		hitbox_offset_z_spin.value)
-	_mark_hitbox_dirty()
-	_update_hitbox_display()
-
-
-func _on_save_hitbox_pressed() -> void:
-	if _current_slug == "":
-		hitbox_save_button.text = "No Slug"
-		await get_tree().create_timer(1.2).timeout
-		_update_hitbox_save_button()
-		return
-	if _save_hitbox_to_disk():
-		_hitbox_dirty = false
-		_update_hitbox_save_button()
-		hitbox_save_button.text = "Saved ✓"
-		await get_tree().create_timer(1.2).timeout
-		_update_hitbox_save_button()
-	else:
-		hitbox_save_button.text = "Save Failed"
-		await get_tree().create_timer(1.5).timeout
-		_update_hitbox_save_button()
-
-
-func _on_reset_hitbox_pressed() -> void:
-	_hitbox = _default_hitbox_for_model()
-	_hitbox_dirty = true
-	_update_hitbox_controls()
-	_update_hitbox_display()
-
-	if _current_slug == "":
-		hitbox_reset_button.text = "No Slug"
-		await get_tree().create_timer(1.2).timeout
-		hitbox_reset_button.text = "Reset Hitbox"
-		return
-
-	if _save_hitbox_to_disk():
-		_hitbox_dirty = false
-		_update_hitbox_save_button()
-		hitbox_reset_button.text = "Reset ✓"
-		await get_tree().create_timer(1.2).timeout
-		hitbox_reset_button.text = "Reset Hitbox"
-	else:
-		hitbox_reset_button.text = "Reset Failed"
-		await get_tree().create_timer(1.5).timeout
-		hitbox_reset_button.text = "Reset Hitbox"
-
-
-# ============================================================
-# Hitbox display
-# ============================================================
-
-func _update_hitbox_display() -> void:
-	if _hitbox_visual == null: return
-	_hitbox_visual.visible = _hitbox_visible
-	_gizmo_root.visible = _hitbox_visible
-
-	if _hitbox_visible:
-		_apply_model_transparency(MODEL_TRANSPARENCY)
-	else:
-		_restore_model_transparency()
-		return
-
-	var is_capsule := str(_hitbox.type) == "capsule"
-	if is_capsule:
-		var cm := CapsuleMesh.new()
-		cm.radius = maxf(float(_hitbox.radius), 0.05)
-		cm.height = maxf(float(_hitbox.height), cm.radius * 2.0 + 0.05)
-		_hitbox_visual.mesh = cm
-	else:
-		var sm := SphereMesh.new()
-		sm.radius = maxf(float(_hitbox.radius), 0.05)
-		sm.height = sm.radius * 2.0
-		_hitbox_visual.mesh = sm
-	_hitbox_visual.position = _hitbox.offset
-
-	var center: Vector3 = _hitbox.offset
-	var radius: float = float(_hitbox.radius)
-	var half_h: float = float(_hitbox.height) * 0.5 if is_capsule else radius
-	var move_dist := maxf(radius, half_h) + 0.5
-
-	var handle_positions := {}
-	for h in _gizmo_handles:
-		var kind: String = h.kind
-		var node: MeshInstance3D = h.node
-		var pos: Vector3 = center
-		match kind:
-			"translate_x": pos = center + Vector3(move_dist, 0, 0)
-			"translate_y": pos = center + Vector3(0, move_dist, 0)
-			"translate_z": pos = center + Vector3(0, 0, move_dist)
-			"radius":      pos = center + Vector3(radius + 0.15, 0, 0)
-			"height":      pos = center + Vector3(0, half_h + 0.15, 0)
-		node.global_position = pos
-		var show := (kind != "height" or is_capsule)
-		node.visible = show
-		var lbl: Label3D = _handle_labels.get(kind)
-		if lbl != null:
-			lbl.global_position = pos + Vector3(0, 0.2, 0)
-			lbl.visible = show
-		handle_positions[kind] = pos
-
-	_update_pole("translate_x", center, handle_positions["translate_x"], true)
-	_update_pole("translate_y", center, handle_positions["translate_y"], true)
-	_update_pole("translate_z", center, handle_positions["translate_z"], true)
-	_update_pole("radius",      center, handle_positions["radius"], true)
-	_update_pole("height",      center, handle_positions["height"], is_capsule)
-
-
-func _update_pole(kind: String, center: Vector3, end: Vector3, visible: bool) -> void:
-	var mi: MeshInstance3D = _poles.get(kind)
-	if mi == null: return
-	if not visible:
-		mi.visible = false
-		return
-	var diff := end - center
-	var length := diff.length()
-	if length < 0.001:
-		mi.visible = false
-		return
-	mi.visible = true
-	var box := mi.mesh as BoxMesh
-	match kind:
-		"translate_x", "radius":
-			box.size = Vector3(length, 0.012, 0.012)
-		"translate_y", "height":
-			box.size = Vector3(0.012, length, 0.012)
-		"translate_z":
-			box.size = Vector3(0.012, 0.012, length)
-	mi.position = (center + end) * 0.5
-
-
-# ============================================================
-# Drag handling
-# ============================================================
-
-func _try_start_drag(mouse: Vector2) -> void:
-	if not _hitbox_visible or camera == null:
-		return
-	var best: Dictionary = {}
-	var best_dist := 20.0
-	for h in _gizmo_handles:
-		var node: MeshInstance3D = h.node
-		if node == null or not is_instance_valid(node): continue
-		if not node.visible: continue
-		var screen := camera.unproject_position(node.global_position)
-		var d := screen.distance_to(mouse)
-		if d < best_dist:
-			best_dist = d
-			best = h
-	if best.is_empty():
-		return
-
-	_dragging_handle = best
-	var kind: String = best.kind
-	var handle_pos: Vector3 = (best.node as MeshInstance3D).global_position
-	var fwd := -camera.global_transform.basis.z
-	_drag_plane = Plane(fwd, handle_pos)
-	var ray_origin := camera.project_ray_origin(mouse)
-	var ray_dir := camera.project_ray_normal(mouse)
-	var hit = _drag_plane.intersects_ray(ray_origin, ray_dir)
-	if hit == null:
-		_dragging_handle = {}
-		return
-	_drag_initial = hit
-
-	match kind:
-		"radius": _drag_initial_value = float(_hitbox.radius)
-		"height": _drag_initial_value = float(_hitbox.height)
-		_:
-			_drag_initial_offset = _hitbox.offset
-			_drag_initial_value = 0.0
-
-
-func _update_drag(mouse: Vector2) -> void:
-	var kind: String = _dragging_handle.kind
-	var axis: Vector3 = _dragging_handle.axis
-	var ray_origin := camera.project_ray_origin(mouse)
-	var ray_dir := camera.project_ray_normal(mouse)
-	var hit = _drag_plane.intersects_ray(ray_origin, ray_dir)
-	if hit == null: return
-	var current: Vector3 = hit
-	var amount := (current - _drag_initial).dot(axis)
-
-	match kind:
-		"translate_x", "translate_y", "translate_z":
-			var off: Vector3 = _drag_initial_offset + axis * amount
-			_hitbox.offset = off
-			hitbox_offset_x_spin.set_value_no_signal(off.x)
-			hitbox_offset_y_spin.set_value_no_signal(off.y)
-			hitbox_offset_z_spin.set_value_no_signal(off.z)
-		"radius":
-			var nr := maxf(0.05, _drag_initial_value + amount)
-			_hitbox.radius = nr
-			hitbox_radius_spin.set_value_no_signal(nr)
-			if str(_hitbox.type) == "capsule" and _hitbox.height < nr * 2.0 + 0.05:
-				_hitbox.height = nr * 2.0 + 0.05
-				hitbox_height_spin.set_value_no_signal(_hitbox.height)
-		"height":
-			var nh := maxf(float(_hitbox.radius) * 2.0 + 0.05, _drag_initial_value + amount * 2.0)
-			_hitbox.height = nh
-			hitbox_height_spin.set_value_no_signal(nh)
-
-	_mark_hitbox_dirty()
-	_update_hitbox_display()
-
-
-# ============================================================
-# Model transparency (robust against opaque imported materials)
-# ============================================================
-
-func _apply_model_transparency(alpha: float) -> void:
-	if _current_model == null: return
-	if not _transparency_meshes.is_empty():
-		# Already applied — just update alpha
-		for entry in _transparency_meshes:
-			var mi: MeshInstance3D = entry[0]
-			if not is_instance_valid(mi): continue
-			var mats: Array = entry[1]
-			for i in mats.size():
-				var mat: Material = mats[i]
-				if mat is StandardMaterial3D:
-					var s: StandardMaterial3D = mat
-					var c: Color = s.albedo_color
-					c.a = alpha
-					s.albedo_color = c
-		return
-
-	for mi in _find_mesh_instances(_current_model):
-		if mi.mesh == null: continue
-		var mats: Array = []
-		for i in mi.mesh.get_surface_count():
-			var orig: Material = mi.get_active_material(i)
-			if orig == null:
-				orig = mi.mesh.surface_get_material(i)
-			if orig == null:
-				mats.append(null)
-				continue
-			var dup: Material = orig.duplicate()
-			if dup is StandardMaterial3D:
-				var s: StandardMaterial3D = dup
-				s.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-				var c: Color = s.albedo_color
-				c.a = alpha
-				s.albedo_color = c
-			mi.set_surface_override_material(i, dup)
-			mats.append(dup)
-		_transparency_meshes.append([mi, mats])
-
-
-func _restore_model_transparency() -> void:
-	for entry in _transparency_meshes:
-		var mi: MeshInstance3D = entry[0]
-		if not is_instance_valid(mi): continue
-		var mats: Array = entry[1]
-		for i in mats.size():
-			mi.set_surface_override_material(i, null)
-	_transparency_meshes.clear()
-
-
-# ============================================================
-# Inspector (data fields)
-# ============================================================
+		_orbit_yaw -= mm.relative.x * orbit_mouse_sensitivity
+		_orbit_pitch = clampf(
+			_orbit_pitch + mm.relative.y * orbit_mouse_sensitivity,
+			-orbit_pitch_clamp, orbit_pitch_clamp)
+		_update_camera_orbit()
+
+# ---------- Field specs ----------
 
 func _template_fields() -> Array:
 	return [
@@ -1044,14 +610,14 @@ func _template_fields() -> Array:
 		{"key": "ether_defense", "label": "Ether Defense", "type": "int", "min": 0},
 	]
 
-
 func _unique_fields() -> Array:
 	return [
 		{"key": "name", "label": "Name", "type": "readonly"},
 		{"key": "display", "label": "Display", "type": "string"},
 		{"key": "render_slug", "label": "Render Slug", "type": "string"},
 		{"key": "dialogue_script", "label": "Dialogue Script", "type": "string"},
-		{"key": "template_slug", "label": "Template", "type": "readonly"},
+		{"key": "is_banker", "label": "Is Banker", "type": "bool"},
+		{"key": "is_dead", "label": "Is Dead", "type": "readonly_bool"},
 		{"type": "separator"},
 		{"key": "tile_x", "label": "Tile X", "type": "int"},
 		{"key": "tile_y", "label": "Tile Y", "type": "int"},
@@ -1064,10 +630,8 @@ func _unique_fields() -> Array:
 		{"key": "ai_action_state", "label": "AI Action", "type": "string"},
 		{"key": "loot_table_name", "label": "Loot Table", "type": "string"},
 		{"key": "spawn_timer", "label": "Spawn Timer (s)", "type": "int", "min": 0},
-		{"key": "spawn_flags", "label": "Spawn Flags (JSON)", "type": "text"},
-		{"key": "is_dead", "label": "Is Dead", "type": "readonly_bool"},
+		{"key": "spawn_flags", "label": "Spawn Flags", "type": "text"},
 		{"type": "separator"},
-		{"key": "combat_slug", "label": "Combat Instance", "type": "readonly"},
 		{"key": "final_level", "label": "Final Level", "type": "int", "min": 1},
 		{"key": "hitpoints", "label": "Hitpoints", "type": "int", "min": 0},
 		{"key": "max_hitpoints", "label": "Max Hitpoints", "type": "int", "min": 1},
@@ -1081,9 +645,6 @@ func _unique_fields() -> Array:
 		{"key": "max_defence", "label": "Max Defence", "type": "int", "min": 1},
 		{"key": "ether", "label": "Ether", "type": "int", "min": 1},
 		{"key": "max_ether", "label": "Max Ether", "type": "int", "min": 1},
-		{"key": "poisoned", "label": "Poisoned", "type": "bool"},
-		{"key": "burning", "label": "Burning", "type": "bool"},
-		{"key": "frozen", "label": "Frozen", "type": "bool"},
 		{"type": "separator"},
 		{"key": "melee_bonus", "label": "Melee Bonus", "type": "int", "min": 0},
 		{"key": "ranged_bonus", "label": "Ranged Bonus", "type": "int", "min": 0},
@@ -1092,238 +653,3 @@ func _unique_fields() -> Array:
 		{"key": "ranged_defense", "label": "Ranged Defense", "type": "int", "min": 0},
 		{"key": "ether_defense", "label": "Ether Defense", "type": "int", "min": 0},
 	]
-
-
-func _build_inspector() -> void:
-	for c in inspector_fields.get_children(): c.queue_free()
-	_fields.clear()
-	var fields := _unique_fields() if mode == "unique" else _template_fields()
-	for spec in fields:
-		if str(spec.get("type", "")) == "separator":
-			inspector_fields.add_child(HSeparator.new())
-			continue
-		_add_field(spec)
-
-
-func _add_field(spec: Dictionary) -> void:
-	var key: String = spec["key"]
-	var label: String = spec["label"]
-	var type: String = spec["type"]
-	var value = _current_data.get(key)
-
-	var row := HBoxContainer.new()
-	inspector_fields.add_child(row)
-	var lbl := Label.new()
-	lbl.text = label
-	lbl.custom_minimum_size = Vector2(160, 0)
-	row.add_child(lbl)
-
-	match type:
-		"readonly":
-			var l := Label.new()
-			l.text = str(value if value != null else "")
-			l.modulate = Color(0.75, 0.75, 0.75)
-			l.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-			row.add_child(l)
-		"readonly_bool":
-			var l := Label.new()
-			l.text = "yes" if (typeof(value) == TYPE_BOOL and value) else "no"
-			l.modulate = Color(0.75, 0.75, 0.75)
-			l.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-			row.add_child(l)
-		"string":
-			var le := LineEdit.new()
-			le.text = str(value if value != null else "")
-			le.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-			le.text_changed.connect(func(t): _current_data[key] = t)
-			row.add_child(le)
-		"int":
-			var sb := SpinBox.new()
-			sb.min_value = spec.get("min", -99999)
-			sb.max_value = 999999
-			sb.step = 1
-			sb.value = int(value if value != null else 0)
-			sb.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-			sb.value_changed.connect(func(v): _current_data[key] = int(v))
-			row.add_child(sb)
-		"bool":
-			var cb := CheckBox.new()
-			cb.button_pressed = value if typeof(value) == TYPE_BOOL else false
-			cb.toggled.connect(func(p): _current_data[key] = p)
-			row.add_child(cb)
-		"text":
-			var te := TextEdit.new()
-			te.text = str(value if value != null else "")
-			te.custom_minimum_size = Vector2(0, 60)
-			te.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-			te.text_changed.connect(func(): _current_data[key] = te.text)
-			row.add_child(te)
-
-
-func _on_save_pressed() -> void:
-	_maybe_save_hitbox()
-	_maybe_save_scale()
-
-	if _current_data.is_empty(): return
-	var ok := false
-	if mode == "template":
-		ok = NpcEditorBridge.SaveTemplate(_current_data)
-	else:
-		ok = NpcEditorBridge.SaveNpc(_current_data)
-	if ok:
-		print("[NpcEditor] Saved ", mode, " id=", _current_id)
-		save_button.text = "Saved ✓"
-		await get_tree().create_timer(1.5).timeout
-		save_button.text = "Save"
-	else:
-		save_button.text = "Save Failed"
-		await get_tree().create_timer(2.0).timeout
-		save_button.text = "Save"
-
-
-func _build_scale_ui() -> void:
-	var inspector_container := %InspectorContainer as VBoxContainer
-	if inspector_container == null: return
-
-	var controls := VBoxContainer.new()
-	controls.name = "ScaleControls"
-	inspector_container.add_child(controls)
-	# Place scale controls just below hitbox controls (index 0 → hitbox,
-	# index 1 → scale). If hitbox wasn't built, this is index 0.
-	inspector_container.move_child(controls, min(1, inspector_container.get_child_count() - 1))
-
-	var row := HBoxContainer.new()
-	controls.add_child(row)
-
-	row.add_child(_mk_label("Mesh Scale:"))
-
-	row.add_child(_mk_label("X:"))
-	scale_x_spin = _mk_spin(0.1, 5.0, 0.05, 1.0)
-	row.add_child(scale_x_spin)
-
-	row.add_child(_mk_label("Y:"))
-	scale_y_spin = _mk_spin(0.1, 5.0, 0.05, 1.0)
-	row.add_child(scale_y_spin)
-
-	row.add_child(_mk_label("Z:"))
-	scale_z_spin = _mk_spin(0.1, 5.0, 0.05, 1.0)
-	row.add_child(scale_z_spin)
-
-	scale_save_button = Button.new()
-	scale_save_button.text = "Save Scale"
-	row.add_child(scale_save_button)
-
-	scale_reset_button = Button.new()
-	scale_reset_button.text = "Reset Scale"
-	row.add_child(scale_reset_button)
-
-	scale_x_spin.value_changed.connect(_on_scale_changed)
-	scale_y_spin.value_changed.connect(_on_scale_changed)
-	scale_z_spin.value_changed.connect(_on_scale_changed)
-	scale_save_button.pressed.connect(_on_save_scale_pressed)
-	scale_reset_button.pressed.connect(_on_reset_scale_pressed)
-
-
-func _render_scale_path(slug: String) -> String:
-	return "user://npc_render/%s/render.json" % slug
-
-
-func _load_render_scale(slug: String) -> Vector3:
-	if slug.is_empty(): return Vector3.ONE
-	var path := _render_scale_path(slug)
-	if not FileAccess.file_exists(path): return Vector3.ONE
-	var f := FileAccess.open(path, FileAccess.READ)
-	if f == null: return Vector3.ONE
-	var text := f.get_as_text()
-	f.close()
-	var parsed: Variant = JSON.parse_string(text)
-	if typeof(parsed) != TYPE_DICTIONARY: return Vector3.ONE
-	var d: Dictionary = parsed
-	return Vector3(
-		float(d.get("scale_x", 1.0)),
-		float(d.get("scale_y", 1.0)),
-		float(d.get("scale_z", 1.0)))
-
-
-func _save_render_scale(slug: String) -> bool:
-	if slug.is_empty(): return false
-	var dir := "user://npc_render/%s" % slug
-	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(dir))
-	var f := FileAccess.open(_render_scale_path(slug), FileAccess.WRITE)
-	if f == null: return false
-	var d := {
-		"scale_x": _user_scale.x,
-		"scale_y": _user_scale.y,
-		"scale_z": _user_scale.z,
-	}
-	f.store_string(JSON.stringify(d, "\t"))
-	f.close()
-	print("[NpcEditor] Saved render scale '%s' -> %s" % [slug, _render_scale_path(slug)])
-	return true
-
-
-func _maybe_save_scale() -> bool:
-	if not _scale_dirty: return true
-	if _current_slug == "": return false
-	if _save_render_scale(_current_slug):
-		_scale_dirty = false
-		_update_scale_save_button()
-		return true
-	return false
-
-
-func _mark_scale_dirty() -> void:
-	_scale_dirty = true
-	_update_scale_save_button()
-
-
-func _update_scale_save_button() -> void:
-	if scale_save_button == null: return
-	scale_save_button.text = "Save Scale *" if _scale_dirty else "Save Scale"
-
-
-func _on_scale_changed(_v: float) -> void:
-	_user_scale = Vector3(
-		scale_x_spin.value,
-		scale_y_spin.value,
-		scale_z_spin.value)
-	_apply_scale_and_anchor()
-	_mark_scale_dirty()
-
-
-func _on_save_scale_pressed() -> void:
-	if _current_slug == "":
-		scale_save_button.text = "No Slug"
-		await get_tree().create_timer(1.2).timeout
-		_update_scale_save_button()
-		return
-	if _save_render_scale(_current_slug):
-		_scale_dirty = false
-		_update_scale_save_button()
-		scale_save_button.text = "Saved ✓"
-		await get_tree().create_timer(1.2).timeout
-		_update_scale_save_button()
-	else:
-		scale_save_button.text = "Save Failed"
-		await get_tree().create_timer(1.5).timeout
-		_update_scale_save_button()
-
-
-func _on_reset_scale_pressed() -> void:
-	_user_scale = Vector3.ONE
-	scale_x_spin.set_value_no_signal(1.0)
-	scale_y_spin.set_value_no_signal(1.0)
-	scale_z_spin.set_value_no_signal(1.0)
-	_apply_scale_and_anchor()
-	_scale_dirty = true
-	if _current_slug == "":
-		scale_reset_button.text = "No Slug"
-		await get_tree().create_timer(1.2).timeout
-		scale_reset_button.text = "Reset Scale"
-		return
-	if _save_render_scale(_current_slug):
-		_scale_dirty = false
-		_update_scale_save_button()
-		scale_reset_button.text = "Reset ✓"
-		await get_tree().create_timer(1.2).timeout
-		scale_reset_button.text = "Reset Scale"

@@ -222,6 +222,30 @@ internal sealed class NpcSystem
 
     private void Revive(ActiveNpc npc)
     {
+        // Refresh combat stats from DB first so any template/unique edits made
+        // via the editor land on respawn. Respawn is the "reload from DB" moment.
+        var snapshot = _npcRepo.GetCombatSnapshotSync(npc.Id);
+        if (snapshot != null)
+        {
+            npc.FinalLevel    = GetSnapInt(snapshot, "final_level",   npc.FinalLevel);
+            npc.MaxHitpoints  = GetSnapInt(snapshot, "max_hitpoints", npc.MaxHitpoints);
+            npc.Accuracy      = GetSnapInt(snapshot, "accuracy",      npc.Accuracy);
+            npc.MaxAccuracy   = GetSnapInt(snapshot, "max_accuracy",  npc.MaxAccuracy);
+            npc.Strength      = GetSnapInt(snapshot, "strength",      npc.Strength);
+            npc.MaxStrength   = GetSnapInt(snapshot, "max_strength",  npc.MaxStrength);
+            npc.Defence       = GetSnapInt(snapshot, "defence",       npc.Defence);
+            npc.MaxDefence    = GetSnapInt(snapshot, "max_defence",   npc.MaxDefence);
+            npc.Ether         = GetSnapInt(snapshot, "ether",         npc.Ether);
+            npc.MaxEther      = GetSnapInt(snapshot, "max_ether",     npc.MaxEther);
+            npc.MeleeBonus    = GetSnapInt(snapshot, "melee_bonus",   npc.MeleeBonus);
+            npc.RangedBonus   = GetSnapInt(snapshot, "ranged_bonus",  npc.RangedBonus);
+            npc.EtherBonus    = GetSnapInt(snapshot, "ether_bonus",   npc.EtherBonus);
+            npc.MeleeDefense  = GetSnapInt(snapshot, "melee_defense", npc.MeleeDefense);
+            npc.RangedDefense = GetSnapInt(snapshot, "ranged_defense",npc.RangedDefense);
+            npc.EtherDefense  = GetSnapInt(snapshot, "ether_defense", npc.EtherDefense);
+            npc.AttackSpeedTicks = GetSnapInt(snapshot, "attack_speed", npc.AttackSpeedTicks);
+        }
+
         npc.IsDead = false;
         npc.DiedAtMs = 0;
         npc.Hitpoints = npc.MaxHitpoints;
@@ -230,6 +254,12 @@ internal sealed class NpcSystem
         npc.Path.Clear();
         _ = _npcRepo.ReviveAsync(npc.Id);
         Diag.Log("diag_npc", $"NPC {npc.Name} (id {npc.Id}) respawned with {npc.Hitpoints} HP");
+    }
+
+    private static int GetSnapInt(Dictionary<string, object> snap, string key, int fallback)
+    {
+        if (!snap.TryGetValue(key, out var v) || v == null) return fallback;
+        try { return Convert.ToInt32(v); } catch { return fallback; }
     }
 
     internal Task MarkDeadAsync(long npcId) => _npcRepo.MarkDeadAsync(npcId);
@@ -500,11 +530,21 @@ internal sealed class NpcSystem
                 ai_action_state = npc.AiActionState,
                 loot_table_name = npc.LootTableName,
                 spawn_timer = npc.SpawnTimerSeconds,
+                is_dead = npc.IsDead,
+                is_banker = npc.IsBanker,
+                dialogue_script = npc.DialogueScript,
+                tile_x = npc.TileX,
+                tile_y = npc.TileY,
+                tile_z = npc.TileZ,
+                spawn_flags = npc.SpawnFlags,
                 hitpoints = npc.Hitpoints,
                 max_hitpoints = npc.MaxHitpoints,
                 accuracy = npc.Accuracy,
+                max_accuracy = npc.MaxAccuracy,
                 strength = npc.Strength,
+                max_strength = npc.MaxStrength,
                 defence = npc.Defence,
+                max_defence = npc.MaxDefence,
                 ether = npc.Ether,
                 max_ether = npc.MaxEther,
                 melee_bonus = npc.MeleeBonus,
@@ -519,7 +559,7 @@ internal sealed class NpcSystem
         });
     }
 
-    internal void HandleNpcEditorSave(long peerId, System.Text.Json.JsonElement root)
+    internal async Task HandleNpcEditorSaveAsync(long peerId, System.Text.Json.JsonElement root)
     {
         if (!_state.Sessions.TryGetValue(peerId, out var session)) return;
         if (!session.IsAdmin) return;
@@ -536,77 +576,193 @@ internal sealed class NpcSystem
                 System.Text.Json.JsonValueKind.True => true,
                 System.Text.Json.JsonValueKind.False => false,
                 System.Text.Json.JsonValueKind.String => prop.Value.GetString() ?? "",
-                System.Text.Json.JsonValueKind.Number => prop.Value.TryGetInt32(out int iv) ? iv : 0,
-                _ => (object)0,
+                System.Text.Json.JsonValueKind.Number => prop.Value.TryGetInt64(out long l) ? l : 0L,
+                _ => (object)0L,
             };
         }
 
-        try
+        // Fields that are init-only on ActiveNpc — pass through untouched to DB.
+        long tileX = u.TryGetValue("tile_x", out var txv) ? Convert.ToInt64(txv) : npc.TileX;
+        long tileY = u.TryGetValue("tile_y", out var tyv) ? Convert.ToInt64(tyv) : npc.TileY;
+        long tileZ = u.TryGetValue("tile_z", out var tzv) ? Convert.ToInt64(tzv) : npc.TileZ;
+        string renderSlug = u.TryGetValue("render_slug", out var rsv) && rsv != null
+            ? rsv.ToString() ?? npc.RenderSlug
+            : npc.RenderSlug;
+
+        // Apply settable fields (clamped) to the in-memory ActiveNpc.
+        if (u.ContainsKey("display"))          npc.Display = u["display"].ToString() ?? npc.Display;
+        if (u.ContainsKey("attackable"))       npc.Attackable = (bool)u["attackable"];
+        if (u.ContainsKey("aggressive"))       npc.Aggressive = (bool)u["aggressive"];
+        if (u.ContainsKey("aggro_range"))      npc.AggroRangeTiles = Math.Max(1, Convert.ToInt32(u["aggro_range"]));
+        if (u.ContainsKey("ai_package_state")) npc.AiPackageState = u["ai_package_state"].ToString() ?? "idle";
+        if (u.ContainsKey("ai_action_state"))  npc.AiActionState = u["ai_action_state"].ToString() ?? "none";
+        if (u.ContainsKey("loot_table_name"))  npc.LootTableName = u["loot_table_name"].ToString() ?? "common_loot_1";
+        if (u.ContainsKey("spawn_timer"))      npc.SpawnTimerSeconds = Math.Max(0, Convert.ToInt32(u["spawn_timer"]));
+        if (u.ContainsKey("hitpoints"))        npc.Hitpoints = Math.Max(0, Convert.ToInt32(u["hitpoints"]));
+        if (u.ContainsKey("max_hitpoints"))    npc.MaxHitpoints = Math.Max(1, Convert.ToInt32(u["max_hitpoints"]));
+        if (npc.Hitpoints > npc.MaxHitpoints)  npc.MaxHitpoints = npc.Hitpoints;
+        if (u.ContainsKey("accuracy"))         npc.Accuracy = Math.Max(1, Convert.ToInt32(u["accuracy"]));
+        if (u.ContainsKey("max_accuracy"))     npc.MaxAccuracy = Math.Max(1, Convert.ToInt32(u["max_accuracy"]));
+        if (npc.Accuracy > npc.MaxAccuracy)    npc.MaxAccuracy = npc.Accuracy;
+        if (u.ContainsKey("strength"))         npc.Strength = Math.Max(1, Convert.ToInt32(u["strength"]));
+        if (u.ContainsKey("max_strength"))     npc.MaxStrength = Math.Max(1, Convert.ToInt32(u["max_strength"]));
+        if (npc.Strength > npc.MaxStrength)    npc.MaxStrength = npc.Strength;
+        if (u.ContainsKey("defence"))          npc.Defence = Math.Max(1, Convert.ToInt32(u["defence"]));
+        if (u.ContainsKey("max_defence"))      npc.MaxDefence = Math.Max(1, Convert.ToInt32(u["max_defence"]));
+        if (npc.Defence > npc.MaxDefence)      npc.MaxDefence = npc.Defence;
+        if (u.ContainsKey("ether"))            npc.Ether = Math.Max(1, Convert.ToInt32(u["ether"]));
+        if (u.ContainsKey("max_ether"))        npc.MaxEther = Math.Max(1, Convert.ToInt32(u["max_ether"]));
+        if (npc.Ether > npc.MaxEther)          npc.MaxEther = npc.Ether;
+        if (u.ContainsKey("melee_bonus"))      npc.MeleeBonus = Math.Max(0, Convert.ToInt32(u["melee_bonus"]));
+        if (u.ContainsKey("ranged_bonus"))     npc.RangedBonus = Math.Max(0, Convert.ToInt32(u["ranged_bonus"]));
+        if (u.ContainsKey("ether_bonus"))      npc.EtherBonus = Math.Max(0, Convert.ToInt32(u["ether_bonus"]));
+        if (u.ContainsKey("melee_defense"))    npc.MeleeDefense = Math.Max(0, Convert.ToInt32(u["melee_defense"]));
+        if (u.ContainsKey("ranged_defense"))   npc.RangedDefense = Math.Max(0, Convert.ToInt32(u["ranged_defense"]));
+        if (u.ContainsKey("ether_defense"))    npc.EtherDefense = Math.Max(0, Convert.ToInt32(u["ether_defense"]));
+        if (u.ContainsKey("attack_speed"))     npc.AttackSpeedTicks = Math.Max(1, Convert.ToInt32(u["attack_speed"]));
+        if (u.ContainsKey("dialogue_script"))  npc.DialogueScript = u["dialogue_script"].ToString() ?? "";
+        if (u.ContainsKey("is_banker"))        npc.IsBanker = (bool)u["is_banker"];
+        if (u.ContainsKey("spawn_flags"))      npc.SpawnFlags = u["spawn_flags"].ToString() ?? "{}";
+
+        // Apply DB-only fields to in-memory so reload (which reads memory) and
+        // respawn (which reads memory via ResetPositionToHome) both reflect the new value.
+        npc.TileX      = (int)tileX;
+        npc.TileY      = (int)tileY;
+        npc.TileZ      = (int)tileZ;
+        npc.RenderSlug = renderSlug;
+
+        // Rebuild u from in-memory state (clamped) + DB-only fields.
+        u["display"]          = npc.Display;
+        u["attackable"]       = npc.Attackable;
+        u["aggressive"]       = npc.Aggressive;
+        u["aggro_range"]      = npc.AggroRangeTiles;
+        u["ai_package_state"] = npc.AiPackageState;
+        u["ai_action_state"]  = npc.AiActionState;
+        u["loot_table_name"]  = npc.LootTableName;
+        u["spawn_timer"]      = npc.SpawnTimerSeconds;
+        u["hitpoints"]        = npc.Hitpoints;
+        u["max_hitpoints"]    = npc.MaxHitpoints;
+        u["accuracy"]         = npc.Accuracy;
+        u["max_accuracy"]     = npc.MaxAccuracy;
+        u["strength"]         = npc.Strength;
+        u["max_strength"]     = npc.MaxStrength;
+        u["defence"]          = npc.Defence;
+        u["max_defence"]      = npc.MaxDefence;
+        u["ether"]            = npc.Ether;
+        u["max_ether"]        = npc.MaxEther;
+        u["melee_bonus"]      = npc.MeleeBonus;
+        u["ranged_bonus"]     = npc.RangedBonus;
+        u["ether_bonus"]      = npc.EtherBonus;
+        u["melee_defense"]    = npc.MeleeDefense;
+        u["ranged_defense"]   = npc.RangedDefense;
+        u["ether_defense"]    = npc.EtherDefense;
+        u["attack_speed"]     = npc.AttackSpeedTicks;
+        u["dialogue_script"]  = npc.DialogueScript;
+        u["is_banker"]        = npc.IsBanker;
+        u["spawn_flags"]      = npc.SpawnFlags;
+        u["tile_x"]           = tileX;
+        u["tile_y"]           = tileY;
+        u["tile_z"]           = tileZ;
+        u["render_slug"]      = renderSlug;
+
+        bool ok = await _npcRepo.SaveAdminEditAsync(npcId, u);
+
+        _outbound.BroadcastNpcHp(npc.Id, npc.Hitpoints, npc.MaxHitpoints);
+        _outbound.Broadcast(new { type = "npc_updated", npc = NpcToPacket(npc) });
+        NotifyNpcVisibilityChanged();
+        _outbound.Send(peerId, new { type = "npc_editor_saved", ok, npc_id = npcId });
+    }
+
+    // ============================================================
+    // DevHub client editor — list, template get/save
+    // ============================================================
+
+    internal void HandleDevNpcEditorList(long peerId, System.Text.Json.JsonElement root)
+    {
+        if (!_state.Sessions.TryGetValue(peerId, out var session)) return;
+        if (!session.IsAdmin) return;
+
+        string mode = "unique";
+        if (root.TryGetProperty("mode", out var modeEl)
+            && modeEl.ValueKind == System.Text.Json.JsonValueKind.String)
+            mode = modeEl.GetString() ?? "unique";
+
+        var items = new List<object>();
+        if (mode == "template")
         {
-            if (u.ContainsKey("display"))          npc.Display = u["display"].ToString() ?? npc.Display;
-            if (u.ContainsKey("attackable"))       npc.Attackable = (bool)u["attackable"];
-            if (u.ContainsKey("aggressive"))       npc.Aggressive = (bool)u["aggressive"];
-            if (u.ContainsKey("aggro_range"))      npc.AggroRangeTiles = Math.Max(1, Convert.ToInt32(u["aggro_range"]));
-            if (u.ContainsKey("ai_package_state")) npc.AiPackageState = u["ai_package_state"].ToString() ?? "idle";
-            if (u.ContainsKey("ai_action_state"))  npc.AiActionState = u["ai_action_state"].ToString() ?? "none";
-            if (u.ContainsKey("loot_table_name"))  npc.LootTableName = u["loot_table_name"].ToString() ?? "common_loot_1";
-            if (u.ContainsKey("spawn_timer"))      npc.SpawnTimerSeconds = Math.Max(1, Convert.ToInt32(u["spawn_timer"]));
-            if (u.ContainsKey("hitpoints"))        npc.Hitpoints = Math.Max(0, Convert.ToInt32(u["hitpoints"]));
-            if (u.ContainsKey("max_hitpoints"))    npc.MaxHitpoints = Math.Max(1, Convert.ToInt32(u["max_hitpoints"]));
-            if (npc.Hitpoints > npc.MaxHitpoints)  npc.MaxHitpoints = npc.Hitpoints;
-            if (u.ContainsKey("accuracy"))         npc.Accuracy = Math.Max(1, Convert.ToInt32(u["accuracy"]));
-            if (u.ContainsKey("strength"))         npc.Strength = Math.Max(1, Convert.ToInt32(u["strength"]));
-            if (u.ContainsKey("defence"))          npc.Defence = Math.Max(1, Convert.ToInt32(u["defence"]));
-            if (u.ContainsKey("ether"))            npc.Ether = Math.Max(1, Convert.ToInt32(u["ether"]));
-            if (u.ContainsKey("max_ether"))        npc.MaxEther = Math.Max(1, Convert.ToInt32(u["max_ether"]));
-            if (npc.Ether > npc.MaxEther)          npc.MaxEther = npc.Ether;
-            if (u.ContainsKey("melee_bonus"))      npc.MeleeBonus = Math.Max(0, Convert.ToInt32(u["melee_bonus"]));
-            if (u.ContainsKey("ranged_bonus"))     npc.RangedBonus = Math.Max(0, Convert.ToInt32(u["ranged_bonus"]));
-            if (u.ContainsKey("ether_bonus"))      npc.EtherBonus = Math.Max(0, Convert.ToInt32(u["ether_bonus"]));
-            if (u.ContainsKey("melee_defense"))    npc.MeleeDefense = Math.Max(0, Convert.ToInt32(u["melee_defense"]));
-            if (u.ContainsKey("ranged_defense"))   npc.RangedDefense = Math.Max(0, Convert.ToInt32(u["ranged_defense"]));
-            if (u.ContainsKey("ether_defense"))    npc.EtherDefense = Math.Max(0, Convert.ToInt32(u["ether_defense"]));
-            if (u.ContainsKey("attack_speed"))     npc.AttackSpeedTicks = Math.Max(1, Convert.ToInt32(u["attack_speed"]));
-
-            u["display"]          = npc.Display;
-            u["attackable"]       = npc.Attackable;
-            u["aggressive"]       = npc.Aggressive;
-            u["aggro_range"]      = npc.AggroRangeTiles;
-            u["ai_package_state"] = npc.AiPackageState;
-            u["ai_action_state"]  = npc.AiActionState;
-            u["loot_table_name"]  = npc.LootTableName;
-            u["spawn_timer"]      = npc.SpawnTimerSeconds;
-            u["hitpoints"]        = npc.Hitpoints;
-            u["max_hitpoints"]    = npc.MaxHitpoints;
-            u["accuracy"]         = npc.Accuracy;
-            u["strength"]         = npc.Strength;
-            u["defence"]          = npc.Defence;
-            u["ether"]            = npc.Ether;
-            u["max_ether"]        = npc.MaxEther;
-            u["melee_bonus"]      = npc.MeleeBonus;
-            u["ranged_bonus"]     = npc.RangedBonus;
-            u["ether_bonus"]      = npc.EtherBonus;
-            u["melee_defense"]    = npc.MeleeDefense;
-            u["ranged_defense"]   = npc.RangedDefense;
-            u["ether_defense"]    = npc.EtherDefense;
-            u["attack_speed"]     = npc.AttackSpeedTicks;
-
-            _ = _npcRepo.SaveAdminEditAsync(npcId, u);
-            _outbound.BroadcastNpcHp(npc.Id, npc.Hitpoints, npc.MaxHitpoints);
-            _outbound.Broadcast(new { type = "npc_updated", npc = NpcToPacket(npc) });
-            NotifyNpcVisibilityChanged();
-            _outbound.Send(peerId, new { type = "npc_editor_saved", ok = true, npc_id = npcId });
+            foreach (var t in _npcRepo.GetAllTemplatesSync())
+                items.Add(new { id = t.Id, slug_id = t.SlugId });
         }
-        catch (Exception e)
+        else
         {
-            GD.PrintErr($"[Server] npc_editor_save: {e.Message}");
-            _outbound.Send(peerId, new
+            foreach (var npc in _npcs.Values.OrderBy(n => n.Name))
+                items.Add(new { id = npc.Id, name = npc.Name });
+        }
+
+        _outbound.Send(peerId, new
+        {
+            type = "dev_npc_editor_list_result",
+            ok = true,
+            mode,
+            items,
+        });
+    }
+
+    internal void HandleDevNpcEditorGetTemplate(long peerId, System.Text.Json.JsonElement root)
+    {
+        if (!_state.Sessions.TryGetValue(peerId, out var session)) return;
+        if (!session.IsAdmin) return;
+        if (!root.TryGetProperty("template_id", out var idEl)
+            || !idEl.TryGetInt64(out long templateId)) return;
+
+        var data = _npcRepo.GetTemplateSync(templateId);
+        if (data == null)
+        {
+            _outbound.SendError(peerId, "dev_npc_editor_template_data", ErrorKeys.WorldUnavailable);
+            return;
+        }
+
+        _outbound.Send(peerId, new
+        {
+            type = "dev_npc_editor_template_data",
+            ok = true,
+            template = data,
+        });
+    }
+
+    internal void HandleDevNpcEditorSaveTemplate(long peerId, System.Text.Json.JsonElement root)
+    {
+        if (!_state.Sessions.TryGetValue(peerId, out var session)) return;
+        if (!session.IsAdmin) return;
+        if (!root.TryGetProperty("template_id", out var idEl)
+            || !idEl.TryGetInt64(out long templateId)) return;
+        if (!root.TryGetProperty("updates", out var upEl)
+            || upEl.ValueKind != System.Text.Json.JsonValueKind.Object) return;
+
+        var updates = new Dictionary<string, object>();
+        foreach (var prop in upEl.EnumerateObject())
+        {
+            updates[prop.Name] = prop.Value.ValueKind switch
             {
-                type = "npc_editor_saved",
-                ok = false,
-                error_key = "npc.save_failed",
-                error_params = new { },
-            });
+                System.Text.Json.JsonValueKind.True => true,
+                System.Text.Json.JsonValueKind.False => false,
+                System.Text.Json.JsonValueKind.String => prop.Value.GetString() ?? "",
+                System.Text.Json.JsonValueKind.Number => prop.Value.TryGetInt64(out long l) ? l : 0L,
+                _ => (object)0L,
+            };
         }
+
+        _ = SaveTemplateAndReply(peerId, templateId, updates);
+    }
+
+    private async Task SaveTemplateAndReply(long peerId, long templateId, Dictionary<string, object> updates)
+    {
+        bool ok = await _npcRepo.SaveTemplateAsync(templateId, updates);
+        _outbound.Send(peerId, new
+        {
+            type = "dev_npc_editor_template_saved",
+            ok,
+            template_id = templateId,
+        });
     }
 }

@@ -84,6 +84,8 @@ func open_at(panel_id: String, entity_type: String = "", entity_id: int = 0) -> 
 # ---------- UI construction ----------
 
 func _build_ui() -> void:
+	var style := DevStyle.instance
+
 	_overlay = Control.new()
 	_overlay.name = "Overlay"
 	_overlay.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
@@ -94,7 +96,7 @@ func _build_ui() -> void:
 
 	var dim := ColorRect.new()
 	dim.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	dim.color = DevStyle.OVERLAY_COLOR
+	dim.color = style.overlay_color
 	dim.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_overlay.add_child(dim)
 
@@ -104,12 +106,10 @@ func _build_ui() -> void:
 	_panel_container.anchor_right = 0.5
 	_panel_container.anchor_top = 0.5
 	_panel_container.anchor_bottom = 0.5
-	_panel_container.offset_left = -DevStyle.PANEL_WIDTH / 2.0
-	_panel_container.offset_right = DevStyle.PANEL_WIDTH / 2.0
-	_panel_container.offset_top = -DevStyle.PANEL_HEIGHT / 2.0
-	_panel_container.offset_bottom = DevStyle.PANEL_HEIGHT / 2.0
-	_panel_container.add_theme_stylebox_override("panel", DevStyle.make_panel_style())
+	_panel_container.add_theme_stylebox_override("panel", style.make_panel_style())
 	_overlay.add_child(_panel_container)
+	_apply_panel_size()
+	get_viewport().size_changed.connect(_apply_panel_size)
 
 	var vbox := VBoxContainer.new()
 	vbox.add_theme_constant_override("separation", 0)
@@ -117,29 +117,29 @@ func _build_ui() -> void:
 
 	# Header
 	var header := PanelContainer.new()
-	header.add_theme_stylebox_override("panel", DevStyle.make_header_style())
+	header.add_theme_stylebox_override("panel", style.make_header_style())
 	vbox.add_child(header)
 
 	var header_row := HBoxContainer.new()
-	header_row.add_theme_constant_override("separation", DevStyle.PANEL_SEPARATION)
+	header_row.add_theme_constant_override("separation", style.panel_separation)
 	header.add_child(header_row)
 
 	var title := Label.new()
 	title.text = Texts.get_text("ui.dev_hub.title")
-	title.add_theme_font_size_override("font_size", DevStyle.FONT_SIZE_TITLE)
-	title.add_theme_color_override("font_color", DevStyle.TEXT_HEADING)
+	title.add_theme_font_size_override("font_size", style.font_size_title)
+	title.add_theme_color_override("font_color", style.text_heading)
 	title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	header_row.add_child(title)
 
 	var close_btn := Button.new()
 	close_btn.text = Texts.get_text("ui.dev_hub.close")
 	close_btn.focus_mode = Control.FOCUS_NONE
-	close_btn.add_theme_stylebox_override("normal", DevStyle.make_button_style(DevStyle.BUTTON_CLOSE))
-	close_btn.add_theme_stylebox_override("hover", DevStyle.make_button_style(DevStyle.BUTTON_CLOSE.lightened(0.12)))
-	close_btn.add_theme_stylebox_override("pressed", DevStyle.make_button_style(DevStyle.BUTTON_CLOSE.darkened(0.12)))
-	close_btn.add_theme_color_override("font_color", DevStyle.TEXT_PRIMARY)
-	close_btn.add_theme_color_override("font_hover_color", DevStyle.TEXT_PRIMARY)
-	close_btn.add_theme_color_override("font_pressed_color", DevStyle.TEXT_PRIMARY)
+	close_btn.add_theme_stylebox_override("normal", style.make_button_style(style.button_close))
+	close_btn.add_theme_stylebox_override("hover", style.make_button_style(style.button_close.lightened(0.12)))
+	close_btn.add_theme_stylebox_override("pressed", style.make_button_style(style.button_close.darkened(0.12)))
+	close_btn.add_theme_color_override("font_color", style.text_primary)
+	close_btn.add_theme_color_override("font_hover_color", style.text_primary)
+	close_btn.add_theme_color_override("font_pressed_color", style.text_primary)
 	close_btn.pressed.connect(close)
 	header_row.add_child(close_btn)
 
@@ -150,10 +150,10 @@ func _build_ui() -> void:
 
 	# Content area
 	var content_margin := MarginContainer.new()
-	content_margin.add_theme_constant_override("margin_left", DevStyle.PANEL_CONTENT_MARGIN)
-	content_margin.add_theme_constant_override("margin_right", DevStyle.PANEL_CONTENT_MARGIN)
-	content_margin.add_theme_constant_override("margin_top", DevStyle.PANEL_CONTENT_MARGIN)
-	content_margin.add_theme_constant_override("margin_bottom", DevStyle.PANEL_CONTENT_MARGIN)
+	content_margin.add_theme_constant_override("margin_left", style.panel_content_margin)
+	content_margin.add_theme_constant_override("margin_right", style.panel_content_margin)
+	content_margin.add_theme_constant_override("margin_top", style.panel_content_margin)
+	content_margin.add_theme_constant_override("margin_bottom", style.panel_content_margin)
 	content_margin.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	vbox.add_child(content_margin)
 
@@ -165,6 +165,8 @@ func _build_ui() -> void:
 # ---------- Panels ----------
 
 func _build_panels() -> void:
+	var style := DevStyle.instance
+
 	for def in DevPanelRegistry.PANELS:
 		var id: String = def["id"]
 		var script_path: String = def["script"]
@@ -181,11 +183,11 @@ func _build_panels() -> void:
 		var btn := Button.new()
 		btn.text = Texts.get_text(def["name_key"])
 		btn.focus_mode = Control.FOCUS_NONE
-		btn.custom_minimum_size = Vector2(DevStyle.TAB_MIN_WIDTH, DevStyle.TAB_HEIGHT)
-		btn.add_theme_font_size_override("font_size", DevStyle.FONT_SIZE_TAB)
-		btn.add_theme_color_override("font_color", DevStyle.TEXT_PRIMARY)
-		btn.add_theme_color_override("font_hover_color", DevStyle.TEXT_PRIMARY)
-		btn.add_theme_color_override("font_pressed_color", DevStyle.TEXT_PRIMARY)
+		btn.custom_minimum_size = Vector2(style.tab_min_width, style.tab_height)
+		btn.add_theme_font_size_override("font_size", style.font_size_tab)
+		btn.add_theme_color_override("font_color", style.text_primary)
+		btn.add_theme_color_override("font_hover_color", style.text_primary)
+		btn.add_theme_color_override("font_pressed_color", style.text_primary)
 		_tab_bar.add_child(btn)
 		_tab_buttons[id] = btn
 		btn.pressed.connect(_select_tab.bind(id))
@@ -210,12 +212,13 @@ func _select_tab(id: String) -> void:
 	if _overlay.visible:
 		new_panel.panel_opened()
 
+	var style := DevStyle.instance
 	for tid in _tab_buttons.keys():
 		var btn: Button = _tab_buttons[tid]
-		var bg: Color = DevStyle.TAB_BG_ACTIVE if tid == id else DevStyle.TAB_BG_NORMAL
-		btn.add_theme_stylebox_override("normal", DevStyle.make_tab_style(bg))
-		btn.add_theme_stylebox_override("hover", DevStyle.make_tab_style(DevStyle.TAB_BG_HOVER))
-		btn.add_theme_stylebox_override("pressed", DevStyle.make_tab_style(DevStyle.TAB_BG_ACTIVE))
+		var bg: Color = style.tab_bg_active if tid == id else style.tab_bg_normal
+		btn.add_theme_stylebox_override("normal", style.make_tab_style(bg))
+		btn.add_theme_stylebox_override("hover", style.make_tab_style(style.tab_bg_hover))
+		btn.add_theme_stylebox_override("pressed", style.make_tab_style(style.tab_bg_active))
 
 func _notify_panel_opened() -> void:
 	if _current_id != "" and _panels.has(_current_id):
@@ -224,3 +227,16 @@ func _notify_panel_opened() -> void:
 func _notify_panel_closed() -> void:
 	if _current_id != "" and _panels.has(_current_id):
 		_panels[_current_id].panel_closed()
+
+# ---------- Sizing ----------
+
+func _apply_panel_size() -> void:
+	if _panel_container == null: return
+	var style := DevStyle.instance
+	var vp := get_viewport().get_visible_rect().size
+	var w := clampf(vp.x * style.panel_width_ratio,  style.panel_min_width,  style.panel_max_width)
+	var h := clampf(vp.y * style.panel_height_ratio, style.panel_min_height, style.panel_max_height)
+	_panel_container.offset_left   = -w / 2.0
+	_panel_container.offset_right  =  w / 2.0
+	_panel_container.offset_top    = -h / 2.0
+	_panel_container.offset_bottom =  h / 2.0

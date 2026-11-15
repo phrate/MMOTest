@@ -6,12 +6,10 @@ extends CanvasLayer
 signal open_requested
 
 const LAYER := 9
-const MARGIN := 8
-const BUTTON_WIDTH := 160
-const BUTTON_HEIGHT := 32
 
 func _ready() -> void:
 	layer = LAYER
+	var style := DevStyle.instance
 
 	var btn := Button.new()
 	btn.name = "Button"
@@ -21,16 +19,16 @@ func _ready() -> void:
 	btn.anchor_right = 0.0
 	btn.anchor_top = 0.0
 	btn.anchor_bottom = 0.0
-	btn.offset_left = MARGIN
-	btn.offset_top = MARGIN
-	btn.offset_right = MARGIN + BUTTON_WIDTH
-	btn.offset_bottom = MARGIN + BUTTON_HEIGHT
-	btn.add_theme_font_size_override("font_size", DevStyle.FONT_SIZE_TAB)
-	btn.add_theme_color_override("font_color", DevStyle.TEXT_PRIMARY)
-	btn.add_theme_color_override("font_hover_color", DevStyle.TEXT_PRIMARY)
-	btn.add_theme_color_override("font_pressed_color", DevStyle.TEXT_PRIMARY)
-	btn.add_theme_stylebox_override("normal", DevStyle.make_button_style(DevStyle.BUTTON_DEV_MENU))
-	btn.add_theme_stylebox_override("hover", DevStyle.make_button_style(DevStyle.BUTTON_DEV_MENU.lightened(0.12)))
-	btn.add_theme_stylebox_override("pressed", DevStyle.make_button_style(DevStyle.BUTTON_DEV_MENU.darkened(0.12)))
+	btn.offset_left = style.dev_menu_button_margin
+	btn.offset_top = style.dev_menu_button_margin
+	btn.offset_right = style.dev_menu_button_margin + style.dev_menu_button_width
+	btn.offset_bottom = style.dev_menu_button_margin + style.dev_menu_button_height
+	btn.add_theme_font_size_override("font_size", style.font_size_tab)
+	btn.add_theme_color_override("font_color", style.text_primary)
+	btn.add_theme_color_override("font_hover_color", style.text_primary)
+	btn.add_theme_color_override("font_pressed_color", style.text_primary)
+	btn.add_theme_stylebox_override("normal", style.make_button_style(style.button_dev_menu))
+	btn.add_theme_stylebox_override("hover", style.make_button_style(style.button_dev_menu.lightened(0.12)))
+	btn.add_theme_stylebox_override("pressed", style.make_button_style(style.button_dev_menu.darkened(0.12)))
 	btn.pressed.connect(func(): open_requested.emit())
 	add_child(btn)

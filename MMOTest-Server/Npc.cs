@@ -8,13 +8,13 @@ public sealed class ActiveNpc
 {
     public long Id { get; init; }
     public string Name { get; init; } = "";
-    public int TileX { get; init; }
-    public int TileY { get; init; }
-    public int TileZ { get; init; }
+    public int TileX { get; set; }
+    public int TileY { get; set; }
+    public int TileZ { get; set; }
     public string PlayingAnimation { get; init; } = "";
     public long? CombatLevelsId { get; init; }
-    public int FinalLevel { get; init; } = 1;
-    public string RenderSlug { get; init; } = "";
+    public int FinalLevel { get; set; } = 1;
+    public string RenderSlug { get; set; } = "";
     public string DialogueScript { get; set; } = "";
     public bool IsBanker { get; set; } = false;
 
@@ -25,14 +25,18 @@ public sealed class ActiveNpc
     public int AggroRangeTiles { get; set; } = 8;
     public string AiPackageState { get; set; } = "idle";
     public string AiActionState { get; set; } = "none";
+    public string SpawnFlags { get; set; } = "{}";
     public string LootTableName { get; set; } = "common_loot_1";
     public string CreditsTableName { get; set; } = "";
     public int SpawnTimerSeconds { get; set; } = 3;
     public int Hitpoints { get; set; } = 3;
     public int MaxHitpoints { get; set; } = 3;
     public int Accuracy { get; set; } = 1;
+    public int MaxAccuracy { get; set; } = 1;
     public int Strength { get; set; } = 1;
+    public int MaxStrength { get; set; } = 1;
     public int Defence { get; set; } = 1;
+    public int MaxDefence { get; set; } = 1;
     public int Ether { get; set; } = 1;
     public int MaxEther { get; set; } = 1;
     public int MeleeBonus { get; set; } = 0;

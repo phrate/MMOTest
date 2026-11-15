@@ -16,8 +16,6 @@ config/features=PackedStringArray("4.4", "C#")
 
 [autoload]
 
-NpcEditorBridge="*res://editor/NpcEditorBridge.cs"
-
 [dotnet]
 
 project/assembly_name="MMOTest-Server"

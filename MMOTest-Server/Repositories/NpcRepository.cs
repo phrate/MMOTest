@@ -7,6 +7,7 @@ namespace MMOTest.Server;
 
 public sealed class NpcRepository
 {
+    public record TemplateRecord(long Id, string SlugId);
     private readonly System.Func<SqliteConnection> _open;
     public NpcRepository(System.Func<SqliteConnection> open) { _open = open; }
 
@@ -23,6 +24,10 @@ public sealed class NpcRepository
                    n.render_slug, n.dialogue_script, n.ai_package_state, n.spawn_timer,
                    COALESCE(c.hitpoints, 3) AS hitpoints,
                    COALESCE(c.max_hitpoints, 3) AS max_hitpoints,
+                   COALESCE(c.max_accuracy, 1) AS max_accuracy,
+                   COALESCE(c.max_strength, 1) AS max_strength,
+                   COALESCE(c.max_defence, 1) AS max_defence,
+                   COALESCE(n.spawn_flags, '{}') AS spawn_flags,
                    COALESCE(c.accuracy, 1) AS accuracy,
                    COALESCE(c.strength, 1) AS strength,
                    COALESCE(c.defence, 1) AS defence,
@@ -68,6 +73,11 @@ public sealed class NpcRepository
                 SpawnTimerSeconds = (int)reader.GetInt64(reader.GetOrdinal("spawn_timer")),
                 Hitpoints = reader.GetInt32(reader.GetOrdinal("hitpoints")),
                 MaxHitpoints = reader.GetInt32(reader.GetOrdinal("max_hitpoints")),
+                MaxAccuracy = reader.GetInt32(reader.GetOrdinal("max_accuracy")),
+                MaxStrength = reader.GetInt32(reader.GetOrdinal("max_strength")),
+                MaxDefence = reader.GetInt32(reader.GetOrdinal("max_defence")),
+                SpawnFlags = reader.IsDBNull(reader.GetOrdinal("spawn_flags"))
+                    ? "{}" : reader.GetString(reader.GetOrdinal("spawn_flags")),
                 Accuracy = reader.GetInt32(reader.GetOrdinal("accuracy")),
                 Strength = reader.GetInt32(reader.GetOrdinal("strength")),
                 Defence = reader.GetInt32(reader.GetOrdinal("defence")),
@@ -94,6 +104,209 @@ public sealed class NpcRepository
             list.Add(npc);
         }
         return list;
+    }
+
+    public List<TemplateRecord> GetAllTemplatesSync()
+    {
+        var result = new List<TemplateRecord>();
+        using var conn = _open();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = @"
+            SELECT id, slug_id FROM levels_combat
+            WHERE template_slug IS NULL AND slug_id LIKE 'npc\_%' ESCAPE '\'
+            ORDER BY slug_id;";
+        using var r = cmd.ExecuteReader();
+        while (r.Read())
+            result.Add(new TemplateRecord(r.GetInt64(0), r.GetString(1)));
+        return result;
+    }
+
+    public Dictionary<string, object>? GetTemplateSync(long templateId)
+    {
+        using var conn = _open();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = @"
+            SELECT id, slug_id, final_level,
+                   hitpoints, max_hitpoints, accuracy, max_accuracy,
+                   strength, max_strength, defence, max_defence,
+                   ether, max_ether,
+                   melee_bonus, ranged_bonus, ether_bonus,
+                   melee_defense, ranged_defense, ether_defense,
+                   attack_speed
+            FROM levels_combat WHERE id = $id;";
+        cmd.Parameters.AddWithValue("$id", templateId);
+        using var r = cmd.ExecuteReader();
+        if (!r.Read()) return null;
+        return new Dictionary<string, object>
+        {
+            ["id"] = r.GetInt64(0),
+            ["slug_id"] = r.GetString(1),
+            ["final_level"] = r.GetInt32(2),
+            ["hitpoints"] = r.GetInt32(3),
+            ["max_hitpoints"] = r.GetInt32(4),
+            ["accuracy"] = r.GetInt32(5),
+            ["max_accuracy"] = r.GetInt32(6),
+            ["strength"] = r.GetInt32(7),
+            ["max_strength"] = r.GetInt32(8),
+            ["defence"] = r.GetInt32(9),
+            ["max_defence"] = r.GetInt32(10),
+            ["ether"] = r.GetInt32(11),
+            ["max_ether"] = r.GetInt32(12),
+            ["melee_bonus"] = r.GetInt32(13),
+            ["ranged_bonus"] = r.GetInt32(14),
+            ["ether_bonus"] = r.GetInt32(15),
+            ["melee_defense"] = r.GetInt32(16),
+            ["ranged_defense"] = r.GetInt32(17),
+            ["ether_defense"] = r.GetInt32(18),
+            ["attack_speed"] = r.GetInt32(19),
+        };
+    }
+
+    public Dictionary<string, object>? GetCombatSnapshotSync(long npcId)
+    {
+        using var conn = _open();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = @"
+            SELECT c.final_level,
+                c.hitpoints, c.max_hitpoints,
+                c.accuracy, c.max_accuracy,
+                c.strength, c.max_strength,
+                c.defence, c.max_defence,
+                c.ether, c.max_ether,
+                c.melee_bonus, c.ranged_bonus, c.ether_bonus,
+                c.melee_defense, c.ranged_defense, c.ether_defense,
+                c.attack_speed
+            FROM npcs n
+            LEFT JOIN levels_combat c ON n.levels_combat_id = c.id
+            WHERE n.id = $id;";
+        cmd.Parameters.AddWithValue("$id", npcId);
+        using var r = cmd.ExecuteReader();
+        if (!r.Read()) return null;
+        if (r.IsDBNull(0)) return null;   // no levels_combat linked
+        return new Dictionary<string, object>
+        {
+            ["final_level"]   = r.GetInt32(0),
+            ["hitpoints"]     = r.GetInt32(1),
+            ["max_hitpoints"] = r.GetInt32(2),
+            ["accuracy"]      = r.GetInt32(3),
+            ["max_accuracy"]  = r.GetInt32(4),
+            ["strength"]      = r.GetInt32(5),
+            ["max_strength"]  = r.GetInt32(6),
+            ["defence"]       = r.GetInt32(7),
+            ["max_defence"]   = r.GetInt32(8),
+            ["ether"]         = r.GetInt32(9),
+            ["max_ether"]     = r.GetInt32(10),
+            ["melee_bonus"]   = r.GetInt32(11),
+            ["ranged_bonus"]  = r.GetInt32(12),
+            ["ether_bonus"]   = r.GetInt32(13),
+            ["melee_defense"] = r.GetInt32(14),
+            ["ranged_defense"]= r.GetInt32(15),
+            ["ether_defense"] = r.GetInt32(16),
+            ["attack_speed"]  = r.GetInt32(17),
+        };
+    }
+
+    public Task<bool> SaveTemplateAsync(long templateId, Dictionary<string, object> u) => Task.Run(() =>
+    {
+        try
+        {
+            using var conn = _open();
+
+            // Fetch slug_id once, before the update (also validates the template exists)
+            string? slugId;
+            using (var getSlug = conn.CreateCommand())
+            {
+                getSlug.CommandText = "SELECT slug_id FROM levels_combat WHERE id = $id;";
+                getSlug.Parameters.AddWithValue("$id", templateId);
+                var s = getSlug.ExecuteScalar() as string;
+                if (string.IsNullOrEmpty(s)) return false;
+                slugId = s;
+            }
+
+            using var tx = conn.BeginTransaction();
+
+            // Update the template row itself
+            using (var cmd = conn.CreateCommand())
+            {
+                cmd.Transaction = tx;
+                cmd.CommandText = @"
+                    UPDATE levels_combat SET
+                        final_level   = $fl,
+                        hitpoints     = $hp, max_hitpoints = $mhp,
+                        accuracy      = $acc, max_accuracy  = $mac,
+                        strength      = $str, max_strength  = $mst,
+                        defence       = $def, max_defence   = $mdf,
+                        ether         = $eth, max_ether     = $met,
+                        melee_bonus   = $mb,  ranged_bonus  = $rb,
+                        ether_bonus   = $eb,
+                        melee_defense = $md,  ranged_defense = $rd,
+                        ether_defense = $ed,
+                        attack_speed  = $aspeed
+                    WHERE id = $id;";
+                AddTemplateParams(cmd, u);
+                cmd.Parameters.AddWithValue("$id", templateId);
+                if (cmd.ExecuteNonQuery() == 0) { tx.Rollback(); return false; }
+            }
+
+            // Propagate to unique rows that reference this template
+            using (var prop = conn.CreateCommand())
+            {
+                prop.Transaction = tx;
+                prop.CommandText = @"
+                    UPDATE levels_combat SET
+                        final_level   = $fl,
+                        hitpoints     = $hp, max_hitpoints = $mhp,
+                        accuracy      = $acc, max_accuracy  = $mac,
+                        strength      = $str, max_strength  = $mst,
+                        defence       = $def, max_defence   = $mdf,
+                        ether         = $eth, max_ether     = $met,
+                        melee_bonus   = $mb,  ranged_bonus  = $rb,
+                        ether_bonus   = $eb,
+                        melee_defense = $md,  ranged_defense = $rd,
+                        ether_defense = $ed,
+                        attack_speed  = $aspeed
+                    WHERE template_slug = $slug;";
+                AddTemplateParams(prop, u);
+                prop.Parameters.AddWithValue("$slug", slugId);
+                prop.ExecuteNonQuery();   // 0 is fine — means no uniques use this template yet
+            }
+
+            tx.Commit();
+            return true;
+        }
+        catch (System.Exception e)
+        {
+            Godot.GD.PrintErr($"[NpcRepository] SaveTemplateAsync({templateId}): {e}");
+            return false;
+        }
+    });
+
+    private static void AddTemplateParams(Microsoft.Data.Sqlite.SqliteCommand cmd, Dictionary<string, object> u)
+    {
+        cmd.Parameters.AddWithValue("$fl",     ToInt(u, "final_level", 3));
+        cmd.Parameters.AddWithValue("$hp",     ToInt(u, "hitpoints", 10));
+        cmd.Parameters.AddWithValue("$mhp",    ToInt(u, "max_hitpoints", 10));
+        cmd.Parameters.AddWithValue("$acc",    ToInt(u, "accuracy", 1));
+        cmd.Parameters.AddWithValue("$mac",    ToInt(u, "max_accuracy", 1));
+        cmd.Parameters.AddWithValue("$str",    ToInt(u, "strength", 1));
+        cmd.Parameters.AddWithValue("$mst",    ToInt(u, "max_strength", 1));
+        cmd.Parameters.AddWithValue("$def",    ToInt(u, "defence", 1));
+        cmd.Parameters.AddWithValue("$mdf",    ToInt(u, "max_defence", 1));
+        cmd.Parameters.AddWithValue("$eth",    ToInt(u, "ether", 1));
+        cmd.Parameters.AddWithValue("$met",    ToInt(u, "max_ether", 1));
+        cmd.Parameters.AddWithValue("$mb",     ToInt(u, "melee_bonus", 0));
+        cmd.Parameters.AddWithValue("$rb",     ToInt(u, "ranged_bonus", 0));
+        cmd.Parameters.AddWithValue("$eb",     ToInt(u, "ether_bonus", 0));
+        cmd.Parameters.AddWithValue("$md",     ToInt(u, "melee_defense", 0));
+        cmd.Parameters.AddWithValue("$rd",     ToInt(u, "ranged_defense", 0));
+        cmd.Parameters.AddWithValue("$ed",     ToInt(u, "ether_defense", 0));
+        cmd.Parameters.AddWithValue("$aspeed", ToInt(u, "attack_speed", 10));
+    }
+
+    private static int ToInt(Dictionary<string, object> u, string key, int fallback)
+    {
+        if (!u.TryGetValue(key, out var v) || v == null) return fallback;
+        try { return System.Convert.ToInt32(v); } catch { return fallback; }
     }
 
     public int RespawnAllDeadSync()
@@ -196,41 +409,50 @@ public sealed class NpcRepository
                 cmd.Transaction = tx;
                 cmd.CommandText = @"
                     UPDATE npcs SET
-                        attackable = $atk,
-                        aggressive = $aggr,
-                        aggro_range = $arange,
+                        attackable       = $atk,
+                        aggressive       = $aggr,
+                        aggro_range      = $arange,
                         ai_package_state = $pkg,
                         ai_action_state  = $act,
                         loot_table_name  = $loot,
                         spawn_timer      = $stimer,
                         display          = $display,
                         dialogue_script  = $dialogue_script,
-                        is_banker        = $is_banker
+                        is_banker        = $is_banker,
+                        render_slug      = $render_slug,
+                        tile_x           = $tx,
+                        tile_y           = $ty,
+                        tile_z           = $tz,
+                        spawn_flags      = $sf
                     WHERE id = $id;";
-                cmd.Parameters.AddWithValue("$atk", (bool)u["attackable"] ? 1 : 0);
-                cmd.Parameters.AddWithValue("$aggr", (bool)u["aggressive"] ? 1 : 0);
-                cmd.Parameters.AddWithValue("$arange", Convert.ToInt32(u["aggro_range"]));
-                cmd.Parameters.AddWithValue("$pkg", (string)u["ai_package_state"]);
-                cmd.Parameters.AddWithValue("$act", (string)u["ai_action_state"]);
-                cmd.Parameters.AddWithValue("$loot", (string)u["loot_table_name"]);
-                cmd.Parameters.AddWithValue("$stimer", Convert.ToInt32(u["spawn_timer"]));
-                cmd.Parameters.AddWithValue("$display", (string)u["display"]);
-                cmd.Parameters.AddWithValue("$dialogue_script",
-                    u.TryGetValue("dialogue_script", out var ds) ? (string)ds : "");
-                cmd.Parameters.AddWithValue("$is_banker",
-                    u.TryGetValue("is_banker", out var ib) && (bool)ib ? 1 : 0);
-                cmd.Parameters.AddWithValue("$id", npcId);
+                cmd.Parameters.AddWithValue("$atk",             GetBool(u, "attackable", true) ? 1 : 0);
+                cmd.Parameters.AddWithValue("$aggr",            GetBool(u, "aggressive", false) ? 1 : 0);
+                cmd.Parameters.AddWithValue("$arange",          GetInt(u, "aggro_range", 8));
+                cmd.Parameters.AddWithValue("$pkg",             GetString(u, "ai_package_state", "idle"));
+                cmd.Parameters.AddWithValue("$act",             GetString(u, "ai_action_state", "none"));
+                cmd.Parameters.AddWithValue("$loot",            GetString(u, "loot_table_name", "common_loot_1"));
+                cmd.Parameters.AddWithValue("$stimer",          GetInt(u, "spawn_timer", 3));
+                cmd.Parameters.AddWithValue("$display",         GetString(u, "display", ""));
+                cmd.Parameters.AddWithValue("$dialogue_script", GetString(u, "dialogue_script", ""));
+                cmd.Parameters.AddWithValue("$is_banker",       GetBool(u, "is_banker", false) ? 1 : 0);
+                cmd.Parameters.AddWithValue("$render_slug",     GetString(u, "render_slug", ""));
+                cmd.Parameters.AddWithValue("$tx",              GetLong(u, "tile_x", 0));
+                cmd.Parameters.AddWithValue("$ty",              GetLong(u, "tile_y", 0));
+                cmd.Parameters.AddWithValue("$tz",              GetLong(u, "tile_z", 100));
+                cmd.Parameters.AddWithValue("$sf",              GetString(u, "spawn_flags", "{}"));
+                cmd.Parameters.AddWithValue("$id",              npcId);
                 cmd.ExecuteNonQuery();
             }
+
             using (var cmd = conn.CreateCommand())
             {
                 cmd.Transaction = tx;
                 cmd.CommandText = @"
                     UPDATE levels_combat SET
-                        hitpoints     = $hp, max_hitpoints = $mhp,
-                        accuracy      = $acc, max_accuracy  = $acc,
-                        strength      = $str, max_strength  = $str,
-                        defence       = $def, max_defence   = $def,
+                        hitpoints     = $hp,  max_hitpoints = $mhp,
+                        accuracy      = $acc, max_accuracy  = $mac,
+                        strength      = $str, max_strength  = $mst,
+                        defence       = $def, max_defence   = $mdf,
                         ether         = $eth, max_ether     = $meth,
                         melee_bonus   = $mb,  ranged_bonus  = $rb,
                         ether_bonus   = $eb,
@@ -238,30 +460,59 @@ public sealed class NpcRepository
                         ether_defense = $ed,
                         attack_speed  = $aspeed
                     WHERE id = (SELECT levels_combat_id FROM npcs WHERE id = $id);";
-                cmd.Parameters.AddWithValue("$hp",     Convert.ToInt32(u["hitpoints"]));
-                cmd.Parameters.AddWithValue("$mhp",    Convert.ToInt32(u["max_hitpoints"]));
-                cmd.Parameters.AddWithValue("$acc",    Convert.ToInt32(u["accuracy"]));
-                cmd.Parameters.AddWithValue("$str",    Convert.ToInt32(u["strength"]));
-                cmd.Parameters.AddWithValue("$def",    Convert.ToInt32(u["defence"]));
-                cmd.Parameters.AddWithValue("$eth",    Convert.ToInt32(u["ether"]));
-                cmd.Parameters.AddWithValue("$meth",   Convert.ToInt32(u["max_ether"]));
-                cmd.Parameters.AddWithValue("$mb",     Convert.ToInt32(u["melee_bonus"]));
-                cmd.Parameters.AddWithValue("$rb",     Convert.ToInt32(u["ranged_bonus"]));
-                cmd.Parameters.AddWithValue("$eb",     Convert.ToInt32(u["ether_bonus"]));
-                cmd.Parameters.AddWithValue("$md",     Convert.ToInt32(u["melee_defense"]));
-                cmd.Parameters.AddWithValue("$rd",     Convert.ToInt32(u["ranged_defense"]));
-                cmd.Parameters.AddWithValue("$ed",     Convert.ToInt32(u["ether_defense"]));
-                cmd.Parameters.AddWithValue("$aspeed", Convert.ToInt32(u["attack_speed"]));
-                cmd.Parameters.AddWithValue("$id", npcId);
+                cmd.Parameters.AddWithValue("$hp",     GetInt(u, "hitpoints", 3));
+                cmd.Parameters.AddWithValue("$mhp",    GetInt(u, "max_hitpoints", 3));
+                cmd.Parameters.AddWithValue("$acc",    GetInt(u, "accuracy", 1));
+                cmd.Parameters.AddWithValue("$mac",    GetInt(u, "max_accuracy", GetInt(u, "accuracy", 1)));
+                cmd.Parameters.AddWithValue("$str",    GetInt(u, "strength", 1));
+                cmd.Parameters.AddWithValue("$mst",    GetInt(u, "max_strength", GetInt(u, "strength", 1)));
+                cmd.Parameters.AddWithValue("$def",    GetInt(u, "defence", 1));
+                cmd.Parameters.AddWithValue("$mdf",    GetInt(u, "max_defence", GetInt(u, "defence", 1)));
+                cmd.Parameters.AddWithValue("$eth",    GetInt(u, "ether", 1));
+                cmd.Parameters.AddWithValue("$meth",   GetInt(u, "max_ether", 1));
+                cmd.Parameters.AddWithValue("$mb",     GetInt(u, "melee_bonus", 0));
+                cmd.Parameters.AddWithValue("$rb",     GetInt(u, "ranged_bonus", 0));
+                cmd.Parameters.AddWithValue("$eb",     GetInt(u, "ether_bonus", 0));
+                cmd.Parameters.AddWithValue("$md",     GetInt(u, "melee_defense", 0));
+                cmd.Parameters.AddWithValue("$rd",     GetInt(u, "ranged_defense", 0));
+                cmd.Parameters.AddWithValue("$ed",     GetInt(u, "ether_defense", 0));
+                cmd.Parameters.AddWithValue("$aspeed", GetInt(u, "attack_speed", 10));
+                cmd.Parameters.AddWithValue("$id",     npcId);
                 cmd.ExecuteNonQuery();
             }
+
             tx.Commit();
             return true;
         }
-        catch
+        catch (System.Exception e)
         {
             try { tx.Rollback(); } catch { }
-            throw;
+            Godot.GD.PrintErr($"[NpcRepository] SaveAdminEditAsync({npcId}): {e.Message}");
+            return false;
         }
     });
+
+    private static int GetInt(Dictionary<string, object> u, string key, int fallback)
+    {
+        if (!u.TryGetValue(key, out var v) || v == null) return fallback;
+        try { return System.Convert.ToInt32(v); } catch { return fallback; }
+    }
+
+    private static long GetLong(Dictionary<string, object> u, string key, long fallback)
+    {
+        if (!u.TryGetValue(key, out var v) || v == null) return fallback;
+        try { return System.Convert.ToInt64(v); } catch { return fallback; }
+    }
+
+    private static bool GetBool(Dictionary<string, object> u, string key, bool fallback)
+    {
+        if (!u.TryGetValue(key, out var v) || v == null) return fallback;
+        try { return System.Convert.ToBoolean(v); } catch { return fallback; }
+    }
+
+    private static string GetString(Dictionary<string, object> u, string key, string fallback)
+    {
+        if (!u.TryGetValue(key, out var v) || v == null) return fallback;
+        return v.ToString() ?? fallback;
+    }
 }

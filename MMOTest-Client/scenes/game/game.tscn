@@ -12,6 +12,7 @@ size = Vector2(1, 1)
 
 [node name="Game" type="Node3D"]
 script = ExtResource("1_sul5r")
+dev_hub_auto_open = true
 
 [node name="World" type="Node3D" parent="."]
 unique_name_in_owner = true

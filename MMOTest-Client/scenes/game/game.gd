@@ -10,6 +10,7 @@ const NPC_SCENE := preload("res://scenes/game/npc/npc.tscn")
 const GROUND_ITEM_SCENE := preload("res://scenes/game/ground_item/ground_item.tscn")
 
 @export var players_root: Node3D
+@export var dev_hub_auto_open: bool = false
 
 var _local_player: CharacterBody3D
 var _remote_players: Dictionary = {}
@@ -85,6 +86,9 @@ func _ready() -> void:
 		_dev_hub_button.open_requested.connect(_dev_hub.open)
 
 		Network.npc_editor_open.connect(_on_npc_editor_open)
+
+	if dev_hub_auto_open:
+			_dev_hub.open()
 
 
 func _process(_delta: float) -> void:

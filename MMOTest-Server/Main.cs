@@ -466,7 +466,10 @@ public partial class Main : Node
 				case "world_info":  _worldFiles.HandleWorldInfo(peerId); break;
 				case "world_fetch": _worldFiles.HandleWorldFetch(peerId); break;
 				case "npc_editor_get":  _npc.HandleNpcEditorGet(peerId, root); break;
-				case "npc_editor_save": _npc.HandleNpcEditorSave(peerId, root); break;
+				case "npc_editor_save": await _npc.HandleNpcEditorSaveAsync(peerId, root); break;
+				case "dev_npc_editor_list":          _npc.HandleDevNpcEditorList(peerId, root); break;
+				case "dev_npc_editor_get_template":  _npc.HandleDevNpcEditorGetTemplate(peerId, root); break;
+				case "dev_npc_editor_save_template": _npc.HandleDevNpcEditorSaveTemplate(peerId, root); break;
 				case "dev_auto_login": await _auth.HandleDevAutoLoginAsync(peerId); break;
 				case "player_walk": _walk.HandlePlayerWalk(peerId, root); break;
 				case "inventory_swap": _inv.HandleInventorySwap(peerId, root); break;
