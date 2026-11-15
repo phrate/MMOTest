@@ -1,0 +1,16 @@
+{
+  "button": "Development Menu",
+  "title": "Development Hub",
+  "close": "Close",
+  "tab": {
+	"world_editor": "World Editor",
+	"npc_editor": "NPC Editor",
+	"item_editor": "Item Editor",
+	"player_editor": "Player Editor",
+	"gfs_hub": "GFS Hub"
+  },
+  "placeholder": {
+	"heading": "Under Construction",
+	"body": "The {panel} panel is not yet implemented."
+  }
+}

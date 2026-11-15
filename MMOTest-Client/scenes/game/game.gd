@@ -16,7 +16,8 @@ var _remote_players: Dictionary = {}
 var _remote_by_username: Dictionary = {}
 var _npcs: Dictionary = {}   # npc_id -> Node3D
 var _ground_items: Dictionary = {}   # ground_id -> Node3D
-var _editor_overlay: Control
+var _dev_hub: CanvasLayer = null
+var _dev_hub_button: CanvasLayer = null
 # Target HP bar
 var _target_bar_panel: PanelContainer
 var _target_bar_name: Label
@@ -64,14 +65,9 @@ func _ready() -> void:
 	Players.player_hp_changed.connect(_on_player_hp_changed)
 	Players.player_combat_state_changed.connect(_on_player_combat_state_changed)
 	Network.player_combat_state.connect(_on_network_player_combat_state)
-	Network.npc_editor_open.connect(_on_npc_editor_open)
 	Network.damage_number.connect(_on_damage_number)
 	Network.ground_item_dropped.connect(_on_ground_item_dropped)
 	Network.ground_item_removed.connect(_on_ground_item_removed)
-
-	_editor_overlay = preload("res://scenes/game/npc/npc_editor_overlay.gd").new()
-	_editor_overlay.visible = false
-	add_child(_editor_overlay)
 
 	add_child(SidePanel.new())
 	add_child(preload("res://scenes/game/trade/trade_panel.gd").new())
@@ -79,6 +75,16 @@ func _ready() -> void:
 	add_child(preload("res://scenes/game/bank/bank_panel.gd").new())
 
 	_build_target_hp_bar()
+
+	if Session.is_admin:
+		_dev_hub = preload("res://scenes/dev_hub/dev_hub.tscn").instantiate()
+		add_child(_dev_hub)
+
+		_dev_hub_button = preload("res://scenes/dev_hub/dev_hub_button.tscn").instantiate()
+		add_child(_dev_hub_button)
+		_dev_hub_button.open_requested.connect(_dev_hub.open)
+
+		Network.npc_editor_open.connect(_on_npc_editor_open)
 
 
 func _process(_delta: float) -> void:
@@ -116,8 +122,6 @@ func _exit_tree() -> void:
 		Players.player_combat_state_changed.disconnect(_on_player_combat_state_changed)
 	if Network.player_combat_state.is_connected(_on_network_player_combat_state):
 		Network.player_combat_state.disconnect(_on_network_player_combat_state)
-	if Network.npc_editor_open.is_connected(_on_npc_editor_open):
-		Network.npc_editor_open.disconnect(_on_npc_editor_open)
 	if Network.damage_number.is_connected(_on_damage_number):
 		Network.damage_number.disconnect(_on_damage_number)
 	if Network.ground_item_dropped.is_connected(_on_ground_item_dropped):
@@ -330,8 +334,8 @@ func _on_network_player_combat_state(player_id: int, in_combat: bool, npc_id: in
 
 
 func _on_npc_editor_open(npc_id: int) -> void:
-	if _editor_overlay:
-		_editor_overlay.open_for(npc_id)
+	if _dev_hub:
+		_dev_hub.open_at("npc_editor", "npc", npc_id)
 
 
 # ---------- Target HP bar ----------
