@@ -198,6 +198,10 @@ func send_npc_render_save_render(slug: String, render: Dictionary) -> void:
 	send({"type": "npc_render_save_render", "slug": slug, "render": render})
 
 
+func send_npc_render_reset_config(slug: String) -> void:
+	send({"type": "npc_render_reset_config", "slug": slug})
+
+
 func send_dev_npc_editor_options_request() -> void:
 	send({"type": "dev_npc_editor_options"})
 

@@ -1,16 +1,12 @@
 extends DevPanel
 ## NPC editor — four sub-tabs: Browse, Edit, Create, Render.
 ##
-## Browse    — table of NPC types (Slug | Display | Render | Instances), single-click to open.
-## Edit      — spec-driven form for one type (fields only; hitbox/scale live in Render now).
-## Create    — same spec, defaults pre-filled, validation before submit.
-## Render    — per-render-slug hitbox + scale editor (batch of types sharing a slug
-##             all reference the same config). Includes Reset Config to delete
-##             server-side files and revert to defaults.
-##
-## Render slug list comes from dev_npc_editor_options. If the dropdowns appear
-## empty, watch for the "[NpcEditor] Options loaded" print — it reports how many
-## slugs arrived.
+## Browse — table of NPC types, single-click to open, sorted by slug.
+## Edit   — spec-driven form for one type (no hitbox/scale editing here).
+## Create — same spec, defaults, validation.
+## Render — three-column: slug tree (left) | model viewer + mode toggles (middle) | fields (right).
+##           Hitbox mode = hitbox gizmo + hitbox fields. Scale mode = scale gizmo + scale fields.
+##           Reset Config clears server-side configs for the selected slug.
 
 const TARGET_HEIGHT_BY_SLUG := {
 	"player": 1.8, "man": 1.8, "guard": 1.8,
@@ -24,7 +20,6 @@ const TAB_EDIT := 1
 const TAB_CREATE := 2
 const TAB_RENDER := 3
 
-# Grid geometry (fixed-width cells — see _add_grid_cell for rationale)
 const GRID_COLS := 4
 const GRID_CELL_WIDTH := 151
 const GRID_LABEL_WIDTH := 85
@@ -36,14 +31,14 @@ const LINE_EDIT_WIDTH := 130
 const DROPDOWN_WIDTH := 140
 const TEXTAREA_MIN_WIDTH := 200
 const TEXTAREA_MIN_HEIGHT := 100
-const RENDER_SLUG_TREE_MIN_WIDTH := 220
+const RENDER_SLUG_TREE_MIN_WIDTH := 180
+const RENDER_VIEWER_MIN_WIDTH := 280
+const RENDER_FIELDS_MIN_WIDTH := 280
 const FIELD_LABEL_WIDTH := 90
 const FIELD_ROW_SEP := 6
 const FIELD_WIDGET_MIN_HEIGHT := 60
+const MODE_BUTTON_HEIGHT := 40
 
-# Spec — identical shape for both create and edit. Edit path uses _current_data
-# as the value source; create path uses an empty dict so all fields fall back
-# to defaults.
 const NPC_TYPE_VIEW_SPEC := [
 	{"kind": "row", "fields": [
 		{"kind": "line_edit", "label": "label_slug_id", "save": "slug_id", "value_key": "slug_id"},
@@ -88,19 +83,17 @@ const NPC_TYPE_VIEW_SPEC := [
 @export var save_all_button_height: int = 32
 @export var hitbox_capsule_alpha: float = 0.375
 
-# --- Current type being edited ---
 var _current_type_id: int = 0
 var _current_data: Dictionary = {}
 
-# --- Sub-tabs ---
 var _subtab_container: TabContainer
 
-# --- Browse tab ---
+# Browse
 var _browse_tree: Tree
 var _browse_search: LineEdit
 var _browse_create_btn: Button
 
-# --- Edit tab: spec form + model viewer ---
+# Edit tab
 var _edit_fields_container: VBoxContainer
 var _edit_save_button: Button
 var _edit_delete_button: Button
@@ -119,23 +112,27 @@ var _orbit_distance: float = 4.0
 var _orbit_target: Vector3 = Vector3(0, 1, 0)
 var _orbiting: bool = false
 
-# --- Create tab ---
+# Create tab
 var _create_fields_container: VBoxContainer
 var _create_submit_button: Button
 var _create_error_label: Label
 var _create_fields: Dictionary = {}
 
-# --- Render tab ---
+# Render tab
+var _render_slug_search: LineEdit
 var _render_slug_tree: Tree
+var _render_hitbox_btn: Button
+var _render_scale_btn: Button
 var _render_sub_viewport: SubViewport
 var _render_sub_viewport_container: SubViewportContainer
 var _render_camera: Camera3D
 var _render_model_holder: Node3D
 var _render_model: Node3D = null
 var _render_selected_slug: String = ""
-var _render_show_hitbox_btn: Button
+var _render_view_mode: String = "hitbox"
 var _render_fields_container: VBoxContainer
 var _render_gizmo: HitboxGizmo = null
+var _render_scale_gizmo: ScaleGizmo = null
 
 var _render_orbit_yaw: float = 0.6
 var _render_orbit_pitch: float = 0.35
@@ -143,7 +140,11 @@ var _render_orbit_distance: float = 4.0
 var _render_orbit_target: Vector3 = Vector3(0, 1, 0)
 var _render_orbiting: bool = false
 
-# --- Hitbox/scale state (Render tab only) ---
+# Cached values used by scale gizmo — computed once at model load
+var _render_base_fit: float = 1.0
+var _render_bounds_at_scale_one: Vector3 = Vector3.ZERO
+
+# Hitbox/scale editing state
 var _hitbox: Dictionary = {}
 var _hitbox_dirty: bool = false
 var _user_scale: Vector3 = Vector3.ONE
@@ -155,20 +156,16 @@ var _hitbox_height_spin: SpinBox
 var _hitbox_offset_x_spin: SpinBox
 var _hitbox_offset_y_spin: SpinBox
 var _hitbox_offset_z_spin: SpinBox
-var _hitbox_save_button: Button
-var _hitbox_reset_button: Button
 
 var _scale_x_spin: SpinBox
 var _scale_y_spin: SpinBox
 var _scale_z_spin: SpinBox
-var _scale_save_button: Button
-var _scale_reset_button: Button
 
-# --- Options (render slugs, dialogue scripts, loot lists, credits loot lists) ---
+# Options
 var _options: Dictionary = {}
 var _options_loaded: bool = false
 
-# --- Type list ---
+# Type list
 var _type_list: Array = []
 var _types_by_id: Dictionary = {}
 var _list_loaded: bool = false
@@ -186,6 +183,8 @@ func _ready() -> void:
 	_connect_network()
 	_orbit_yaw = default_orbit_yaw
 	_orbit_pitch = default_orbit_pitch
+	_render_orbit_yaw = default_orbit_yaw
+	_render_orbit_pitch = default_orbit_pitch
 	_request_options()
 	_request_type_list()
 	_subtab_container.current_tab = TAB_BROWSE
@@ -309,24 +308,8 @@ func _on_type_deleted(ok: bool, type_id: int) -> void:
 
 func _on_npc_render_save_result(ok: bool, kind: String, slug: String) -> void:
 	if slug != _render_selected_slug: return
-	if kind == "hitbox":
-		if _hitbox_save_button: _hitbox_save_button.disabled = false
-		if ok:
-			_hitbox_dirty = false
-			if _hitbox_save_button:
-				_hitbox_save_button.text = Texts.get_text("ui.dev_hub.npc_editor.hitbox_saved")
-				await get_tree().create_timer(1.2).timeout
-				if _hitbox_save_button and _hitbox_save_button.text == Texts.get_text("ui.dev_hub.npc_editor.hitbox_saved"):
-					_hitbox_save_button.text = _hitbox_save_label()
-	elif kind == "render":
-		if _scale_save_button: _scale_save_button.disabled = false
-		if ok:
-			_scale_dirty = false
-			if _scale_save_button:
-				_scale_save_button.text = Texts.get_text("ui.dev_hub.npc_editor.scale_saved")
-				await get_tree().create_timer(1.2).timeout
-				if _scale_save_button and _scale_save_button.text == Texts.get_text("ui.dev_hub.npc_editor.scale_saved"):
-					_scale_save_button.text = _scale_save_label()
+	if not ok:
+		push_warning("[NpcEditor] Save %s failed for slug %s" % [kind, slug])
 
 func _on_render_config_reset(ok: bool, slug: String) -> void:
 	if not ok: return
@@ -485,7 +468,6 @@ func _build_edit_tab() -> void:
 	split.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	edit.add_child(split)
 
-	# Left: model viewer
 	var left := VBoxContainer.new()
 	left.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	left.size_flags_vertical = Control.SIZE_EXPAND_FILL
@@ -529,7 +511,6 @@ func _build_edit_tab() -> void:
 	_model_holder.name = "ModelHolder"
 	_sub_viewport.add_child(_model_holder)
 
-	# Right: fields + save
 	var right_margin := MarginContainer.new()
 	right_margin.add_theme_constant_override("margin_left", _style.panel_separation)
 	right_margin.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -588,15 +569,6 @@ func _build_edit_tab() -> void:
 	_edit_delete_button.add_theme_stylebox_override("pressed", _style.make_button_style(_style.button_close.darkened(0.12)))
 	_edit_delete_button.pressed.connect(_on_edit_delete_pressed)
 	buttons_row.add_child(_edit_delete_button)
-
-	split.split_offset = int(DevStyle.instance.panel_max_width * left_column_ratio) - int(DevStyle.instance.panel_max_width) / 2
-	split.resized.connect(func():
-		var w := split.size.x
-		if w > 0:
-			var target := int(w * left_column_ratio) - w / 2
-			if split.split_offset != target:
-				split.split_offset = target
-	)
 
 func _rebuild_edit_panel() -> void:
 	for c in _edit_fields_container.get_children():
@@ -761,20 +733,27 @@ func _build_render_tab() -> void:
 	render.add_theme_constant_override("separation", _style.panel_separation)
 	_subtab_container.add_child(render)
 
-	var split := HSplitContainer.new()
-	split.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	split.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	render.add_child(split)
+	var split_outer := HSplitContainer.new()
+	split_outer.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	split_outer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	render.add_child(split_outer)
 
+	# --- Left: slug search + tree ---
 	var left := VBoxContainer.new()
 	left.custom_minimum_size = Vector2(RENDER_SLUG_TREE_MIN_WIDTH, 0)
-	split.add_child(left)
+	left.add_theme_constant_override("separation", _style.panel_separation)
+	split_outer.add_child(left)
 
 	var left_header := Label.new()
 	left_header.text = "Render Slugs"
 	left_header.add_theme_font_size_override("font_size", _style.font_size_tab)
 	left_header.add_theme_color_override("font_color", _style.text_heading)
 	left.add_child(left_header)
+
+	_render_slug_search = LineEdit.new()
+	_render_slug_search.placeholder_text = Texts.get_text("ui.dev_hub.npc_editor.render_slug_search_placeholder")
+	_render_slug_search.text_changed.connect(_on_render_slug_search_changed)
+	left.add_child(_render_slug_search)
 
 	_render_slug_tree = Tree.new()
 	_render_slug_tree.columns = 2
@@ -788,39 +767,39 @@ func _build_render_tab() -> void:
 	_render_slug_tree.item_selected.connect(_on_render_slug_activated)
 	left.add_child(_render_slug_tree)
 
-	var right_margin := MarginContainer.new()
-	right_margin.add_theme_constant_override("margin_left", _style.panel_separation)
-	right_margin.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	right_margin.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	right_margin.clip_contents = true
-	split.add_child(right_margin)
+	# --- Right of outer: middle (viewer) | right (fields) ---
+	var split_inner := HSplitContainer.new()
+	split_inner.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	split_inner.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	split_outer.add_child(split_inner)
 
-	var right := VBoxContainer.new()
-	right.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	right.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	right.add_theme_constant_override("separation", _style.panel_separation)
-	right_margin.add_child(right)
+	# --- Middle: mode buttons + viewer ---
+	var middle := VBoxContainer.new()
+	middle.custom_minimum_size = Vector2(RENDER_VIEWER_MIN_WIDTH, 0)
+	middle.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	middle.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	middle.add_theme_constant_override("separation", _style.panel_separation)
+	split_inner.add_child(middle)
 
-	var toggle_row := HBoxContainer.new()
-	right.add_child(toggle_row)
+	var mode_row := HBoxContainer.new()
+	mode_row.add_theme_constant_override("separation", 4)
+	middle.add_child(mode_row)
 
-	_render_show_hitbox_btn = Button.new()
-	_render_show_hitbox_btn.toggle_mode = true
-	_render_show_hitbox_btn.focus_mode = Control.FOCUS_NONE
-	_render_show_hitbox_btn.text = "[ ] Show Hitbox"
-	_render_show_hitbox_btn.add_theme_font_size_override("font_size", _style.font_size_small)
-	_render_show_hitbox_btn.add_theme_color_override("font_color", _style.text_primary)
-	_render_show_hitbox_btn.add_theme_color_override("font_hover_color", _style.text_primary)
-	_render_show_hitbox_btn.add_theme_color_override("font_pressed_color", _style.text_heading)
-	_render_show_hitbox_btn.toggled.connect(_on_render_show_hitbox_toggled)
-	toggle_row.add_child(_render_show_hitbox_btn)
+	_render_hitbox_btn = _make_view_toggle(Texts.get_text("ui.dev_hub.npc_editor.view_hitbox"), "hitbox")
+	mode_row.add_child(_render_hitbox_btn)
+
+	_render_scale_btn = _make_view_toggle(Texts.get_text("ui.dev_hub.npc_editor.view_scale"), "scale")
+	mode_row.add_child(_render_scale_btn)
+
+	_sync_render_view_toggles()
 
 	_render_sub_viewport_container = SubViewportContainer.new()
-	_render_sub_viewport_container.custom_minimum_size = Vector2(280, 280)
+	_render_sub_viewport_container.custom_minimum_size = Vector2(RENDER_VIEWER_MIN_WIDTH, 280)
 	_render_sub_viewport_container.stretch = true
+	_render_sub_viewport_container.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_render_sub_viewport_container.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	_render_sub_viewport_container.gui_input.connect(_on_render_viewport_input)
-	right.add_child(_render_sub_viewport_container)
+	middle.add_child(_render_sub_viewport_container)
 
 	_render_sub_viewport = SubViewport.new()
 	_render_sub_viewport.own_world_3d = true
@@ -859,6 +838,28 @@ func _build_render_tab() -> void:
 	_render_gizmo.hitbox_changed.connect(_on_gizmo_hitbox_changed)
 	_render_gizmo.set_gizmo_visible(false)
 
+	_render_scale_gizmo = ScaleGizmo.new()
+	_render_scale_gizmo.camera = _render_camera
+	_render_sub_viewport.add_child(_render_scale_gizmo)
+	_render_scale_gizmo.scale_changed.connect(_on_scale_gizmo_changed)
+	_render_scale_gizmo.set_gizmo_visible(false)
+
+	# --- Right: fields + reset ---
+	var right_margin := MarginContainer.new()
+	right_margin.add_theme_constant_override("margin_left", _style.panel_separation)
+	right_margin.custom_minimum_size = Vector2(RENDER_FIELDS_MIN_WIDTH, 0)
+	right_margin.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	right_margin.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	right_margin.clip_contents = true
+	split_inner.add_child(right_margin)
+
+	var right := VBoxContainer.new()
+	right.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	right.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	right.add_theme_constant_override("separation", _style.panel_separation)
+	right.clip_contents = true
+	right_margin.add_child(right)
+
 	var scroll := ScrollContainer.new()
 	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -875,13 +876,32 @@ func _build_render_tab() -> void:
 	bottom_row.add_theme_constant_override("separation", _style.panel_separation)
 	right.add_child(bottom_row)
 
+	var green := Color(0.28, 0.62, 0.28)
+
+	var save_config_btn := Button.new()
+	save_config_btn.text = "Save Config"
+	save_config_btn.focus_mode = Control.FOCUS_NONE
+	save_config_btn.custom_minimum_size = Vector2(0, 48)
+	save_config_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	save_config_btn.add_theme_font_size_override("font_size", 18)
+	save_config_btn.add_theme_color_override("font_color", Color.WHITE)
+	save_config_btn.add_theme_color_override("font_hover_color", Color.WHITE)
+	save_config_btn.add_theme_color_override("font_pressed_color", Color.WHITE)
+	save_config_btn.add_theme_stylebox_override("normal", _style.make_button_style(green))
+	save_config_btn.add_theme_stylebox_override("hover", _style.make_button_style(green.lightened(0.12)))
+	save_config_btn.add_theme_stylebox_override("pressed", _style.make_button_style(green.darkened(0.12)))
+	save_config_btn.pressed.connect(_on_save_config_pressed)
+	bottom_row.add_child(save_config_btn)
+
 	var reset_config_btn := Button.new()
 	reset_config_btn.text = "Reset Config"
 	reset_config_btn.focus_mode = Control.FOCUS_NONE
-	reset_config_btn.add_theme_font_size_override("font_size", _style.font_size_small)
-	reset_config_btn.add_theme_color_override("font_color", _style.text_primary)
-	reset_config_btn.add_theme_color_override("font_hover_color", _style.text_primary)
-	reset_config_btn.add_theme_color_override("font_pressed_color", _style.text_primary)
+	reset_config_btn.custom_minimum_size = Vector2(0, 48)
+	reset_config_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	reset_config_btn.add_theme_font_size_override("font_size", 18)
+	reset_config_btn.add_theme_color_override("font_color", Color.WHITE)
+	reset_config_btn.add_theme_color_override("font_hover_color", Color.WHITE)
+	reset_config_btn.add_theme_color_override("font_pressed_color", Color.WHITE)
 	reset_config_btn.add_theme_stylebox_override("normal", _style.make_button_style(_style.button_close))
 	reset_config_btn.add_theme_stylebox_override("hover", _style.make_button_style(_style.button_close.lightened(0.12)))
 	reset_config_btn.add_theme_stylebox_override("pressed", _style.make_button_style(_style.button_close.darkened(0.12)))
@@ -889,6 +909,46 @@ func _build_render_tab() -> void:
 	bottom_row.add_child(reset_config_btn)
 
 	_rebuild_render_slug_tree()
+
+func _make_view_toggle(text: String, view_id: String) -> Button:
+	var b := Button.new()
+	b.text = text
+	b.toggle_mode = true
+	b.focus_mode = Control.FOCUS_NONE
+	b.custom_minimum_size = Vector2(0, MODE_BUTTON_HEIGHT)
+	b.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	b.alignment = HORIZONTAL_ALIGNMENT_CENTER
+	b.add_theme_font_size_override("font_size", _style.font_size_body)
+	b.add_theme_color_override("font_color", _style.text_primary)
+	b.add_theme_color_override("font_hover_color", _style.text_primary)
+	b.add_theme_color_override("font_pressed_color", _style.text_heading)
+	b.add_theme_color_override("font_hover_pressed_color", _style.text_heading)
+	b.pressed.connect(_on_render_view_toggle.bind(view_id))
+	return b
+
+func _on_render_view_toggle(view_id: String) -> void:
+	_render_view_mode = view_id
+	_sync_render_view_toggles()
+	_rebuild_render_fields()
+	_update_render_gizmo_visibility()
+
+func _sync_render_view_toggles() -> void:
+	if _render_hitbox_btn: _render_hitbox_btn.set_pressed_no_signal(_render_view_mode == "hitbox")
+	if _render_scale_btn: _render_scale_btn.set_pressed_no_signal(_render_view_mode == "scale")
+
+func _on_render_slug_search_changed(_t: String) -> void:
+	_apply_render_slug_filter()
+
+func _apply_render_slug_filter() -> void:
+	if _render_slug_tree == null or _render_slug_search == null: return
+	var filter := _render_slug_search.text.strip_edges().to_lower()
+	var root := _render_slug_tree.get_root()
+	if root == null: return
+	var child := root.get_first_child()
+	while child != null:
+		var slug := str(child.get_metadata(0))
+		child.visible = filter.is_empty() or slug.to_lower().contains(filter)
+		child = child.get_next()
 
 func _rebuild_render_slug_tree() -> void:
 	if _render_slug_tree == null: return
@@ -908,6 +968,7 @@ func _rebuild_render_slug_tree() -> void:
 		row.set_metadata(0, slug)
 		if slug == _render_selected_slug:
 			row.select(0)
+	_apply_render_slug_filter()
 
 func _on_render_slug_activated() -> void:
 	var sel := _render_slug_tree.get_selected()
@@ -924,6 +985,8 @@ func _load_render_model(slug: String) -> void:
 	if _render_model != null and is_instance_valid(_render_model):
 		_render_model.queue_free()
 	_render_model = null
+	_render_bounds_at_scale_one = Vector3.ZERO
+	_render_base_fit = 1.0
 	if slug.is_empty(): return
 	var scene := NpcRender.get_scene(slug)
 	if scene == null: return
@@ -931,11 +994,26 @@ func _load_render_model(slug: String) -> void:
 	if inst == null: return
 	_render_model_holder.add_child(inst)
 	_render_model = inst
-	var base_fit := _compute_base_fit(inst, slug)
-	var user_scale := _load_scale_for_slug(slug)
-	_apply_model_scale(inst, base_fit, user_scale)
+
+	# base_fit computed on fresh model (before any scale applied)
+	_render_base_fit = _compute_base_fit(inst, slug)
+
+	# Load user scale from cache and apply
+	_user_scale = _load_scale_for_slug(slug)
+	_apply_model_scale(inst, _render_base_fit, _user_scale)
+
+	# Compute bounds at scale=1 (base AABB * base_fit), constant across scale changes
+	var aabb := _measure_world_aabb(inst)
+	if _user_scale.x > 0.001 and _user_scale.y > 0.001 and _user_scale.z > 0.001:
+		_render_bounds_at_scale_one = Vector3(
+			aabb.size.x / _user_scale.x,
+			aabb.size.y / _user_scale.y,
+			aabb.size.z / _user_scale.z
+		)
+
 	_frame_viewer_camera(inst, _render_camera, _render_orbit_yaw, _render_orbit_pitch, 1.0)
 	_render_orbit_target = _measure_world_aabb(inst).get_center()
+	_render_orbit_distance = (_render_camera.global_position - _render_orbit_target).length()
 
 func _rebuild_render_fields() -> void:
 	for c in _render_fields_container.get_children():
@@ -943,48 +1021,41 @@ func _rebuild_render_fields() -> void:
 		c.queue_free()
 	if _render_selected_slug.is_empty(): return
 
-	_hitbox = _load_hitbox_for_slug(_render_selected_slug)
-	_user_scale = _load_scale_for_slug(_render_selected_slug)
-	_hitbox_dirty = false
-	_scale_dirty = false
+	if _render_view_mode == "hitbox":
+		_hitbox = _load_hitbox_for_slug(_render_selected_slug)
+		_hitbox_dirty = false
+		_build_hitbox_view(_render_fields_container)
+		if _render_gizmo != null:
+			_render_gizmo.set_hitbox(_hitbox)
+	else:
+		_user_scale = _load_scale_for_slug(_render_selected_slug)
+		_scale_dirty = false
+		_build_scale_view(_render_fields_container)
+		if _render_scale_gizmo != null and _render_model != null:
+			var aabb := _measure_world_aabb(_render_model)
+			_render_scale_gizmo.set_scale_and_bounds(_user_scale, _render_bounds_at_scale_one)
+			_render_scale_gizmo.position = aabb.get_center()
 
-	var hb_header := Label.new()
-	hb_header.text = "HITBOX"
-	hb_header.add_theme_font_size_override("font_size", _style.font_size_tab)
-	hb_header.add_theme_color_override("font_color", _style.text_heading)
-	hb_header.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	_render_fields_container.add_child(hb_header)
-	_build_hitbox_view(_render_fields_container)
-
-	_render_fields_container.add_child(HSeparator.new())
-
-	var sc_header := Label.new()
-	sc_header.text = "SCALE"
-	sc_header.add_theme_font_size_override("font_size", _style.font_size_tab)
-	sc_header.add_theme_color_override("font_color", _style.text_heading)
-	sc_header.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	_render_fields_container.add_child(sc_header)
-	_build_scale_view(_render_fields_container)
-
-	if _render_gizmo != null:
-		_render_gizmo.set_hitbox(_hitbox)
-	_update_render_gizmo_visibility()
-
-func _on_render_show_hitbox_toggled(pressed: bool) -> void:
-	_render_show_hitbox_btn.text = ("[x] " if pressed else "[ ] ") + "Show Hitbox"
 	_update_render_gizmo_visibility()
 
 func _update_render_gizmo_visibility() -> void:
-	if _render_gizmo == null: return
-	var show := _render_show_hitbox_btn != null and _render_show_hitbox_btn.button_pressed and not _render_selected_slug.is_empty()
-	_render_gizmo.set_gizmo_visible(show)
+	if _render_gizmo == null or _render_scale_gizmo == null: return
+	var has_slug := not _render_selected_slug.is_empty()
+	_render_gizmo.set_gizmo_visible(has_slug and _render_view_mode == "hitbox")
+	_render_scale_gizmo.set_gizmo_visible(has_slug and _render_view_mode == "scale")
 
 func _on_render_viewport_input(event: InputEvent) -> void:
-	if _render_gizmo != null and _render_show_hitbox_btn != null and _render_show_hitbox_btn.button_pressed:
+	if _render_view_mode == "hitbox" and _render_gizmo != null:
 		if event is InputEventMouseButton or event is InputEventMouseMotion:
 			if _render_gizmo.handle_input(event, event.position):
 				get_viewport().set_input_as_handled()
 				return
+	elif _render_view_mode == "scale" and _render_scale_gizmo != null:
+		if event is InputEventMouseButton or event is InputEventMouseMotion:
+			if _render_scale_gizmo.handle_input(event, event.position):
+				get_viewport().set_input_as_handled()
+				return
+
 	if event is InputEventMouseButton:
 		var mb := event as InputEventMouseButton
 		if mb.button_index == MOUSE_BUTTON_MIDDLE:
@@ -992,11 +1063,11 @@ func _on_render_viewport_input(event: InputEvent) -> void:
 			get_viewport().set_input_as_handled()
 			return
 		if mb.button_index == MOUSE_BUTTON_WHEEL_UP and mb.pressed:
-			_zoom_render_camera(event as InputEventMouseButton, orbit_zoom_step)
+			_zoom_render_camera(orbit_zoom_step)
 			get_viewport().set_input_as_handled()
 			return
 		if mb.button_index == MOUSE_BUTTON_WHEEL_DOWN and mb.pressed:
-			_zoom_render_camera(event as InputEventMouseButton, 1.0 / orbit_zoom_step)
+			_zoom_render_camera(1.0 / orbit_zoom_step)
 			get_viewport().set_input_as_handled()
 			return
 	elif event is InputEventMouseMotion and _render_orbiting:
@@ -1005,9 +1076,10 @@ func _on_render_viewport_input(event: InputEvent) -> void:
 		_render_orbit_pitch = clampf(_render_orbit_pitch + mm.relative.y * orbit_mouse_sensitivity, -orbit_pitch_clamp, orbit_pitch_clamp)
 		_update_render_camera_orbit()
 
-func _zoom_render_camera(mb: InputEventMouseButton, factor: float) -> void:
+func _zoom_render_camera(factor: float) -> void:
+	# factor > 1 = zoom out (distance grows), factor < 1 = zoom in (distance shrinks)
 	var offset := _render_camera.global_position - _render_orbit_target
-	var new_dist := clampf(offset.length() * (1.0 / factor), orbit_min_distance, orbit_max_distance)
+	var new_dist := clampf(offset.length() * factor, orbit_min_distance, orbit_max_distance)
 	_render_orbit_distance = new_dist
 	_update_render_camera_orbit()
 
@@ -1025,8 +1097,30 @@ func _on_render_reset_config_pressed() -> void:
 	if _render_selected_slug.is_empty(): return
 	Network.send_npc_render_reset_config(_render_selected_slug)
 
+func _on_save_config_pressed() -> void:
+	if _render_selected_slug.is_empty(): return
+
+	# Save whichever config was just edited from memory; pull the other from
+	# cache so we don't overwrite it with stale in-memory state from a
+	# previous slug or previous mode.
+	var hitbox_to_save := _hitbox
+	var scale_to_save := _user_scale
+	if _render_view_mode != "hitbox":
+		hitbox_to_save = _load_hitbox_for_slug(_render_selected_slug)
+	if _render_view_mode != "scale":
+		scale_to_save = _load_scale_for_slug(_render_selected_slug)
+
+	_write_hitbox_to_cache(_render_selected_slug, hitbox_to_save)
+	Network.send_npc_render_save_hitbox(_render_selected_slug, hitbox_to_save.duplicate())
+
+	var render := {"scale_x": scale_to_save.x, "scale_y": scale_to_save.y, "scale_z": scale_to_save.z}
+	_write_render_to_cache(_render_selected_slug, render)
+	Network.send_npc_render_save_render(_render_selected_slug, render)
+
+	_hitbox_dirty = false
+	_scale_dirty = false
 # ============================================================
-# Hitbox editor (Render tab)
+# Hitbox editor (Render tab, hitbox mode)
 # ============================================================
 
 func _build_hitbox_view(container: VBoxContainer) -> void:
@@ -1070,16 +1164,6 @@ func _build_hitbox_view(container: VBoxContainer) -> void:
 	_hitbox_offset_z_spin.value_changed.connect(_on_hitbox_offset_changed)
 	_add_widget_with_label(r_off, Texts.get_text("ui.dev_hub.npc_editor.hitbox_offset_z"), _hitbox_offset_z_spin)
 	container.add_child(r_off)
-
-	var r_btns := _field_row()
-	_hitbox_save_button = _small_button(_hitbox_save_label())
-	_hitbox_save_button.pressed.connect(_on_hitbox_save_pressed)
-	r_btns.add_child(_hitbox_save_button)
-
-	_hitbox_reset_button = _small_button(Texts.get_text("ui.dev_hub.npc_editor.hitbox_reset"))
-	_hitbox_reset_button.pressed.connect(_on_hitbox_reset_pressed)
-	r_btns.add_child(_hitbox_reset_button)
-	container.add_child(r_btns)
 
 	if _render_gizmo != null:
 		_render_gizmo.set_hitbox(_hitbox)
@@ -1148,29 +1232,10 @@ func _on_hitbox_offset_changed(_v: float) -> void:
 
 func _mark_hitbox_dirty() -> void:
 	_hitbox_dirty = true
-	if _hitbox_save_button: _hitbox_save_button.text = _hitbox_save_label()
 
-func _hitbox_save_label() -> String:
-	var base := Texts.get_text("ui.dev_hub.npc_editor.hitbox_save")
-	return (base + " *") if _hitbox_dirty else base
-
-func _on_hitbox_save_pressed() -> void:
-	if _render_selected_slug == "": return
-	if _hitbox_save_button: _hitbox_save_button.disabled = true
-	_write_hitbox_to_cache(_render_selected_slug, _hitbox)
-	Network.send_npc_render_save_hitbox(_render_selected_slug, _hitbox.duplicate())
-
-func _on_hitbox_reset_pressed() -> void:
-	_hitbox = _default_hitbox_for_model()
-	_hitbox_dirty = true
-	if _render_gizmo != null: _render_gizmo.set_hitbox(_hitbox)
-	_rebuild_render_fields()
-	if _render_selected_slug == "": return
-	_write_hitbox_to_cache(_render_selected_slug, _hitbox)
-	Network.send_npc_render_save_hitbox(_render_selected_slug, _hitbox.duplicate())
 
 # ============================================================
-# Scale editor (Render tab)
+# Scale editor (Render tab, scale mode)
 # ============================================================
 
 func _build_scale_view(container: VBoxContainer) -> void:
@@ -1188,16 +1253,6 @@ func _build_scale_view(container: VBoxContainer) -> void:
 	_add_widget_with_label(r1, Texts.get_text("ui.dev_hub.npc_editor.scale_z"), _scale_z_spin)
 	container.add_child(r1)
 
-	var r2 := _field_row()
-	_scale_save_button = _small_button(_scale_save_label())
-	_scale_save_button.pressed.connect(_on_scale_save_pressed)
-	r2.add_child(_scale_save_button)
-
-	_scale_reset_button = _small_button(Texts.get_text("ui.dev_hub.npc_editor.scale_reset"))
-	_scale_reset_button.pressed.connect(_on_scale_reset_pressed)
-	r2.add_child(_scale_reset_button)
-	container.add_child(r2)
-
 func _load_scale_for_slug(slug: String) -> Vector3:
 	var rc := NpcRender.get_render_config(slug)
 	if rc.is_empty(): return Vector3.ONE
@@ -1208,37 +1263,33 @@ func _load_scale_for_slug(slug: String) -> Vector3:
 
 func _mark_scale_dirty() -> void:
 	_scale_dirty = true
-	if _scale_save_button: _scale_save_button.text = _scale_save_label()
 
-func _scale_save_label() -> String:
-	var base := Texts.get_text("ui.dev_hub.npc_editor.scale_save")
-	return (base + " *") if _scale_dirty else base
+
+func _apply_current_scale_and_sync_gizmo() -> void:
+	if _render_model == null or not is_instance_valid(_render_model): return
+	_apply_model_scale(_render_model, _render_base_fit, _user_scale)
+	if _render_scale_gizmo != null:
+		var aabb := _measure_world_aabb(_render_model)
+		_render_scale_gizmo.set_scale_and_bounds(_user_scale, _render_bounds_at_scale_one)
+		_render_scale_gizmo.position = aabb.get_center()
+		# Don't move the camera during a gizmo drag — the drag plane is
+		# anchored in world space and moving the camera corrupts the delta.
+		if not _render_scale_gizmo.is_dragging():
+			_render_orbit_target = aabb.get_center()
+			_update_render_camera_orbit()
+
+func _on_scale_gizmo_changed(new_scale: Vector3) -> void:
+	_user_scale = new_scale
+	if _scale_x_spin: _scale_x_spin.set_value_no_signal(_user_scale.x)
+	if _scale_y_spin: _scale_y_spin.set_value_no_signal(_user_scale.y)
+	if _scale_z_spin: _scale_z_spin.set_value_no_signal(_user_scale.z)
+	_apply_current_scale_and_sync_gizmo()
+	_mark_scale_dirty()
 
 func _on_scale_changed(_v: float) -> void:
 	_user_scale = Vector3(_scale_x_spin.value, _scale_y_spin.value, _scale_z_spin.value)
-	if _render_model != null and is_instance_valid(_render_model):
-		var base_fit := _compute_base_fit(_render_model, _render_selected_slug)
-		_apply_model_scale(_render_model, base_fit, _user_scale)
+	_apply_current_scale_and_sync_gizmo()
 	_mark_scale_dirty()
-
-func _on_scale_save_pressed() -> void:
-	if _render_selected_slug == "": return
-	if _scale_save_button: _scale_save_button.disabled = true
-	var render := {"scale_x": _user_scale.x, "scale_y": _user_scale.y, "scale_z": _user_scale.z}
-	_write_render_to_cache(_render_selected_slug, render)
-	Network.send_npc_render_save_render(_render_selected_slug, render)
-
-func _on_scale_reset_pressed() -> void:
-	_user_scale = Vector3.ONE
-	_scale_dirty = true
-	if _render_model != null and is_instance_valid(_render_model):
-		var base_fit := _compute_base_fit(_render_model, _render_selected_slug)
-		_apply_model_scale(_render_model, base_fit, _user_scale)
-	_rebuild_render_fields()
-	if _render_selected_slug == "": return
-	var render := {"scale_x": 1.0, "scale_y": 1.0, "scale_z": 1.0}
-	_write_render_to_cache(_render_selected_slug, render)
-	Network.send_npc_render_save_render(_render_selected_slug, render)
 
 # ============================================================
 # Spec renderer
@@ -1585,10 +1636,6 @@ func _frame_viewer_camera(root: Node3D, viewer_camera: Camera3D, yaw: float, pit
 	var sy := sin(yaw)
 	viewer_camera.global_position = center + Vector3(dist * cp * sy, dist * sp, dist * cp * cy)
 	viewer_camera.look_at(center, Vector3.UP)
-	_orbit_target = center
-	_orbit_distance = dist
-	_render_orbit_target = center
-	_render_orbit_distance = dist
 
 # ============================================================
 # Edit tab: model + camera
@@ -1613,6 +1660,8 @@ func _load_edit_model(slug: String) -> void:
 	_apply_model_scale(inst, base_fit, user_scale)
 	if not is_same:
 		_frame_viewer_camera(inst, _camera, _orbit_yaw, _orbit_pitch, 1.0)
+		_orbit_target = _measure_world_aabb(inst).get_center()
+		_orbit_distance = (_camera.global_position - _orbit_target).length()
 	_update_edit_camera_orbit()
 
 func _clear_edit_model() -> void:

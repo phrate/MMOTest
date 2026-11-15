@@ -22,3 +22,4 @@ res://autoload/Npc_Render.gd
 res://npc_render/man/man.tscn
 res://scenes/game/player/player.gd
 res://scenes/game/remote_player/remote_player.gd
+res://scenes/dev_hub/scale_gizmo.gd
