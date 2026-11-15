@@ -7,11 +7,14 @@ using Godot;
 namespace MMOTest.Server;
 
 /// <summary>
-/// Owns NPC lifecycle, visibility, movement, render bundles, look-at queue,
-/// and admin editor. Does NOT own combat or loot drops — combat lives in
-/// CombatSystem, loot drops in ItemSystem (Phase 3b-D). The one remaining
-/// Main-side method that touches NPCs, KillNpc, stays on Main until loot
-/// extraction lands.
+/// Owns NPC lifecycle: loading types + instances, per-tick movement, visibility,
+/// respawn, look-at queue, render bundles. Kill/death/loot lives in CombatSystem.
+///
+/// Phase A state: the NPC editor backend is stubbed. Every editor packet
+/// handler returns a "not available" reply. The editor UI is broken until
+/// Phase B rebuilds it against the type/instance schema. Runtime systems
+/// (movement, visibility, combat-facing queries, render bundle fetch) are
+/// fully operational against the seeded Citizen instance.
 /// </summary>
 internal sealed class NpcSystem
 {
@@ -31,17 +34,13 @@ internal sealed class NpcSystem
     private readonly Dictionary<long, (long PlayerId, long Sid)> _npcLookAt = new();
     private double _wanderAccumulator;
     private readonly Random _wanderRng = new();
-    private readonly Dictionary<string, Dictionary<string, (int Min, int Max)>> _lootTables;
-	private readonly Dictionary<string, (int Min, int Max)> _creditsLoot;
 
     public int NpcViewChunkRadius { get; }
 
     public NpcSystem(ServerState state, WorldService world, OutboundChannel outbound,
-                    NpcRepository npcRepo, Gfs.GfsManager gfs, NpcRenderManager npcRender,
-                    Pathfinder pathfinder, int npcViewChunkRadius, bool diagNpcWander,
-                    Dictionary<string, Dictionary<string, (int Min, int Max)>> lootTables,
-                    Dictionary<string, (int Min, int Max)> creditsLoot)
-	{
+                     NpcRepository npcRepo, Gfs.GfsManager gfs, NpcRenderManager npcRender,
+                     Pathfinder pathfinder, int npcViewChunkRadius, bool diagNpcWander)
+    {
         _state = state;
         _world = world;
         _outbound = outbound;
@@ -51,8 +50,6 @@ internal sealed class NpcSystem
         _pathfinder = pathfinder;
         NpcViewChunkRadius = npcViewChunkRadius;
         _diagNpcWander = diagNpcWander;
-        _lootTables = lootTables;
-		_creditsLoot = creditsLoot;
     }
 
     // ============================================================
@@ -61,9 +58,36 @@ internal sealed class NpcSystem
 
     internal void LoadAll()
     {
-        var npcList = _npcRepo.GetAllSync();
-        foreach (var npc in npcList) _npcs[npc.Id] = npc;
-        GD.Print($"[Server] Loaded {_npcs.Count} NPC(s) from DB");
+        var types = _npcRepo.GetAllTypesSync();
+        var typesById = new Dictionary<long, NpcTypeRecord>();
+        foreach (var t in types) typesById[t.Id] = t;
+
+        var instances = _npcRepo.GetAllInstancesSync();
+        foreach (var inst in instances)
+        {
+            if (!typesById.TryGetValue(inst.TypeId, out var type))
+            {
+                GD.PrintErr($"[Server] NPC instance {inst.Id} references missing type {inst.TypeId}; skipping");
+                continue;
+            }
+            var npc = new ActiveNpc
+            {
+                Id = inst.Id,
+                Type = type,
+                NameOverride = inst.NameOverride ?? "",
+                TileX = inst.X,
+                TileY = inst.Y,
+                TileZ = inst.Z,
+                PlayingAnimation = inst.Anim,
+                IsDead = inst.IsDead,
+                IsDying = inst.IsDying,
+                DiedAtMs = inst.DiedAtMs,
+            };
+            npc.ResetToTypeDefaults();
+            npc.ResetPositionToHome();
+            _npcs[npc.Id] = npc;
+        }
+        GD.Print($"[Server] Loaded {types.Count} NPC type(s), {_npcs.Count} instance(s)");
     }
 
     internal IEnumerable<ActiveNpc> All() => _npcs.Values;
@@ -127,7 +151,7 @@ internal sealed class NpcSystem
         {
             if (npc.IsDead) continue;
             if (npc.Path.Count > 0) continue;
-            if (npc.AiPackageState != "wander") continue;
+            if (npc.Type.AiPackageState != "wander") continue;
             if (_state.CombatByNpc.ContainsKey(npc.Id)) continue;
             for (int attempt = 0; attempt < 8; attempt++)
             {
@@ -217,7 +241,7 @@ internal sealed class NpcSystem
         {
             if (!npc.IsDead) continue;
             if (npc.DiedAtMs <= 0) continue;
-            if (now - npc.DiedAtMs >= npc.SpawnTimerSeconds * 1000L)
+            if (now - npc.DiedAtMs >= npc.Type.SpawnTimerSeconds * 1000L)
             {
                 Revive(npc);
                 changed = true;
@@ -226,50 +250,19 @@ internal sealed class NpcSystem
         if (changed) NotifyNpcVisibilityChanged();
     }
 
+    internal Task MarkDeadAsync(long instanceId) => _npcRepo.MarkDeadAsync(instanceId);
+
     private void Revive(ActiveNpc npc)
     {
-        // Refresh combat stats from DB first so any template/unique edits made
-        // via the editor land on respawn. Respawn is the "reload from DB" moment.
-        var snapshot = _npcRepo.GetCombatSnapshotSync(npc.Id);
-        if (snapshot != null)
-        {
-            npc.FinalLevel    = GetSnapInt(snapshot, "final_level",   npc.FinalLevel);
-            npc.MaxHitpoints  = GetSnapInt(snapshot, "max_hitpoints", npc.MaxHitpoints);
-            npc.Accuracy      = GetSnapInt(snapshot, "accuracy",      npc.Accuracy);
-            npc.MaxAccuracy   = GetSnapInt(snapshot, "max_accuracy",  npc.MaxAccuracy);
-            npc.Strength      = GetSnapInt(snapshot, "strength",      npc.Strength);
-            npc.MaxStrength   = GetSnapInt(snapshot, "max_strength",  npc.MaxStrength);
-            npc.Defence       = GetSnapInt(snapshot, "defence",       npc.Defence);
-            npc.MaxDefence    = GetSnapInt(snapshot, "max_defence",   npc.MaxDefence);
-            npc.Ether         = GetSnapInt(snapshot, "ether",         npc.Ether);
-            npc.MaxEther      = GetSnapInt(snapshot, "max_ether",     npc.MaxEther);
-            npc.MeleeBonus    = GetSnapInt(snapshot, "melee_bonus",   npc.MeleeBonus);
-            npc.RangedBonus   = GetSnapInt(snapshot, "ranged_bonus",  npc.RangedBonus);
-            npc.EtherBonus    = GetSnapInt(snapshot, "ether_bonus",   npc.EtherBonus);
-            npc.MeleeDefense  = GetSnapInt(snapshot, "melee_defense", npc.MeleeDefense);
-            npc.RangedDefense = GetSnapInt(snapshot, "ranged_defense",npc.RangedDefense);
-            npc.EtherDefense  = GetSnapInt(snapshot, "ether_defense", npc.EtherDefense);
-            npc.AttackSpeedTicks = GetSnapInt(snapshot, "attack_speed", npc.AttackSpeedTicks);
-        }
-
         npc.IsDead = false;
+        npc.IsDying = false;
         npc.DiedAtMs = 0;
-        npc.Hitpoints = npc.MaxHitpoints;
-        npc.HealAccumulatorTicks = 0;
+        npc.ResetToTypeDefaults();
         npc.ResetPositionToHome();
         npc.Path.Clear();
         _ = _npcRepo.ReviveAsync(npc.Id);
-        Diag.Log("diag_npc", $"NPC {npc.Name} (id {npc.Id}) respawned with {npc.Hitpoints} HP");
+        Diag.Log("diag_npc", $"NPC {npc.Display} (id {npc.Id}) respawned with {npc.Hitpoints} HP");
     }
-
-    private static int GetSnapInt(Dictionary<string, object> snap, string key, int fallback)
-    {
-        if (!snap.TryGetValue(key, out var v) || v == null) return fallback;
-        try { return Convert.ToInt32(v); } catch { return fallback; }
-    }
-
-    internal Task MarkDeadAsync(long npcId) => _npcRepo.MarkDeadAsync(npcId);
-
 
     // ============================================================
     // Visibility
@@ -342,25 +335,27 @@ internal sealed class NpcSystem
         id = npc.Id,
         name = npc.Name,
         display = npc.Display,
+        slug_id = npc.SlugId,
+        render_slug = npc.RenderSlug,
         x = npc.PosX,
         y = npc.PosY,
         z = npc.PosZ,
         yaw = npc.Yaw,
         anim = npc.PlayingAnimation,
-        attackable = npc.Attackable,
-        final_level = npc.FinalLevel,
-        render_slug = npc.RenderSlug,
+        attackable = npc.Type.Attackable,
+        final_level = npc.Type.FinalLevel,
         hitpoints = npc.Hitpoints,
         max_hitpoints = npc.MaxHitpoints,
         has_dialogue = HasDialogueScript(npc),
-        dialogue_script = npc.DialogueScript,
-        is_banker = npc.IsBanker,
+        dialogue_script = npc.Type.DialogueScript,
+        is_banker = npc.Type.IsBanker,
     };
 
     private bool HasDialogueScript(ActiveNpc npc)
     {
-        if (string.IsNullOrEmpty(npc.DialogueScript)) return false;
-        string path = npc.DialogueScript;
+        string ds = npc.Type.DialogueScript;
+        if (string.IsNullOrEmpty(ds)) return false;
+        string path = ds;
         if (!path.StartsWith("dialogue/")) path = "dialogue/" + path;
         if (!path.EndsWith(".gfs")) path += ".gfs";
         return _gfs.GetAst(path) != null;
@@ -443,10 +438,8 @@ internal sealed class NpcSystem
         _npcLookAt.Clear();
     }
 
-
-
     // ============================================================
-    // Render bundles
+    // Render bundles (served to clients; not an editor endpoint)
     // ============================================================
 
     internal void PollRenderBundles()
@@ -496,87 +489,7 @@ internal sealed class NpcSystem
     }
 
     // ============================================================
-    // DevHub client editor — hitbox and render (scale) save
-    // ============================================================
-
-    internal void HandleNpcRenderSaveHitbox(long peerId, System.Text.Json.JsonElement root)
-    {
-        if (!_state.Sessions.TryGetValue(peerId, out var session)) return;
-        if (!session.IsAdmin) return;
-
-        string slug = GetStringProp(root, "slug");
-        if (!IsSafeSlug(slug)) return;
-        if (!root.TryGetProperty("hitbox", out var hbEl)) return;
-        if (hbEl.ValueKind != System.Text.Json.JsonValueKind.Object) return;
-
-        string json = hbEl.GetRawText();
-        bool ok = WriteUserNpcRenderFile(slug, "hitbox.json", json);
-        _outbound.Send(peerId, new
-        {
-            type = "npc_render_save_result",
-            ok,
-            kind = "hitbox",
-            slug,
-        });
-    }
-
-    internal void HandleNpcRenderSaveRender(long peerId, System.Text.Json.JsonElement root)
-    {
-        if (!_state.Sessions.TryGetValue(peerId, out var session)) return;
-        if (!session.IsAdmin) return;
-
-        string slug = GetStringProp(root, "slug");
-        if (!IsSafeSlug(slug)) return;
-        if (!root.TryGetProperty("render", out var rEl)) return;
-        if (rEl.ValueKind != System.Text.Json.JsonValueKind.Object) return;
-
-        string json = rEl.GetRawText();
-        bool ok = WriteUserNpcRenderFile(slug, "render.json", json);
-        _outbound.Send(peerId, new
-        {
-            type = "npc_render_save_result",
-            ok,
-            kind = "render",
-            slug,
-        });
-    }
-
-    private static string GetStringProp(System.Text.Json.JsonElement root, string name)
-    {
-        if (!root.TryGetProperty(name, out var el)) return "";
-        if (el.ValueKind != System.Text.Json.JsonValueKind.String) return "";
-        return el.GetString() ?? "";
-    }
-
-    private static bool IsSafeSlug(string slug)
-    {
-        if (string.IsNullOrEmpty(slug)) return false;
-        foreach (char c in slug)
-        {
-            if (!char.IsLetterOrDigit(c) && c != '_' && c != '-') return false;
-        }
-        return true;
-    }
-
-    private static bool WriteUserNpcRenderFile(string slug, string fileName, string contents)
-    {
-        try
-        {
-            string baseDir = ProjectSettings.GlobalizePath("user://npc_render");
-            string target = System.IO.Path.Combine(baseDir, slug);
-            System.IO.Directory.CreateDirectory(target);
-            System.IO.File.WriteAllText(System.IO.Path.Combine(target, fileName), contents);
-            return true;
-        }
-        catch (System.Exception e)
-        {
-            GD.PrintErr($"[NpcSystem] WriteUserNpcRenderFile({slug}, {fileName}): {e.Message}");
-            return false;
-        }
-    }
-
-    // ============================================================
-    // Admin NPC editor
+    // Admin open (still works; opens the panel which is UI-stubbed)
     // ============================================================
 
     internal void OpenNpcEditorForPlayer(long playerId, long npcId)
@@ -593,253 +506,48 @@ internal sealed class NpcSystem
         _outbound.Send(peerId, new { type = "npc_editor_open", npc_id = npcId });
     }
 
+    // ============================================================
+    // NPC editor — Phase A stubs
+    // ============================================================
+    //
+    // The editor backend is fully stubbed pending Phase B. Every handler
+    // returns a "not available" reply so the client's UI degrades gracefully
+    // (empty lists, save-failed indicators). The runtime path — loading,
+    // movement, visibility, combat, respawn — is unaffected.
+    //
+    // Phase B will replace these with type CRUD (list, get, create, update,
+    // delete) plus hitbox/scale saves routed through the type's render_slug.
+
     internal void HandleNpcEditorGet(long peerId, System.Text.Json.JsonElement root)
     {
         if (!_state.Sessions.TryGetValue(peerId, out var session)) return;
         if (!session.IsAdmin) return;
-        if (!root.TryGetProperty("npc_id", out var idEl) || !idEl.TryGetInt64(out long npcId)) return;
-        if (!_npcs.TryGetValue(npcId, out var npc)) return;
+        // Phase A: no response. Client shows empty NPC data.
+    }
 
-        // Normalize dialogue_script to short form ("npc_thomas") so the client
-        // dropdown can match it against its option list.
-        string shortDialogue = "";
-        if (!string.IsNullOrEmpty(npc.DialogueScript))
-        {
-            string p = npc.DialogueScript;
-            if (p.StartsWith("dialogue/")) p = p.Substring("dialogue/".Length);
-            if (p.EndsWith(".gfs")) p = p.Substring(0, p.Length - 4);
-            shortDialogue = p;
-        }
-
+    internal Task HandleNpcEditorSaveAsync(long peerId, System.Text.Json.JsonElement root)
+    {
+        if (!_state.Sessions.TryGetValue(peerId, out var session)) return Task.CompletedTask;
+        if (!session.IsAdmin) return Task.CompletedTask;
         _outbound.Send(peerId, new
         {
-            type = "npc_editor_data",
-            npc = new
-            {
-                id = npc.Id,
-                name = npc.Name,
-                display = npc.Display,
-                render_slug = npc.RenderSlug,
-                attackable = npc.Attackable,
-                aggressive = npc.Aggressive,
-                aggro_range = npc.AggroRangeTiles,
-                ai_package_state = npc.AiPackageState,
-                ai_action_state = npc.AiActionState,
-                loot_table_name = npc.LootTableName,
-                credits_table_name = npc.CreditsTableName,
-                spawn_timer = npc.SpawnTimerSeconds,
-                is_dead = npc.IsDead,
-                is_banker = npc.IsBanker,
-                dialogue_script = shortDialogue,
-                tile_x = npc.TileX,
-                tile_y = npc.TileY,
-                tile_z = npc.TileZ,
-                spawn_flags = npc.SpawnFlags,
-                hitpoints = npc.Hitpoints,
-                max_hitpoints = npc.MaxHitpoints,
-                accuracy = npc.Accuracy,
-                max_accuracy = npc.MaxAccuracy,
-                strength = npc.Strength,
-                max_strength = npc.MaxStrength,
-                defence = npc.Defence,
-                max_defence = npc.MaxDefence,
-                ether = npc.Ether,
-                max_ether = npc.MaxEther,
-                melee_bonus = npc.MeleeBonus,
-                ranged_bonus = npc.RangedBonus,
-                ether_bonus = npc.EtherBonus,
-                melee_defense = npc.MeleeDefense,
-                ranged_defense = npc.RangedDefense,
-                ether_defense = npc.EtherDefense,
-                attack_speed = npc.AttackSpeedTicks,
-                final_level = npc.FinalLevel,
-            }
+            type = "npc_editor_saved",
+            ok = false,
+            npc_id = 0,
         });
+        return Task.CompletedTask;
     }
-
-	internal void HandleDevNpcEditorOptions(long peerId)
-	{
-		if (!_state.Sessions.TryGetValue(peerId, out var session)) return;
-		if (!session.IsAdmin) return;
-
-		var renderSlugs = _npcRender.GetManifest().Keys.OrderBy(k => k).ToList();
-
-		var dialogueScripts = new List<string>();
-		foreach (var path in _gfs.GetAllScriptPaths())
-		{
-			if (!path.StartsWith("dialogue/npc_")) continue;
-			if (!path.EndsWith(".gfs")) continue;
-			string shortName = path.Substring("dialogue/".Length);
-			shortName = shortName.Substring(0, shortName.Length - 4);
-			dialogueScripts.Add(shortName);
-		}
-		dialogueScripts.Sort();
-
-		var lootLists = _lootTables.Keys.OrderBy(k => k).ToList();
-		var creditsLootLists = _creditsLoot.Keys.OrderBy(k => k).ToList();
-
-		_outbound.Send(peerId, new
-		{
-			type = "dev_npc_editor_options_result",
-			ok = true,
-			options = new
-			{
-				render_slugs = renderSlugs,
-				dialogue_scripts = dialogueScripts,
-				loot_lists = lootLists,
-				credits_loot_lists = creditsLootLists,
-			}
-		});
-	}
-
-    internal async Task HandleNpcEditorSaveAsync(long peerId, System.Text.Json.JsonElement root)
-    {
-        if (!_state.Sessions.TryGetValue(peerId, out var session)) return;
-        if (!session.IsAdmin) return;
-        if (!root.TryGetProperty("npc_id", out var idEl) || !idEl.TryGetInt64(out long npcId)) return;
-        if (!_npcs.TryGetValue(npcId, out var npc)) return;
-        if (!root.TryGetProperty("updates", out var upEl)
-            || upEl.ValueKind != System.Text.Json.JsonValueKind.Object) return;
-
-        var u = new Dictionary<string, object>();
-        foreach (var prop in upEl.EnumerateObject())
-        {
-            u[prop.Name] = prop.Value.ValueKind switch
-            {
-                System.Text.Json.JsonValueKind.True => true,
-                System.Text.Json.JsonValueKind.False => false,
-                System.Text.Json.JsonValueKind.String => prop.Value.GetString() ?? "",
-                System.Text.Json.JsonValueKind.Number => prop.Value.TryGetInt64(out long l) ? l : 0L,
-                _ => (object)0L,
-            };
-        }
-
-        // Fields that are init-only on ActiveNpc — pass through untouched to DB.
-        long tileX = u.TryGetValue("tile_x", out var txv) ? Convert.ToInt64(txv) : npc.TileX;
-        long tileY = u.TryGetValue("tile_y", out var tyv) ? Convert.ToInt64(tyv) : npc.TileY;
-        long tileZ = u.TryGetValue("tile_z", out var tzv) ? Convert.ToInt64(tzv) : npc.TileZ;
-        string renderSlug = u.TryGetValue("render_slug", out var rsv) && rsv != null
-            ? rsv.ToString() ?? npc.RenderSlug
-            : npc.RenderSlug;
-
-        // Apply settable fields (clamped) to the in-memory ActiveNpc.
-        if (u.ContainsKey("display"))          npc.Display = u["display"].ToString() ?? npc.Display;
-        if (u.ContainsKey("attackable"))       npc.Attackable = (bool)u["attackable"];
-        if (u.ContainsKey("aggressive"))       npc.Aggressive = (bool)u["aggressive"];
-        if (u.ContainsKey("aggro_range"))      npc.AggroRangeTiles = Math.Max(1, Convert.ToInt32(u["aggro_range"]));
-        if (u.ContainsKey("ai_package_state")) npc.AiPackageState = u["ai_package_state"].ToString() ?? "idle";
-        if (u.ContainsKey("ai_action_state"))  npc.AiActionState = u["ai_action_state"].ToString() ?? "none";
-        if (u.ContainsKey("loot_table_name"))  npc.LootTableName = u["loot_table_name"].ToString() ?? "common_loot_1";
-        if (u.ContainsKey("spawn_timer"))      npc.SpawnTimerSeconds = Math.Max(0, Convert.ToInt32(u["spawn_timer"]));
-        if (u.ContainsKey("hitpoints"))        npc.Hitpoints = Math.Max(0, Convert.ToInt32(u["hitpoints"]));
-        if (u.ContainsKey("max_hitpoints"))    npc.MaxHitpoints = Math.Max(1, Convert.ToInt32(u["max_hitpoints"]));
-        if (npc.Hitpoints > npc.MaxHitpoints)  npc.Hitpoints = npc.MaxHitpoints;
-        if (u.ContainsKey("accuracy"))         npc.Accuracy = Math.Max(1, Convert.ToInt32(u["accuracy"]));
-        if (u.ContainsKey("max_accuracy"))     npc.MaxAccuracy = Math.Max(1, Convert.ToInt32(u["max_accuracy"]));
-        if (npc.Accuracy > npc.MaxAccuracy)    npc.Accuracy = npc.MaxAccuracy;
-        if (u.ContainsKey("strength"))         npc.Strength = Math.Max(1, Convert.ToInt32(u["strength"]));
-        if (u.ContainsKey("max_strength"))     npc.MaxStrength = Math.Max(1, Convert.ToInt32(u["max_strength"]));
-        if (npc.Strength > npc.MaxStrength)    npc.Strength = npc.MaxStrength;
-        if (u.ContainsKey("defence"))          npc.Defence = Math.Max(1, Convert.ToInt32(u["defence"]));
-        if (u.ContainsKey("max_defence"))      npc.MaxDefence = Math.Max(1, Convert.ToInt32(u["max_defence"]));
-        if (npc.Defence > npc.MaxDefence)      npc.Defence = npc.MaxDefence;
-        if (u.ContainsKey("ether"))            npc.Ether = Math.Max(1, Convert.ToInt32(u["ether"]));
-        if (u.ContainsKey("max_ether"))        npc.MaxEther = Math.Max(1, Convert.ToInt32(u["max_ether"]));
-        if (npc.Ether > npc.MaxEther)          npc.Ether = npc.MaxEther;
-        if (u.ContainsKey("melee_bonus"))      npc.MeleeBonus = Math.Max(0, Convert.ToInt32(u["melee_bonus"]));
-        if (u.ContainsKey("ranged_bonus"))     npc.RangedBonus = Math.Max(0, Convert.ToInt32(u["ranged_bonus"]));
-        if (u.ContainsKey("ether_bonus"))      npc.EtherBonus = Math.Max(0, Convert.ToInt32(u["ether_bonus"]));
-        if (u.ContainsKey("melee_defense"))    npc.MeleeDefense = Math.Max(0, Convert.ToInt32(u["melee_defense"]));
-        if (u.ContainsKey("ranged_defense"))   npc.RangedDefense = Math.Max(0, Convert.ToInt32(u["ranged_defense"]));
-        if (u.ContainsKey("ether_defense"))    npc.EtherDefense = Math.Max(0, Convert.ToInt32(u["ether_defense"]));
-        if (u.ContainsKey("attack_speed"))     npc.AttackSpeedTicks = Math.Max(1, Convert.ToInt32(u["attack_speed"]));
-        if (u.ContainsKey("dialogue_script"))  npc.DialogueScript = u["dialogue_script"].ToString() ?? "";
-        if (u.ContainsKey("is_banker"))        npc.IsBanker = (bool)u["is_banker"];
-        if (u.ContainsKey("spawn_flags"))      npc.SpawnFlags = u["spawn_flags"].ToString() ?? "{}";
-        if (u.ContainsKey("credits_table_name")) npc.CreditsTableName = u["credits_table_name"].ToString() ?? "";
-
-        // Apply DB-only fields to in-memory so reload (which reads memory) and
-        // respawn (which reads memory via ResetPositionToHome) both reflect the new value.
-        npc.TileX      = (int)tileX;
-        npc.TileY      = (int)tileY;
-        npc.TileZ      = (int)tileZ;
-        npc.RenderSlug = renderSlug;
-
-        // Rebuild u from in-memory state (clamped) + DB-only fields.
-        u["display"]          = npc.Display;
-        u["attackable"]       = npc.Attackable;
-        u["aggressive"]       = npc.Aggressive;
-        u["aggro_range"]      = npc.AggroRangeTiles;
-        u["ai_package_state"] = npc.AiPackageState;
-        u["ai_action_state"]  = npc.AiActionState;
-        u["loot_table_name"]  = npc.LootTableName;
-        u["spawn_timer"]      = npc.SpawnTimerSeconds;
-        u["hitpoints"]        = npc.Hitpoints;
-        u["max_hitpoints"]    = npc.MaxHitpoints;
-        u["accuracy"]         = npc.Accuracy;
-        u["max_accuracy"]     = npc.MaxAccuracy;
-        u["strength"]         = npc.Strength;
-        u["max_strength"]     = npc.MaxStrength;
-        u["defence"]          = npc.Defence;
-        u["max_defence"]      = npc.MaxDefence;
-        u["ether"]            = npc.Ether;
-        u["max_ether"]        = npc.MaxEther;
-        u["melee_bonus"]      = npc.MeleeBonus;
-        u["ranged_bonus"]     = npc.RangedBonus;
-        u["ether_bonus"]      = npc.EtherBonus;
-        u["melee_defense"]    = npc.MeleeDefense;
-        u["ranged_defense"]   = npc.RangedDefense;
-        u["ether_defense"]    = npc.EtherDefense;
-        u["attack_speed"]     = npc.AttackSpeedTicks;
-        u["dialogue_script"]  = npc.DialogueScript;
-        u["is_banker"]        = npc.IsBanker;
-        u["credits_table_name"] = npc.CreditsTableName;
-        u["spawn_flags"]      = npc.SpawnFlags;
-        u["tile_x"]           = tileX;
-        u["tile_y"]           = tileY;
-        u["tile_z"]           = tileZ;
-        u["render_slug"]      = renderSlug;
-
-        bool ok = await _npcRepo.SaveAdminEditAsync(npcId, u);
-
-        _outbound.BroadcastNpcHp(npc.Id, npc.Hitpoints, npc.MaxHitpoints);
-        _outbound.Broadcast(new { type = "npc_updated", npc = NpcToPacket(npc) });
-        NotifyNpcVisibilityChanged();
-        _outbound.Send(peerId, new { type = "npc_editor_saved", ok, npc_id = npcId });
-    }
-
-    // ============================================================
-    // DevHub client editor — list, template get/save
-    // ============================================================
 
     internal void HandleDevNpcEditorList(long peerId, System.Text.Json.JsonElement root)
     {
         if (!_state.Sessions.TryGetValue(peerId, out var session)) return;
         if (!session.IsAdmin) return;
-
-        string mode = "unique";
-        if (root.TryGetProperty("mode", out var modeEl)
-            && modeEl.ValueKind == System.Text.Json.JsonValueKind.String)
-            mode = modeEl.GetString() ?? "unique";
-
-        var items = new List<object>();
-        if (mode == "template")
-        {
-            foreach (var t in _npcRepo.GetAllTemplatesSync())
-                items.Add(new { id = t.Id, slug_id = t.SlugId });
-        }
-        else
-        {
-            foreach (var npc in _npcs.Values.OrderBy(n => n.Name))
-                items.Add(new { id = npc.Id, name = npc.Name });
-        }
-
         _outbound.Send(peerId, new
         {
             type = "dev_npc_editor_list_result",
             ok = true,
-            mode,
-            items,
+            mode = "unique",
+            items = new List<object>(),
         });
     }
 
@@ -847,21 +555,11 @@ internal sealed class NpcSystem
     {
         if (!_state.Sessions.TryGetValue(peerId, out var session)) return;
         if (!session.IsAdmin) return;
-        if (!root.TryGetProperty("template_id", out var idEl)
-            || !idEl.TryGetInt64(out long templateId)) return;
-
-        var data = _npcRepo.GetTemplateSync(templateId);
-        if (data == null)
-        {
-            _outbound.SendError(peerId, "dev_npc_editor_template_data", ErrorKeys.WorldUnavailable);
-            return;
-        }
-
         _outbound.Send(peerId, new
         {
             type = "dev_npc_editor_template_data",
-            ok = true,
-            template = data,
+            ok = false,
+            template = new Dictionary<string, object>(),
         });
     }
 
@@ -869,35 +567,55 @@ internal sealed class NpcSystem
     {
         if (!_state.Sessions.TryGetValue(peerId, out var session)) return;
         if (!session.IsAdmin) return;
-        if (!root.TryGetProperty("template_id", out var idEl)
-            || !idEl.TryGetInt64(out long templateId)) return;
-        if (!root.TryGetProperty("updates", out var upEl)
-            || upEl.ValueKind != System.Text.Json.JsonValueKind.Object) return;
-
-        var updates = new Dictionary<string, object>();
-        foreach (var prop in upEl.EnumerateObject())
-        {
-            updates[prop.Name] = prop.Value.ValueKind switch
-            {
-                System.Text.Json.JsonValueKind.True => true,
-                System.Text.Json.JsonValueKind.False => false,
-                System.Text.Json.JsonValueKind.String => prop.Value.GetString() ?? "",
-                System.Text.Json.JsonValueKind.Number => prop.Value.TryGetInt64(out long l) ? l : 0L,
-                _ => (object)0L,
-            };
-        }
-
-        _ = SaveTemplateAndReply(peerId, templateId, updates);
-    }
-
-    private async Task SaveTemplateAndReply(long peerId, long templateId, Dictionary<string, object> updates)
-    {
-        bool ok = await _npcRepo.SaveTemplateAsync(templateId, updates);
         _outbound.Send(peerId, new
         {
             type = "dev_npc_editor_template_saved",
-            ok,
-            template_id = templateId,
+            ok = false,
+            template_id = 0,
+        });
+    }
+
+    internal void HandleDevNpcEditorOptions(long peerId)
+    {
+        if (!_state.Sessions.TryGetValue(peerId, out var session)) return;
+        if (!session.IsAdmin) return;
+        _outbound.Send(peerId, new
+        {
+            type = "dev_npc_editor_options_result",
+            ok = false,
+            options = new
+            {
+                render_slugs = new List<string>(),
+                dialogue_scripts = new List<string>(),
+                loot_lists = new List<string>(),
+                credits_loot_lists = new List<string>(),
+            }
+        });
+    }
+
+    internal void HandleNpcRenderSaveHitbox(long peerId, System.Text.Json.JsonElement root)
+    {
+        if (!_state.Sessions.TryGetValue(peerId, out var session)) return;
+        if (!session.IsAdmin) return;
+        _outbound.Send(peerId, new
+        {
+            type = "npc_render_save_result",
+            ok = false,
+            kind = "hitbox",
+            slug = "",
+        });
+    }
+
+    internal void HandleNpcRenderSaveRender(long peerId, System.Text.Json.JsonElement root)
+    {
+        if (!_state.Sessions.TryGetValue(peerId, out var session)) return;
+        if (!session.IsAdmin) return;
+        _outbound.Send(peerId, new
+        {
+            type = "npc_render_save_result",
+            ok = false,
+            kind = "render",
+            slug = "",
         });
     }
 }

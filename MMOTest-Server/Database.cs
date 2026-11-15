@@ -60,6 +60,7 @@ public class Database
         SchemaCreator.CreateAll(conn);
         CertGenerator.Ensure(conn);
         MigratePlayerXpToTenths.Apply(conn);
+        NpcTypeInstanceSplitV1.Apply(conn);
 
         Exec(conn, "DROP TABLE IF EXISTS player_bank;");
         Exec(conn, "PRAGMA foreign_keys = ON;");
