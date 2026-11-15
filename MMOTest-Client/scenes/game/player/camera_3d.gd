@@ -98,6 +98,9 @@ func _try_resolve_focus() -> void:
 
 
 func _unhandled_input(event: InputEvent) -> void:
+	if _is_modal_open():
+		return
+
 	if event is InputEventMouseButton:
 		if event.button_index == MOUSE_BUTTON_MIDDLE:
 			_dragging = event.pressed
@@ -117,6 +120,13 @@ func _unhandled_input(event: InputEvent) -> void:
 		if invert_vertical_drag: pitch_delta = -pitch_delta
 		_pitch = clampf(_pitch - pitch_delta, _min_pitch, _max_pitch)
 		get_viewport().set_input_as_handled()
+
+
+func _is_modal_open() -> bool:
+	for m in get_tree().get_nodes_in_group("modal_blockers"):
+		if m is CanvasItem and (m as CanvasItem).visible:
+			return true
+	return false
 
 
 func _process(delta: float) -> void:

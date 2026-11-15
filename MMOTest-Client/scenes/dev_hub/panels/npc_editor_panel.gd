@@ -27,7 +27,7 @@ const TARGET_HEIGHT_BY_SLUG := {
 @export var orbit_min_distance: float = 0.5
 @export var orbit_max_distance: float = 50.0
 @export var orbit_pitch_clamp: float = 1.4
-@export var left_column_ratio: float = 0.30
+@export var left_column_ratio: float = 0.25
 @export var field_label_width: int = 160
 @export var field_row_separation: int = 8
 @export var field_widget_min_height: int = 60
@@ -41,6 +41,7 @@ var _npc_selector: OptionButton
 var _preview_placeholder: Label
 var _fields_container: VBoxContainer
 var _save_button: Button
+var _split: HSplitContainer
 
 # SubViewport 3D
 var _sub_viewport: SubViewport
@@ -216,7 +217,9 @@ func _build_ui() -> void:
 	_save_button.pressed.connect(_on_save_pressed)
 	save_row.add_child(_save_button)
 
-	split.split_offset = int(DevStyle.instance.panel_max_width * left_column_ratio)
+	_split = split
+	split.resized.connect(_recompute_split)
+	call_deferred("_recompute_split")
 	_update_camera_orbit()
 
 # ---------- Network ----------
@@ -566,14 +569,17 @@ func _on_viewport_input(event: InputEvent) -> void:
 		var mb := event as InputEventMouseButton
 		if mb.button_index == MOUSE_BUTTON_MIDDLE:
 			_orbiting = mb.pressed
+			get_viewport().set_input_as_handled()
 			return
 		if mb.button_index == MOUSE_BUTTON_WHEEL_UP and mb.pressed:
 			_orbit_distance = maxf(orbit_min_distance, _orbit_distance * orbit_zoom_step)
 			_update_camera_orbit()
+			get_viewport().set_input_as_handled()
 			return
 		if mb.button_index == MOUSE_BUTTON_WHEEL_DOWN and mb.pressed:
 			_orbit_distance = minf(orbit_max_distance, _orbit_distance / orbit_zoom_step)
 			_update_camera_orbit()
+			get_viewport().set_input_as_handled()
 			return
 	elif event is InputEventMouseMotion and _orbiting:
 		var mm := event as InputEventMouseMotion
@@ -583,7 +589,21 @@ func _on_viewport_input(event: InputEvent) -> void:
 			-orbit_pitch_clamp, orbit_pitch_clamp)
 		_update_camera_orbit()
 
+
 # ---------- Field specs ----------
+func _recompute_split() -> void:
+	if _split == null: return
+	var w := _split.size.x
+	if w <= 0: return
+	# split_offset is measured from the midpoint of the split area in Godot 4.
+	# To make the left column occupy left_column_ratio of the width:
+	#   desired_left = w * ratio
+	#   midpoint     = w / 2
+	#   split_offset = desired_left - midpoint
+	var target := int(w * left_column_ratio) - w / 2
+	if _split.split_offset != target:
+		_split.split_offset = target
+
 
 func _template_fields() -> Array:
 	return [

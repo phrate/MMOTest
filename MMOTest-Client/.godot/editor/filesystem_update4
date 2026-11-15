@@ -14,3 +14,4 @@ res://scenes/game/game.gd
 res://scenes/game/game.tscn
 res://data/texts/ui/dev_hub_npc_editor_texts.json
 res://autoload/Network.gd
+res://scenes/game/player/camera_3d.gd
