@@ -160,6 +160,7 @@ func _build_ui() -> void:
 	_content_holder = Control.new()
 	_content_holder.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_content_holder.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	_content_holder.clip_contents = true
 	content_margin.add_child(_content_holder)
 
 # ---------- Panels ----------

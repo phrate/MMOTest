@@ -31,13 +31,17 @@ internal sealed class NpcSystem
     private readonly Dictionary<long, (long PlayerId, long Sid)> _npcLookAt = new();
     private double _wanderAccumulator;
     private readonly Random _wanderRng = new();
+    private readonly Dictionary<string, Dictionary<string, (int Min, int Max)>> _lootTables;
+	private readonly Dictionary<string, (int Min, int Max)> _creditsLoot;
 
     public int NpcViewChunkRadius { get; }
 
     public NpcSystem(ServerState state, WorldService world, OutboundChannel outbound,
-                     NpcRepository npcRepo, Gfs.GfsManager gfs, NpcRenderManager npcRender,
-                     Pathfinder pathfinder, int npcViewChunkRadius, bool diagNpcWander)
-    {
+                    NpcRepository npcRepo, Gfs.GfsManager gfs, NpcRenderManager npcRender,
+                    Pathfinder pathfinder, int npcViewChunkRadius, bool diagNpcWander,
+                    Dictionary<string, Dictionary<string, (int Min, int Max)>> lootTables,
+                    Dictionary<string, (int Min, int Max)> creditsLoot)
+	{
         _state = state;
         _world = world;
         _outbound = outbound;
@@ -47,6 +51,8 @@ internal sealed class NpcSystem
         _pathfinder = pathfinder;
         NpcViewChunkRadius = npcViewChunkRadius;
         _diagNpcWander = diagNpcWander;
+        _lootTables = lootTables;
+		_creditsLoot = creditsLoot;
     }
 
     // ============================================================
@@ -490,6 +496,86 @@ internal sealed class NpcSystem
     }
 
     // ============================================================
+    // DevHub client editor — hitbox and render (scale) save
+    // ============================================================
+
+    internal void HandleNpcRenderSaveHitbox(long peerId, System.Text.Json.JsonElement root)
+    {
+        if (!_state.Sessions.TryGetValue(peerId, out var session)) return;
+        if (!session.IsAdmin) return;
+
+        string slug = GetStringProp(root, "slug");
+        if (!IsSafeSlug(slug)) return;
+        if (!root.TryGetProperty("hitbox", out var hbEl)) return;
+        if (hbEl.ValueKind != System.Text.Json.JsonValueKind.Object) return;
+
+        string json = hbEl.GetRawText();
+        bool ok = WriteUserNpcRenderFile(slug, "hitbox.json", json);
+        _outbound.Send(peerId, new
+        {
+            type = "npc_render_save_result",
+            ok,
+            kind = "hitbox",
+            slug,
+        });
+    }
+
+    internal void HandleNpcRenderSaveRender(long peerId, System.Text.Json.JsonElement root)
+    {
+        if (!_state.Sessions.TryGetValue(peerId, out var session)) return;
+        if (!session.IsAdmin) return;
+
+        string slug = GetStringProp(root, "slug");
+        if (!IsSafeSlug(slug)) return;
+        if (!root.TryGetProperty("render", out var rEl)) return;
+        if (rEl.ValueKind != System.Text.Json.JsonValueKind.Object) return;
+
+        string json = rEl.GetRawText();
+        bool ok = WriteUserNpcRenderFile(slug, "render.json", json);
+        _outbound.Send(peerId, new
+        {
+            type = "npc_render_save_result",
+            ok,
+            kind = "render",
+            slug,
+        });
+    }
+
+    private static string GetStringProp(System.Text.Json.JsonElement root, string name)
+    {
+        if (!root.TryGetProperty(name, out var el)) return "";
+        if (el.ValueKind != System.Text.Json.JsonValueKind.String) return "";
+        return el.GetString() ?? "";
+    }
+
+    private static bool IsSafeSlug(string slug)
+    {
+        if (string.IsNullOrEmpty(slug)) return false;
+        foreach (char c in slug)
+        {
+            if (!char.IsLetterOrDigit(c) && c != '_' && c != '-') return false;
+        }
+        return true;
+    }
+
+    private static bool WriteUserNpcRenderFile(string slug, string fileName, string contents)
+    {
+        try
+        {
+            string baseDir = ProjectSettings.GlobalizePath("user://npc_render");
+            string target = System.IO.Path.Combine(baseDir, slug);
+            System.IO.Directory.CreateDirectory(target);
+            System.IO.File.WriteAllText(System.IO.Path.Combine(target, fileName), contents);
+            return true;
+        }
+        catch (System.Exception e)
+        {
+            GD.PrintErr($"[NpcSystem] WriteUserNpcRenderFile({slug}, {fileName}): {e.Message}");
+            return false;
+        }
+    }
+
+    // ============================================================
     // Admin NPC editor
     // ============================================================
 
@@ -514,6 +600,17 @@ internal sealed class NpcSystem
         if (!root.TryGetProperty("npc_id", out var idEl) || !idEl.TryGetInt64(out long npcId)) return;
         if (!_npcs.TryGetValue(npcId, out var npc)) return;
 
+        // Normalize dialogue_script to short form ("npc_thomas") so the client
+        // dropdown can match it against its option list.
+        string shortDialogue = "";
+        if (!string.IsNullOrEmpty(npc.DialogueScript))
+        {
+            string p = npc.DialogueScript;
+            if (p.StartsWith("dialogue/")) p = p.Substring("dialogue/".Length);
+            if (p.EndsWith(".gfs")) p = p.Substring(0, p.Length - 4);
+            shortDialogue = p;
+        }
+
         _outbound.Send(peerId, new
         {
             type = "npc_editor_data",
@@ -529,10 +626,11 @@ internal sealed class NpcSystem
                 ai_package_state = npc.AiPackageState,
                 ai_action_state = npc.AiActionState,
                 loot_table_name = npc.LootTableName,
+                credits_table_name = npc.CreditsTableName,
                 spawn_timer = npc.SpawnTimerSeconds,
                 is_dead = npc.IsDead,
                 is_banker = npc.IsBanker,
-                dialogue_script = npc.DialogueScript,
+                dialogue_script = shortDialogue,
                 tile_x = npc.TileX,
                 tile_y = npc.TileY,
                 tile_z = npc.TileZ,
@@ -558,6 +656,41 @@ internal sealed class NpcSystem
             }
         });
     }
+
+	internal void HandleDevNpcEditorOptions(long peerId)
+	{
+		if (!_state.Sessions.TryGetValue(peerId, out var session)) return;
+		if (!session.IsAdmin) return;
+
+		var renderSlugs = _npcRender.GetManifest().Keys.OrderBy(k => k).ToList();
+
+		var dialogueScripts = new List<string>();
+		foreach (var path in _gfs.GetAllScriptPaths())
+		{
+			if (!path.StartsWith("dialogue/npc_")) continue;
+			if (!path.EndsWith(".gfs")) continue;
+			string shortName = path.Substring("dialogue/".Length);
+			shortName = shortName.Substring(0, shortName.Length - 4);
+			dialogueScripts.Add(shortName);
+		}
+		dialogueScripts.Sort();
+
+		var lootLists = _lootTables.Keys.OrderBy(k => k).ToList();
+		var creditsLootLists = _creditsLoot.Keys.OrderBy(k => k).ToList();
+
+		_outbound.Send(peerId, new
+		{
+			type = "dev_npc_editor_options_result",
+			ok = true,
+			options = new
+			{
+				render_slugs = renderSlugs,
+				dialogue_scripts = dialogueScripts,
+				loot_lists = lootLists,
+				credits_loot_lists = creditsLootLists,
+			}
+		});
+	}
 
     internal async Task HandleNpcEditorSaveAsync(long peerId, System.Text.Json.JsonElement root)
     {
@@ -600,19 +733,19 @@ internal sealed class NpcSystem
         if (u.ContainsKey("spawn_timer"))      npc.SpawnTimerSeconds = Math.Max(0, Convert.ToInt32(u["spawn_timer"]));
         if (u.ContainsKey("hitpoints"))        npc.Hitpoints = Math.Max(0, Convert.ToInt32(u["hitpoints"]));
         if (u.ContainsKey("max_hitpoints"))    npc.MaxHitpoints = Math.Max(1, Convert.ToInt32(u["max_hitpoints"]));
-        if (npc.Hitpoints > npc.MaxHitpoints)  npc.MaxHitpoints = npc.Hitpoints;
+        if (npc.Hitpoints > npc.MaxHitpoints)  npc.Hitpoints = npc.MaxHitpoints;
         if (u.ContainsKey("accuracy"))         npc.Accuracy = Math.Max(1, Convert.ToInt32(u["accuracy"]));
         if (u.ContainsKey("max_accuracy"))     npc.MaxAccuracy = Math.Max(1, Convert.ToInt32(u["max_accuracy"]));
-        if (npc.Accuracy > npc.MaxAccuracy)    npc.MaxAccuracy = npc.Accuracy;
+        if (npc.Accuracy > npc.MaxAccuracy)    npc.Accuracy = npc.MaxAccuracy;
         if (u.ContainsKey("strength"))         npc.Strength = Math.Max(1, Convert.ToInt32(u["strength"]));
         if (u.ContainsKey("max_strength"))     npc.MaxStrength = Math.Max(1, Convert.ToInt32(u["max_strength"]));
-        if (npc.Strength > npc.MaxStrength)    npc.MaxStrength = npc.Strength;
+        if (npc.Strength > npc.MaxStrength)    npc.Strength = npc.MaxStrength;
         if (u.ContainsKey("defence"))          npc.Defence = Math.Max(1, Convert.ToInt32(u["defence"]));
         if (u.ContainsKey("max_defence"))      npc.MaxDefence = Math.Max(1, Convert.ToInt32(u["max_defence"]));
-        if (npc.Defence > npc.MaxDefence)      npc.MaxDefence = npc.Defence;
+        if (npc.Defence > npc.MaxDefence)      npc.Defence = npc.MaxDefence;
         if (u.ContainsKey("ether"))            npc.Ether = Math.Max(1, Convert.ToInt32(u["ether"]));
         if (u.ContainsKey("max_ether"))        npc.MaxEther = Math.Max(1, Convert.ToInt32(u["max_ether"]));
-        if (npc.Ether > npc.MaxEther)          npc.MaxEther = npc.Ether;
+        if (npc.Ether > npc.MaxEther)          npc.Ether = npc.MaxEther;
         if (u.ContainsKey("melee_bonus"))      npc.MeleeBonus = Math.Max(0, Convert.ToInt32(u["melee_bonus"]));
         if (u.ContainsKey("ranged_bonus"))     npc.RangedBonus = Math.Max(0, Convert.ToInt32(u["ranged_bonus"]));
         if (u.ContainsKey("ether_bonus"))      npc.EtherBonus = Math.Max(0, Convert.ToInt32(u["ether_bonus"]));
@@ -623,6 +756,7 @@ internal sealed class NpcSystem
         if (u.ContainsKey("dialogue_script"))  npc.DialogueScript = u["dialogue_script"].ToString() ?? "";
         if (u.ContainsKey("is_banker"))        npc.IsBanker = (bool)u["is_banker"];
         if (u.ContainsKey("spawn_flags"))      npc.SpawnFlags = u["spawn_flags"].ToString() ?? "{}";
+        if (u.ContainsKey("credits_table_name")) npc.CreditsTableName = u["credits_table_name"].ToString() ?? "";
 
         // Apply DB-only fields to in-memory so reload (which reads memory) and
         // respawn (which reads memory via ResetPositionToHome) both reflect the new value.
@@ -659,6 +793,7 @@ internal sealed class NpcSystem
         u["attack_speed"]     = npc.AttackSpeedTicks;
         u["dialogue_script"]  = npc.DialogueScript;
         u["is_banker"]        = npc.IsBanker;
+        u["credits_table_name"] = npc.CreditsTableName;
         u["spawn_flags"]      = npc.SpawnFlags;
         u["tile_x"]           = tileX;
         u["tile_y"]           = tileY;

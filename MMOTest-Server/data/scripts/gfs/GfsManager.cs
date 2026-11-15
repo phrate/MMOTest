@@ -112,6 +112,8 @@ public sealed class GfsManager
 
     public SuiteNode? GetTask(string name) => _tasks.TryGetValue(name, out var ast) ? ast : null;
 
+    public IEnumerable<string> GetAllScriptPaths() => _asts.Keys;
+
     public Dictionary<string, string> GetEntries() => _entries;
 
     private void LoadAllScripts(bool log)

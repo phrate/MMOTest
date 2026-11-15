@@ -1,0 +1,97 @@
+Below is an ASCII representation of how the npc editor panel should look.
+- [......] = multiline text edit
+- [...] = line edit
+- [.] = small number edit
+- [<drop>] = dropdown selector
+- `WORD` = centered large colored bold label
+- ~~~~~~~~~~~~~~ line = horizontal separator
+- [x] = toggle
+- [hbox] = changes right-side area to "hitbox-fields" ascii template shown later in file
+- [mesh] = changes right-side area to "mesh-scale" ascii template shown later in file
+
+Notes:
+- "hbox" real label text = Hitbox
+- "scale" real label text = Scale
+- Render's [<drop>] dropdown is a list of all render slugs
+- Dialogue Script's [<drop>] dropdown is a list of all dialogue scripts in data/scripts/gfs/dialogue that starts with "npc_". Top entry is "_none" which doesn't count as an actual entry as is selected by default if the npc doesn't have a dialogue script set.
+- Loot Table's [<drop>] dropdown is a list of all possible loot lists
+- Credits Table's [<drop>] dropdown is a list of all possible credits loot lists
+- AI Package's [<drop>] dropdown is a list of all possible AI Packages. As of right now we don't have any or store them anywhere, so the only two options temporarily are "idle" and "wander"
+- Hitpoints, Accuracy, Strength, Defence, and Ether are all *actually* their max_ values. We only edit the maxes, not the "currents".
+- Name [...] is disabled for now, but in the future we will allow editing this field on the fly, which will require some deeper modifications.
+- The same type of gizmos for scaling the hitbox will be available for scaling the mesh in the mesh-scale view.
+
+ASCII VISUALS BELOW HERE:
+
+"main" view
+-------------------------------------------------------------------------
+|   [Unique/Template] [Search Bar-----------------------] [npc selector]
+|       [hbox] [scale]      | Name [...] Display [...]
+|                           | Render [<drop>] Dialogue Script [<drop>]
+|                           | ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+|                           | Loot Table [<drop>] Credits Table [<drop>]
+|          viewer           | AI Package [<drop>]
+|                           | Spawn Timer [.]
+|                           | Spawn Flags [......]
+|                           | Tile X [.] Y [.] Z [.]
+|                           | ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+|                           |               `FEATURES`                  
+|                           | Is Banker [x]
+|                           | ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+|                           |               `COMBAT`                    
+|                           | Attackable [x] Aggressive [x] Aggro Range [.]
+|                           | Final Level [.] Attack Speed [.]
+|                           | Hitpoints [.] Accuracy [.] Strength [.] Defence [.] Ether [.]
+|                           |               `EXTRA`                     
+|                           | Melee Bonus [.] Ranged Bonus [.] Ether Bonus [.]
+|                           | Melee Defense [.] Ranged Defense [.] Ether Defense [.]
+|                           | {                 Save All                    }
+--------------------------------------------------------------------------
+
+
+"hitbox-fields" view
+-------------------------------------------------------------------------
+|   [Unique/Template] [Search Bar-----------------------] [npc selector]
+|       [_hbox_] [scale]    | Type [<drop>]
+|                           | Radius [.]
+|                           | X [.] Y [.] Z [.]
+|                           | [save]
+|          viewer           | [reset]
+|                           |
+|                           |
+|                           |
+|                           |
+|                           |
+|                           |
+|                           |
+|                           |
+|                           |
+|                           |
+|                           |
+|                           |
+|                           | {                 Save All                    }
+--------------------------------------------------------------------------
+
+
+"mesh-scale" view
+-------------------------------------------------------------------------
+|   [Unique/Template] [Search Bar-----------------------] [npc selector]
+|       [hbox] [_scale_]    | X [.] Y [.] Z [.]
+|                           | [save]
+|                           | [reset]
+|                           |
+|          viewer           |
+|                           |
+|                           |
+|                           |
+|                           |
+|                           |
+|                           |
+|                           |
+|                           |
+|                           |
+|                           |
+|                           |
+|                           |
+|                           | {                 Save All                    }
+--------------------------------------------------------------------------

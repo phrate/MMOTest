@@ -56,6 +56,8 @@ signal npc_editor_saved(ok: bool, npc_id: int)
 signal dev_npc_editor_list_result(ok: bool, mode: String, items: Array)
 signal dev_npc_editor_template_data(ok: bool, template: Dictionary)
 signal dev_npc_editor_template_saved(ok: bool, template_id: int)
+signal dev_npc_editor_options_result(ok: bool, options: Dictionary)
+signal npc_render_save_result(ok: bool, kind: String, slug: String)
 
 signal ground_item_dropped(item: Dictionary)
 signal ground_item_removed(id: int)
@@ -192,8 +194,20 @@ func send_npc_editor_save(npc_id: int, updates: Dictionary) -> void:
 	send({"type": "npc_editor_save", "npc_id": npc_id, "updates": updates})
 
 
+func send_npc_render_save_hitbox(slug: String, hitbox: Dictionary) -> void:
+	send({"type": "npc_render_save_hitbox", "slug": slug, "hitbox": hitbox})
+
+
+func send_npc_render_save_render(slug: String, render: Dictionary) -> void:
+	send({"type": "npc_render_save_render", "slug": slug, "render": render})
+
+
 func send_dev_npc_editor_list(mode: String) -> void:
 	send({"type": "dev_npc_editor_list", "mode": mode})
+
+
+func send_dev_npc_editor_options_request() -> void:
+	send({"type": "dev_npc_editor_options"})
 
 
 func send_dev_npc_editor_get_template(template_id: int) -> void:
@@ -326,6 +340,11 @@ func _on_packet(_id: int, packet: PackedByteArray) -> void:
 				npc_render_updated_received.emit(upd_slugs)
 			else:
 				push_warning("npc_render_updated missing 'slugs'")
+		"npc_render_save_result":
+			npc_render_save_result.emit(
+				bool(msg.get("ok", false)),
+				String(msg.get("kind", "")),
+				String(msg.get("slug", "")))
 		"tick_positions":
 			server_tick = int(msg.get("tick", 0))
 			var updates: Variant = msg.get("updates", [])
@@ -492,6 +511,10 @@ func _on_packet(_id: int, packet: PackedByteArray) -> void:
 			var tmpl: Variant = msg.get("template", {})
 			if typeof(tmpl) == TYPE_DICTIONARY:
 				dev_npc_editor_template_data.emit(bool(msg.get("ok", false)), tmpl)
+		"dev_npc_editor_options_result":
+			var opts: Variant = msg.get("options", {})
+			if typeof(opts) == TYPE_DICTIONARY:
+				dev_npc_editor_options_result.emit(bool(msg.get("ok", false)), opts)
 		"dev_npc_editor_template_saved":
 			dev_npc_editor_template_saved.emit(
 				bool(msg.get("ok", false)),

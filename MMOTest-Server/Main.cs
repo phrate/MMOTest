@@ -176,7 +176,8 @@ public partial class Main : Node
 			});
 			_npcRender.LoadAll();
 
-			_npc = new NpcSystem(_state, _world, _outbound, _db.Npcs, _gfs, _npcRender, _pathfinder, NpcViewChunkRadius, DiagNpcWander);
+			_npc = new NpcSystem(_state, _world, _outbound, _db.Npcs, _gfs, _npcRender, _pathfinder, NpcViewChunkRadius, DiagNpcWander,
+    _lootTablesBySlug, _creditsLootBySlug);
 			_npc.LoadAll();
 			_inv = new ItemSystem(_state, _outbound, _items, _db.Inventory, _db.Stats, _trade, _combatRng, _db.Players);
 			_ground = new GroundItemSystem(_state, _world, _outbound, _items, _inv, _trade, _db.Inventory, _pathfinder, NpcViewChunkRadius);
@@ -470,6 +471,7 @@ public partial class Main : Node
 				case "dev_npc_editor_list":          _npc.HandleDevNpcEditorList(peerId, root); break;
 				case "dev_npc_editor_get_template":  _npc.HandleDevNpcEditorGetTemplate(peerId, root); break;
 				case "dev_npc_editor_save_template": _npc.HandleDevNpcEditorSaveTemplate(peerId, root); break;
+				case "dev_npc_editor_options": _npc.HandleDevNpcEditorOptions(peerId); break;
 				case "dev_auto_login": await _auth.HandleDevAutoLoginAsync(peerId); break;
 				case "player_walk": _walk.HandlePlayerWalk(peerId, root); break;
 				case "inventory_swap": _inv.HandleInventorySwap(peerId, root); break;
@@ -481,6 +483,8 @@ public partial class Main : Node
 				case "run_action":  _gfsIntegration.HandleRunAction(peerId, root); break;
 				case "npc_render_info_request": _npc.HandleNpcRenderInfo(peerId); break;
 				case "npc_render_fetch":        _npc.HandleNpcRenderFetch(peerId, root); break;
+				case "npc_render_save_hitbox": _npc.HandleNpcRenderSaveHitbox(peerId, root); break;
+				case "npc_render_save_render": _npc.HandleNpcRenderSaveRender(peerId, root); break;
 				case "pickup_ground_item": _ground.HandlePickupGroundItem(peerId, root); break;
 				case "trade_invite_accept": _trade.HandleTradeInviteResponse(peerId, root, accept: true); break;
 				case "trade_invite_decline": _trade.HandleTradeInviteResponse(peerId, root, accept: false); break;

@@ -419,6 +419,7 @@ public sealed class NpcRepository
                         display          = $display,
                         dialogue_script  = $dialogue_script,
                         is_banker        = $is_banker,
+                        credits_table_name = $credits_table,
                         render_slug      = $render_slug,
                         tile_x           = $tx,
                         tile_y           = $ty,
@@ -435,6 +436,7 @@ public sealed class NpcRepository
                 cmd.Parameters.AddWithValue("$display",         GetString(u, "display", ""));
                 cmd.Parameters.AddWithValue("$dialogue_script", GetString(u, "dialogue_script", ""));
                 cmd.Parameters.AddWithValue("$is_banker",       GetBool(u, "is_banker", false) ? 1 : 0);
+                cmd.Parameters.AddWithValue("$credits_table", GetString(u, "credits_table_name", ""));
                 cmd.Parameters.AddWithValue("$render_slug",     GetString(u, "render_slug", ""));
                 cmd.Parameters.AddWithValue("$tx",              GetLong(u, "tile_x", 0));
                 cmd.Parameters.AddWithValue("$ty",              GetLong(u, "tile_y", 0));

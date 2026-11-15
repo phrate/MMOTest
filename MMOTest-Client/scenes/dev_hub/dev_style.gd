@@ -24,9 +24,9 @@ static var instance: DevStyle:
 # -- Colors --
 @export_group("Colors")
 @export var overlay_color: Color = Color(0, 0, 0, 0.55)
-@export var panel_bg: Color = Color(0.10, 0.10, 0.12, 0.98)
+@export var panel_bg: Color = Color(0.18, 0.18, 0.22, 0.98)
 @export var panel_border: Color = Color(0.30, 0.30, 0.32, 1.0)
-@export var header_bg: Color = Color(0.15, 0.15, 0.18, 1.0)
+@export var header_bg: Color = Color(0.24, 0.24, 0.28, 1.0)
 @export var tab_bg_normal: Color = Color(0.15, 0.15, 0.18, 1.0)
 @export var tab_bg_hover: Color = Color(0.22, 0.22, 0.26, 1.0)
 @export var tab_bg_active: Color = Color(0.30, 0.28, 0.22, 1.0)
