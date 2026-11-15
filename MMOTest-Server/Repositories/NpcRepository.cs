@@ -41,7 +41,7 @@ public sealed class NpcRepository
                    COALESCE(c.attack_speed, 10)
             FROM npc_types t
             LEFT JOIN levels_combat c ON t.levels_combat_id = c.id
-            ORDER BY t.display;";
+            ORDER BY t.slug_id COLLATE NOCASE;";
         using var r = cmd.ExecuteReader();
         while (r.Read())
         {
@@ -137,6 +137,15 @@ public sealed class NpcRepository
             EtherDefense = r.GetInt32(25),
             AttackSpeedTicks = r.GetInt32(26),
         };
+    }
+
+    public bool SlugExistsSync(string slug)
+    {
+        using var conn = _open();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = "SELECT 1 FROM npc_types WHERE slug_id = $s;";
+        cmd.Parameters.AddWithValue("$s", slug);
+        return cmd.ExecuteScalar() != null;
     }
 
     public Task<long> CreateTypeAsync(Dictionary<string, object> u) => Task.Run(() =>

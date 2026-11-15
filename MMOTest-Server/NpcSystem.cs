@@ -680,6 +680,34 @@ internal sealed class NpcSystem
             || dataEl.ValueKind != System.Text.Json.JsonValueKind.Object) return;
 
         var updates = ParseJsonToDict(dataEl);
+
+        // Required-field validation. Slug uniqueness needs a DB check, so this
+        // is the authoritative gate — client also validates for faster feedback.
+        string slug = (updates.TryGetValue("slug_id", out var sv) ? sv?.ToString() ?? "" : "").Trim();
+        string display = (updates.TryGetValue("display", out var dv) ? dv?.ToString() ?? "" : "").Trim();
+        string render = (updates.TryGetValue("render_slug", out var rv) ? rv?.ToString() ?? "" : "").Trim();
+
+        string? error = null;
+        if (string.IsNullOrEmpty(slug))         error = "Slug is required.";
+        else if (string.IsNullOrEmpty(display)) error = "Display is required.";
+        else if (string.IsNullOrEmpty(render))  error = "Render is required.";
+        else if (_npcRepo.SlugExistsSync(slug)) error = "That slug is already in use.";
+
+        if (error != null)
+        {
+            _outbound.Send(peerId, new
+            {
+                type = "dev_npc_type_created",
+                ok = false,
+                type_id = 0L,
+                error,
+            });
+            return;
+        }
+
+        updates["slug_id"] = slug;
+        updates["display"] = display;
+        updates["render_slug"] = render;
         _ = CreateTypeAndReply(peerId, updates);
     }
 

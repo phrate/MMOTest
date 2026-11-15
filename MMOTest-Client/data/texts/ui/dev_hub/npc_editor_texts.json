@@ -80,5 +80,10 @@
 	"delete_button": "Delete Type",
 	"delete_confirm": "Delete this type and ALL its instances?",
 	"create_button": "Create Type",
-	"edit_empty": "Select an NPC from Browse, or create a new one."
+	"edit_empty": "Select an NPC from Browse, or create a new one.",
+	
+	"error_slug_required": "Slug is required.",
+	"error_display_required": "Display is required.",
+	"error_render_required": "Render is required.",
+	"error_create_failed": "Create failed."
 }

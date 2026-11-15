@@ -97,6 +97,7 @@ var _scale_toggle: Button
 # Create tab widgets
 var _create_fields_container: VBoxContainer
 var _create_submit_button: Button
+var _create_error_label: Label
 
 # Hitbox controls
 var _hitbox_type_selector: OptionButton
@@ -244,12 +245,16 @@ func _build_browse_tab() -> void:
 	_browse_tree = Tree.new()
 	_browse_tree.columns = 4
 	_browse_tree.column_titles_visible = true
-	_browse_tree.set_column_title(0, Texts.get_text("ui.dev_hub.npc_editor.browse_col_display"))
-	_browse_tree.set_column_title(1, Texts.get_text("ui.dev_hub.npc_editor.browse_col_slug"))
+	_browse_tree.set_column_title(0, Texts.get_text("ui.dev_hub.npc_editor.browse_col_slug"))
+	_browse_tree.set_column_title(1, Texts.get_text("ui.dev_hub.npc_editor.browse_col_display"))
 	_browse_tree.set_column_title(2, Texts.get_text("ui.dev_hub.npc_editor.browse_col_render"))
 	_browse_tree.set_column_title(3, Texts.get_text("ui.dev_hub.npc_editor.browse_col_instances"))
 	_browse_tree.hide_root = true
 	_browse_tree.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	_browse_tree.select_mode = Tree.SELECT_ROW
+	_browse_tree.mouse_filter = Control.MOUSE_FILTER_STOP
+	_browse_tree.gui_input.connect(_on_browse_tree_input)
+	_browse_tree.mouse_exited.connect(_on_browse_tree_mouse_exited)
 	_browse_tree.item_activated.connect(_on_browse_tree_activated)
 	browse.add_child(_browse_tree)
 
@@ -436,6 +441,14 @@ func _build_create_tab() -> void:
 	_create_submit_button.add_theme_color_override("font_pressed_color", _style.text_primary)
 	_create_submit_button.pressed.connect(_on_create_submit_pressed)
 	btn_row.add_child(_create_submit_button)
+	
+	_create_error_label = Label.new()
+	_create_error_label.add_theme_font_size_override("font_size", _style.font_size_small)
+	_create_error_label.add_theme_color_override("font_color", Color(1.0, 0.4, 0.4))
+	_create_error_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_create_error_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_create_error_label.visible = false
+	create.add_child(_create_error_label)
 
 func _recompute_split() -> void:
 	if _split == null: return
@@ -479,16 +492,25 @@ func _on_subtab_changed(tab: int) -> void:
 func _on_browse_filter_changed(_t: String) -> void:
 	_apply_browse_filter()
 
+
 func _on_browse_create_pressed() -> void:
 	_subtab_container.current_tab = TAB_CREATE
 
+
 func _on_browse_tree_activated() -> void:
 	var selected := _browse_tree.get_selected()
-	if selected == null: return
-	var type_id = selected.get_metadata(0)
+	if selected != null:
+		_open_type_from_tree_item(selected)
+
+
+func _open_type_from_tree_item(item: TreeItem) -> void:
+	var type_id = item.get_metadata(0)
 	if type_id == null: return
-	_pending_type_id = int(type_id)
-	Network.send_dev_npc_type_get(int(type_id))
+	var tid := int(type_id)
+	if _pending_type_id == tid: return
+	_pending_type_id = tid
+	Network.send_dev_npc_type_get(tid)
+
 
 func _on_type_list_result(ok: bool, items: Array) -> void:
 	if not ok: return
@@ -497,12 +519,34 @@ func _on_type_list_result(ok: bool, items: Array) -> void:
 	for it in items:
 		if typeof(it) != TYPE_DICTIONARY: continue
 		var row := _browse_tree.create_item(root)
-		row.set_text(0, str(it.get("display", "")))
-		row.set_text(1, str(it.get("slug_id", "")))
+		row.set_text(0, str(it.get("slug_id", "")))
+		row.set_text(1, str(it.get("display", "")))
 		row.set_text(2, str(it.get("render_slug", "")))
-		row.set_text(3, str(it.get("instance_count", 0)))
+		row.set_text(3, str(int(it.get("instance_count", 0))))
 		row.set_metadata(0, int(it.get("id", 0)))
 	_apply_browse_filter()
+
+
+func _on_browse_tree_input(event: InputEvent) -> void:
+	if event is InputEventMouseMotion:
+		var item := _browse_tree.get_item_at_position(_browse_tree.get_local_mouse_position())
+		if item != null:
+			_browse_tree.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
+			if _browse_tree.get_selected() != item:
+				_browse_tree.set_selected(item, 0)
+		else:
+			_browse_tree.mouse_default_cursor_shape = Control.CURSOR_ARROW
+	elif event is InputEventMouseButton:
+		var mb := event as InputEventMouseButton
+		if mb.button_index == MOUSE_BUTTON_LEFT and mb.pressed:
+			var item := _browse_tree.get_item_at_position(_browse_tree.get_local_mouse_position())
+			if item != null:
+				_open_type_from_tree_item(item)
+
+
+func _on_browse_tree_mouse_exited() -> void:
+	_browse_tree.mouse_default_cursor_shape = Control.CURSOR_ARROW
+
 
 func _apply_browse_filter() -> void:
 	var filter := _browse_search.text.strip_edges().to_lower()
@@ -549,24 +593,36 @@ func _rebuild_edit_panel() -> void:
 # ---------- Create ----------
 
 func _build_create_form() -> void:
+	if not _options_loaded and not _options_pending:
+		_request_options()
+
 	for c in _create_fields_container.get_children():
 		_create_fields_container.remove_child(c)
 		c.queue_free()
 	_create_fields.clear()
 	_active_field_target = _create_fields
-	# Temporarily clear _current_data so the spec falls back to defaults
-	# instead of pre-filling from the previously-edited type.
+
+	if _create_error_label:
+		_create_error_label.visible = false
+
+	# Pre-fill the loot dropdown with the "__nothing" loot list (a design
+	# sentinel meaning the NPC drops nothing on death). Other fields fall
+	# back to the spec's default values.
 	var saved_data := _current_data
-	_current_data = {}
+	_current_data = {"loot_table_name": "__nothing"}
 	_build_view_from_spec(NPC_TYPE_VIEW_SPEC, _create_fields_container)
 	_current_data = saved_data
-	# In Create mode, no field is readonly
+
 	if _create_fields.has("slug_id"):
 		var le = _create_fields["slug_id"]
 		if le is LineEdit:
 			le.editable = true
 
+
 func _on_create_submit_pressed() -> void:
+	if _create_error_label:
+		_create_error_label.visible = false
+
 	var data := {}
 	for key in _create_fields.keys():
 		var c = _create_fields[key]
@@ -582,16 +638,42 @@ func _on_create_submit_pressed() -> void:
 				data[key] = ""
 		elif c is Button:
 			data[key] = (c as Button).button_pressed
+
+	# Client-side validation for fast feedback. Slug uniqueness is checked
+	# server-side (client doesn't know all existing slugs reliably).
+	var slug := str(data.get("slug_id", "")).strip_edges()
+	var display := str(data.get("display", "")).strip_edges()
+	var render := str(data.get("render_slug", "")).strip_edges()
+	if slug.is_empty():
+		_show_create_error(Texts.get_text("ui.dev_hub.npc_editor.error_slug_required"))
+		return
+	if display.is_empty():
+		_show_create_error(Texts.get_text("ui.dev_hub.npc_editor.error_display_required"))
+		return
+	if render.is_empty():
+		_show_create_error(Texts.get_text("ui.dev_hub.npc_editor.error_render_required"))
+		return
+
 	_create_submit_button.disabled = true
 	Network.send_dev_npc_type_create(data)
+
 
 func _on_type_created(ok: bool, type_id: int, error: String) -> void:
 	_create_submit_button.disabled = false
 	if ok:
+		if _create_error_label:
+			_create_error_label.visible = false
 		_pending_type_id = type_id
 		Network.send_dev_npc_type_get(type_id)
 	else:
-		push_warning("[NpcEditor] Create failed: " + error)
+		_show_create_error(error if error != "" else Texts.get_text("ui.dev_hub.npc_editor.error_create_failed"))
+
+
+func _show_create_error(msg: String) -> void:
+	if _create_error_label == null: return
+	_create_error_label.text = msg
+	_create_error_label.visible = true
+
 
 # ---------- Save ----------
 

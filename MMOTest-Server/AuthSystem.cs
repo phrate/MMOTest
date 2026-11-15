@@ -148,7 +148,7 @@ internal sealed class AuthSystem
             {
                 await _inv.GiveLootTableAsync(playerId, "trade_testing", _lootTables, forceAll: true);
 
-                if (_creditsLoot.TryGetValue("trade_testing_credits", out var creditRange))
+                if (_creditsLoot.TryGetValue("_trade_testing_credits", out var creditRange))
                 {
                     var rng = new Random();
                     int amount = rng.Next(creditRange.Min, creditRange.Max + 1);
@@ -157,7 +157,7 @@ internal sealed class AuthSystem
                 }
                 else
                 {
-                    GD.PrintErr($"[Server] Dev trade-testing kit: credits_loot 'trade_testing_credits' missing");
+                    GD.PrintErr($"[Server] Dev trade-testing kit: credits_loot '_trade_testing_credits' missing");
                 }
 
                 GD.Print($"[Server] Dev trade-testing kit for {username}");
@@ -426,9 +426,9 @@ internal sealed class AuthSystem
 
         await _db.Stats.EnsureStatsAsync(playerId);
         await _db.Stats.EnsureInventoryAsync(playerId);
-        await _inv.GiveLootTableAsync(playerId, "trade_testing", _lootTables, forceAll: true);
+        await _inv.GiveLootTableAsync(playerId, "_trade_testing", _lootTables, forceAll: true);
 
-        if (_creditsLoot.TryGetValue("trade_testing_credits", out var range))
+        if (_creditsLoot.TryGetValue("_trade_testing_credits", out var range))
         {
             int amount = _combatRng.Next(range.Min, range.Max + 1);
             if (amount > 0) await _db.Players.SetCreditsAsync(playerId, amount);
