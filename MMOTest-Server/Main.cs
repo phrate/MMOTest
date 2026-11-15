@@ -169,12 +169,21 @@ public partial class Main : Node
 			_movement = new MovementSystem(_state, _world, _outbound, _pathfinder);
 			_trade    = new TradeSystem(_state, _items, _db.Inventory, _perTick, _outbound, _coordinator);
 
+			string serverProjectDir = ProjectSettings.GlobalizePath("res://");
+			string clientRenderDir = System.IO.Path.GetFullPath(
+				System.IO.Path.Combine(serverProjectDir, "..", "MMOTest-Client", "npc_render"));
+
 			_npcRender = new NpcRenderManager(new[]
 			{
+				clientRenderDir,
 				ProjectSettings.GlobalizePath("res://npc_render"),
 				ProjectSettings.GlobalizePath("user://npc_render"),
 			});
 			_npcRender.LoadAll();
+			if (_npcRender.GetManifest().Count == 0)
+			{
+				GD.PrintErr("[Server] WARNING: 0 NPC render bundles. NPCs will fall back to the y-bot. Check npc_render/ folder.");
+			}
 
 			_npc = new NpcSystem(_state, _world, _outbound, _db.Npcs, _gfs, _npcRender, _pathfinder, NpcViewChunkRadius, DiagNpcWander,
     _lootTablesBySlug, _creditsLootBySlug);
@@ -203,7 +212,7 @@ public partial class Main : Node
 			_recipe = new RecipeSystem(_state, _items, _db.Recipes, _db.Inventory, _db.Stats, _gfs, _gfsFns, _world, _outbound);
 			_recipe.LoadRecipes();
 
-			_worldFiles = new WorldFileSystem(_state, _world, _outbound);
+			_worldFiles = new WorldFileSystem(_state, _world, _outbound, _npc, _db.Npcs);
 			_gfsIntegration = new GfsIntegration(_state, _outbound, _world, _gfs, _gfsFns, _perTick, _coordinator);
 
 			Gfs.Utils.TilesUtils.Register(_gfsFns, _state, _world);
@@ -473,6 +482,8 @@ public partial class Main : Node
 				case "dev_npc_type_update":  _npc.HandleDevNpcTypeUpdate(peerId, root); break;
 				case "dev_npc_type_delete":  _npc.HandleDevNpcTypeDelete(peerId, root); break;
 				case "dev_auto_login": await _auth.HandleDevAutoLoginAsync(peerId); break;
+				case "dev_world_instance_list":   _npc.HandleDevWorldInstanceList(peerId, root); break;
+				case "dev_world_save":            _worldFiles.HandleDevWorldSave(peerId, root); break;
 				case "player_walk": _walk.HandlePlayerWalk(peerId, root); break;
 				case "inventory_swap": _inv.HandleInventorySwap(peerId, root); break;
 				case "ping":         HandlePing(peerId, root); break;
@@ -485,6 +496,7 @@ public partial class Main : Node
 				case "npc_render_fetch":        _npc.HandleNpcRenderFetch(peerId, root); break;
 				case "npc_render_save_hitbox": _npc.HandleNpcRenderSaveHitbox(peerId, root); break;
 				case "npc_render_save_render": _npc.HandleNpcRenderSaveRender(peerId, root); break;
+				case "npc_render_reset_config": _npc.HandleNpcRenderResetConfig(peerId, root); break;
 				case "pickup_ground_item": _ground.HandlePickupGroundItem(peerId, root); break;
 				case "trade_invite_accept": _trade.HandleTradeInviteResponse(peerId, root, accept: true); break;
 				case "trade_invite_decline": _trade.HandleTradeInviteResponse(peerId, root, accept: false); break;

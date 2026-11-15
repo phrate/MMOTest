@@ -53,12 +53,15 @@ signal npc_combat_state(npc_id: int, in_combat: bool)
 
 signal npc_editor_open(type_id: int)
 signal npc_render_save_result(ok: bool, kind: String, slug: String)
+signal dev_npc_render_config_reset(ok: bool, slug: String)
 signal dev_npc_editor_options_result(ok: bool, options: Dictionary)
 signal dev_npc_type_list_result(ok: bool, items: Array)
 signal dev_npc_type_data(ok: bool, data: Dictionary)
 signal dev_npc_type_created(ok: bool, type_id: int, error: String)
 signal dev_npc_type_updated(ok: bool, type_id: int)
 signal dev_npc_type_deleted(ok: bool, type_id: int)
+signal dev_world_instance_list_result(ok: bool, items: Array)
+signal dev_world_save_result(ok: bool, error: String)
 
 signal ground_item_dropped(item: Dictionary)
 signal ground_item_removed(id: int)
@@ -219,6 +222,15 @@ func send_dev_npc_type_delete(type_id: int) -> void:
 	send({"type": "dev_npc_type_delete", "type_id": type_id})
 
 
+func send_dev_world_instance_list() -> void:
+	send({"type": "dev_world_instance_list"})
+
+
+func send_dev_world_save(world_json: Dictionary, pending_creates: Array, pending_deletes: Array) -> void:
+	send({"type": "dev_world_save", "world_json": world_json,
+		  "pending_creates": pending_creates, "pending_deletes": pending_deletes})
+
+
 func send_chat(message: String) -> void:
 	send({"type": "chat_send", "message": message})
 
@@ -345,6 +357,10 @@ func _on_packet(_id: int, packet: PackedByteArray) -> void:
 			npc_render_save_result.emit(
 				bool(msg.get("ok", false)),
 				String(msg.get("kind", "")),
+				String(msg.get("slug", "")))
+		"npc_render_reset_config_result":
+			dev_npc_render_config_reset.emit(
+				bool(msg.get("ok", false)),
 				String(msg.get("slug", "")))
 		"tick_positions":
 			server_tick = int(msg.get("tick", 0))
@@ -516,6 +532,14 @@ func _on_packet(_id: int, packet: PackedByteArray) -> void:
 			dev_npc_type_deleted.emit(
 				bool(msg.get("ok", false)),
 				int(msg.get("type_id", 0)))
+		"dev_world_instance_list_result":
+			var items_el: Variant = msg.get("items", [])
+			if typeof(items_el) == TYPE_ARRAY:
+				dev_world_instance_list_result.emit(bool(msg.get("ok", false)), items_el)
+		"dev_world_save_result":
+			dev_world_save_result.emit(
+				bool(msg.get("ok", false)),
+				String(msg.get("error", "")))
 		"damage_number":
 			damage_number.emit(
 				String(msg.get("target_type", "")),

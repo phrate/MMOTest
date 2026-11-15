@@ -1,4 +1,6 @@
 using Godot;
+using System.Collections.Generic;
+using System.Threading.Tasks;
 
 namespace MMOTest.Server;
 
@@ -24,11 +26,17 @@ internal sealed class WorldFileSystem
         ProjectSettings.GlobalizePath("res://data/world.json"),
     };
 
-    public WorldFileSystem(ServerState state, WorldService world, OutboundChannel outbound)
+    private readonly NpcSystem _npc;
+    private readonly NpcRepository _npcRepo;
+
+    public WorldFileSystem(ServerState state, WorldService world, OutboundChannel outbound,
+                        NpcSystem npc, NpcRepository npcRepo)
     {
         _state = state;
         _world = world;
         _outbound = outbound;
+        _npc = npc;
+        _npcRepo = npcRepo;
         _lastBroadcastVersion = world.IsLoaded ? world.Version : -1;
     }
 
@@ -104,5 +112,93 @@ internal sealed class WorldFileSystem
             format_version = _world.FormatVersion,
             data = root.Value
         });
+    }
+
+    internal void HandleDevWorldSave(long peerId, System.Text.Json.JsonElement root)
+    {
+        if (!_state.Sessions.TryGetValue(peerId, out var session)) return;
+        if (!session.IsAdmin) return;
+        if (!root.TryGetProperty("world_json", out var wjEl)) return;
+        if (wjEl.ValueKind != System.Text.Json.JsonValueKind.Object) return;
+
+        string worldJson = wjEl.GetRawText();
+
+        var pendingCreates = new List<(long TypeId, int X, int Y, int Z)>();
+        if (root.TryGetProperty("pending_creates", out var pcEl)
+            && pcEl.ValueKind == System.Text.Json.JsonValueKind.Array)
+        {
+            foreach (var el in pcEl.EnumerateArray())
+            {
+                if (el.ValueKind != System.Text.Json.JsonValueKind.Object) continue;
+                if (!el.TryGetProperty("type_id", out var tidE) || !tidE.TryGetInt64(out long tid)) continue;
+                if (!el.TryGetProperty("x", out var xE) || !xE.TryGetInt32(out int x)) continue;
+                if (!el.TryGetProperty("y", out var yE) || !yE.TryGetInt32(out int y)) continue;
+                if (!el.TryGetProperty("z", out var zE) || !zE.TryGetInt32(out int z)) continue;
+                pendingCreates.Add((tid, x, y, z));
+            }
+        }
+
+        var pendingDeletes = new List<long>();
+        if (root.TryGetProperty("pending_deletes", out var pdEl)
+            && pdEl.ValueKind == System.Text.Json.JsonValueKind.Array)
+        {
+            foreach (var el in pdEl.EnumerateArray())
+                if (el.TryGetInt64(out long iid)) pendingDeletes.Add(iid);
+        }
+
+        _ = ProcessSaveAsync(peerId, worldJson, pendingCreates, pendingDeletes);
+    }
+
+    private async Task ProcessSaveAsync(long peerId, string worldJson,
+        List<(long TypeId, int X, int Y, int Z)> creates, List<long> deletes)
+    {
+        try
+        {
+            // Apply instance changes first so the world hotfix (triggered by the
+            // file write below) reloads a world that already matches the DB.
+            foreach (var (typeId, x, y, z) in creates)
+            {
+                var type = _npc.GetTypeById(typeId);
+                if (type == null) continue;
+                long iid = await _npcRepo.CreateInstanceAsync(typeId, x, y, z);
+                var npc = new ActiveNpc
+                {
+                    Id = iid,
+                    Type = type,
+                    TileX = x,
+                    TileY = y,
+                    TileZ = z,
+                    PlayingAnimation = "idle",
+                };
+                npc.ResetToTypeDefaults();
+                npc.ResetPositionToHome();
+                _npc.AddInstanceDirect(npc);
+            }
+
+            foreach (var iid in deletes)
+            {
+                if (await _npcRepo.DeleteInstanceAsync(iid))
+                    _npc.RemoveInstanceDirect(iid);
+            }
+
+            _npc.NotifyNpcVisibilityChanged();
+
+            string path = ProjectSettings.GlobalizePath("user://world.json");
+            System.IO.File.WriteAllText(path, worldJson);
+            Diag.Log("diag_world",
+                $"DevWorldSave: wrote {worldJson.Length} bytes, +{creates.Count} NPCs, -{deletes.Count} NPCs");
+
+            _outbound.Send(peerId, new { type = "dev_world_save_result", ok = true });
+        }
+        catch (System.Exception e)
+        {
+            GD.PrintErr($"[WorldFileSystem] DevWorldSave failed: {e.Message}");
+            _outbound.Send(peerId, new
+            {
+                type = "dev_world_save_result",
+                ok = false,
+                error = e.Message,
+            });
+        }
     }
 }

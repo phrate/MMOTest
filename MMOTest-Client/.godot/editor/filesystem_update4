@@ -17,3 +17,8 @@ res://autoload/Network.gd
 res://scenes/game/player/camera_3d.gd
 res://data/texts/ui/dev_hub/npc_editor_texts.json
 res://scenes/dev_hub/hitbox_gizmo.gd
+res://data/texts/ui/dev_hub/world_editor_texts.json
+res://autoload/Npc_Render.gd
+res://npc_render/man/man.tscn
+res://scenes/game/player/player.gd
+res://scenes/game/remote_player/remote_player.gd

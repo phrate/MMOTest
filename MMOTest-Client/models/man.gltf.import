@@ -4,12 +4,12 @@ importer="scene"
 importer_version=1
 type="PackedScene"
 uid="uid://c0m2jkpbtqqdc"
-path="res://.godot/imported/y-bot-4.gltf-0bee0ebc179853ed08646fc5ab6f5255.scn"
+path="res://.godot/imported/man.gltf-b21031e22ab39eb386b4d720aad1bc40.scn"
 
 [deps]
 
-source_file="res://models/y-bot-4.gltf"
-dest_files=["res://.godot/imported/y-bot-4.gltf-0bee0ebc179853ed08646fc5ab6f5255.scn"]
+source_file="res://models/man.gltf"
+dest_files=["res://.godot/imported/man.gltf-b21031e22ab39eb386b4d720aad1bc40.scn"]
 
 [params]
 

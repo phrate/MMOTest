@@ -36,6 +36,7 @@ internal sealed class NpcSystem
     private readonly Random _wanderRng = new();
     private readonly Dictionary<string, Dictionary<string, (int Min, int Max)>> _lootTables;
     private readonly Dictionary<string, (int Min, int Max)> _creditsLoot;
+    private readonly Dictionary<long, NpcTypeRecord> _typesById = new();
 
     public int NpcViewChunkRadius { get; }
 
@@ -65,13 +66,13 @@ internal sealed class NpcSystem
     internal void LoadAll()
     {
         var types = _npcRepo.GetAllTypesSync();
-        var typesById = new Dictionary<long, NpcTypeRecord>();
-        foreach (var t in types) typesById[t.Id] = t;
+        _typesById.Clear();
+        foreach (var t in types) _typesById[t.Id] = t;
 
         var instances = _npcRepo.GetAllInstancesSync();
         foreach (var inst in instances)
         {
-            if (!typesById.TryGetValue(inst.TypeId, out var type))
+            if (!_typesById.TryGetValue(inst.TypeId, out var type))
             {
                 GD.PrintErr($"[Server] NPC instance {inst.Id} references missing type {inst.TypeId}; skipping");
                 continue;
@@ -93,7 +94,7 @@ internal sealed class NpcSystem
             npc.ResetPositionToHome();
             _npcs[npc.Id] = npc;
         }
-        GD.Print($"[Server] Loaded {types.Count} NPC type(s), {_npcs.Count} instance(s)");
+        GD.Print($"[Server] Loaded {_typesById.Count} NPC type(s), {_npcs.Count} instance(s)");
     }
 
     internal IEnumerable<ActiveNpc> All() => _npcs.Values;
@@ -102,6 +103,11 @@ internal sealed class NpcSystem
     internal bool TryGetNpcById(long npcId, out ActiveNpc npc) =>
         _npcs.TryGetValue(npcId, out npc!);
     internal bool IsNpcInCombat(long npcId) => _state.CombatByNpc.ContainsKey(npcId);
+    internal NpcTypeRecord? GetTypeById(long typeId) =>
+    _typesById.TryGetValue(typeId, out var t) ? t : null;
+
+    internal void AddInstanceDirect(ActiveNpc npc) => _npcs[npc.Id] = npc;
+    internal void RemoveInstanceDirect(long instanceId) => _npcs.Remove(instanceId);
 
     // ============================================================
     // Movement
@@ -565,6 +571,38 @@ internal sealed class NpcSystem
         });
     }
 
+    internal void HandleNpcRenderResetConfig(long peerId, System.Text.Json.JsonElement root)
+    {
+        if (!_state.Sessions.TryGetValue(peerId, out var session)) return;
+        if (!session.IsAdmin) return;
+
+        string slug = GetStringProp(root, "slug");
+        if (!IsSafeSlug(slug)) return;
+
+        bool ok = true;
+        try
+        {
+            string baseDir = ProjectSettings.GlobalizePath("user://npc_render");
+            string dir = System.IO.Path.Combine(baseDir, slug);
+            string hbPath = System.IO.Path.Combine(dir, "hitbox.json");
+            string rnPath = System.IO.Path.Combine(dir, "render.json");
+            if (System.IO.File.Exists(hbPath)) System.IO.File.Delete(hbPath);
+            if (System.IO.File.Exists(rnPath)) System.IO.File.Delete(rnPath);
+        }
+        catch (System.Exception e)
+        {
+            GD.PrintErr($"[NpcSystem] ResetConfig({slug}): {e.Message}");
+            ok = false;
+        }
+
+        _outbound.Send(peerId, new
+        {
+            type = "npc_render_reset_config_result",
+            ok,
+            slug,
+        });
+    }
+
     private static string GetStringProp(System.Text.Json.JsonElement root, string name)
     {
         if (!root.TryGetProperty(name, out var el)) return "";
@@ -716,6 +754,9 @@ internal sealed class NpcSystem
         try
         {
             long newId = await _npcRepo.CreateTypeAsync(updates);
+            var reloaded = _npcRepo.GetTypeByIdSync(newId);
+            if (reloaded != null) _typesById[newId] = reloaded;
+
             _outbound.Send(peerId, new
             {
                 type = "dev_npc_type_created",
@@ -751,6 +792,36 @@ internal sealed class NpcSystem
 
     private async Task UpdateTypeAndReply(long peerId, long typeId, Dictionary<string, object> updates)
     {
+        // Refuse to overwrite existing required fields with empty/invalid values.
+        // If the client is buggy and sends `render_slug: ""`, keep the current
+        // value so we never wipe the record. Same for display and slug.
+        if (_typesById.TryGetValue(typeId, out var current))
+        {
+            foreach (var requiredKey in new[] { "slug_id", "display", "render_slug" })
+            {
+                string incoming = updates.TryGetValue(requiredKey, out var v) ? (v?.ToString() ?? "").Trim() : "";
+                if (string.IsNullOrEmpty(incoming))
+                {
+                    updates.Remove(requiredKey);
+                    GD.Print($"[NpcSystem] UpdateType {typeId}: dropped empty '{requiredKey}' (kept DB value)");
+                }
+            }
+            // Coerce numeric mins server-side as well; belt-and-braces with the
+            // repo-level clamps.
+            foreach (var (key, min) in new[] { ("aggro_range", 1), ("attack_speed", 1), ("final_level", 1) })
+            {
+                if (updates.TryGetValue(key, out var raw) && raw != null)
+                {
+                    try
+                    {
+                        int val = Convert.ToInt32(raw);
+                        if (val < min) updates[key] = (long)min;
+                    }
+                    catch { updates.Remove(key); }
+                }
+            }
+        }
+
         bool ok;
         try { ok = await _npcRepo.UpdateTypeAsync(typeId, updates); }
         catch (Exception e)
@@ -761,23 +832,24 @@ internal sealed class NpcSystem
 
         if (ok)
         {
-            // Refresh the in-memory NpcTypeRecord (shared by reference across
-            // every instance of this type) and broadcast npc_updated so clients
-            // reflect the change immediately — no respawn needed.
             var reloaded = _npcRepo.GetTypeByIdSync(typeId);
             if (reloaded != null)
             {
-                var affected = new List<ActiveNpc>();
-                foreach (var npc in _npcs.Values)
-                    if (npc.Type.Id == typeId) affected.Add(npc);
-
-                if (affected.Count > 0)
+                if (!_typesById.TryGetValue(typeId, out var canonical))
                 {
-                    CopyTypeFields(reloaded, affected[0].Type);
-                    foreach (var npc in affected)
-                        _outbound.Broadcast(new { type = "npc_updated", npc = NpcToPacket(npc) });
-                    NotifyNpcVisibilityChanged();
+                    _typesById[typeId] = canonical = reloaded;
                 }
+                else
+                {
+                    CopyTypeFields(reloaded, canonical);
+                }
+
+                foreach (var npc in _npcs.Values)
+                {
+                    if (npc.Type.Id == typeId)
+                        _outbound.Broadcast(new { type = "npc_updated", npc = NpcToPacket(npc) });
+                }
+                NotifyNpcVisibilityChanged();
             }
         }
 
@@ -841,7 +913,8 @@ internal sealed class NpcSystem
 
         if (ok)
         {
-            // Remove any live instances of the deleted type from memory
+            _typesById.Remove(typeId);
+
             var toRemove = new List<long>();
             foreach (var npc in _npcs.Values)
                 if (npc.Type.Id == typeId) toRemove.Add(npc.Id);
@@ -904,4 +977,38 @@ internal sealed class NpcSystem
         ["ether_defense"] = t.EtherDefense,
         ["attack_speed"] = t.AttackSpeedTicks,
     };
+
+    // ============================================================
+    // World-editor instance CRUD
+    // ============================================================
+
+    internal void HandleDevWorldInstanceList(long peerId, System.Text.Json.JsonElement root)
+    {
+        if (!_state.Sessions.TryGetValue(peerId, out var session)) return;
+        if (!session.IsAdmin) return;
+
+        var items = new List<object>();
+        foreach (var npc in _npcs.Values)
+        {
+            items.Add(new
+            {
+                id = npc.Id,
+                type_id = npc.Type.Id,
+                slug_id = npc.SlugId,
+                display = npc.Display,
+                render_slug = npc.RenderSlug,
+                x = npc.TileX,
+                y = npc.TileY,
+                z = npc.TileZ,
+                is_dead = npc.IsDead,
+            });
+        }
+
+        _outbound.Send(peerId, new
+        {
+            type = "dev_world_instance_list_result",
+            ok = true,
+            items,
+        });
+    }
 }

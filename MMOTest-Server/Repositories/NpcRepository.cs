@@ -173,19 +173,19 @@ public sealed class NpcRepository
                             $eth, $eth, $mb, $rb, $eb, $md, $rd, $ed, $aspd)
                     RETURNING id;";
                 cmd.Parameters.AddWithValue("$slug", "npc_" + GetString(u, "slug_id", "unknown"));
-                cmd.Parameters.AddWithValue("$fl",   GetInt(u, "final_level", 1));
-                cmd.Parameters.AddWithValue("$hp",   GetInt(u, "max_hitpoints", 10));
-                cmd.Parameters.AddWithValue("$acc",  GetInt(u, "max_accuracy", 1));
-                cmd.Parameters.AddWithValue("$str",  GetInt(u, "max_strength", 1));
-                cmd.Parameters.AddWithValue("$def",  GetInt(u, "max_defence", 1));
-                cmd.Parameters.AddWithValue("$eth",  GetInt(u, "max_ether", 1));
+                cmd.Parameters.AddWithValue("$fl",   Math.Max(1, GetInt(u, "final_level", 1)));
+                cmd.Parameters.AddWithValue("$hp",   Math.Max(1, GetInt(u, "max_hitpoints", 10)));
+                cmd.Parameters.AddWithValue("$acc",  Math.Max(1, GetInt(u, "max_accuracy", 1)));
+                cmd.Parameters.AddWithValue("$str",  Math.Max(1, GetInt(u, "max_strength", 1)));
+                cmd.Parameters.AddWithValue("$def",  Math.Max(1, GetInt(u, "max_defence", 1)));
+                cmd.Parameters.AddWithValue("$eth",  Math.Max(1, GetInt(u, "max_ether", 1)));
                 cmd.Parameters.AddWithValue("$mb",   GetInt(u, "melee_bonus", 0));
                 cmd.Parameters.AddWithValue("$rb",   GetInt(u, "ranged_bonus", 0));
                 cmd.Parameters.AddWithValue("$eb",   GetInt(u, "ether_bonus", 0));
                 cmd.Parameters.AddWithValue("$md",   GetInt(u, "melee_defense", 0));
                 cmd.Parameters.AddWithValue("$rd",   GetInt(u, "ranged_defense", 0));
                 cmd.Parameters.AddWithValue("$ed",   GetInt(u, "ether_defense", 0));
-                cmd.Parameters.AddWithValue("$aspd", GetInt(u, "attack_speed", 10));
+                cmd.Parameters.AddWithValue("$aspd", Math.Max(1, GetInt(u, "attack_speed", 10)));
                 combatId = (long)cmd.ExecuteScalar()!;
             }
 
@@ -209,7 +209,7 @@ public sealed class NpcRepository
                 cmd.Parameters.AddWithValue("$bk",   GetBool(u, "is_banker", false) ? 1 : 0);
                 cmd.Parameters.AddWithValue("$atk",  GetBool(u, "attackable", true) ? 1 : 0);
                 cmd.Parameters.AddWithValue("$aggr", GetBool(u, "aggressive", false) ? 1 : 0);
-                cmd.Parameters.AddWithValue("$arange", GetInt(u, "aggro_range", 8));
+                cmd.Parameters.AddWithValue("$arange", Math.Max(1, GetInt(u, "aggro_range", 8)));
                 cmd.Parameters.AddWithValue("$ai",   GetString(u, "ai_package_state", "idle"));
                 cmd.Parameters.AddWithValue("$stimer", GetInt(u, "spawn_timer", 3));
                 cmd.Parameters.AddWithValue("$sf",   GetString(u, "spawn_flags", "{}"));
@@ -263,7 +263,7 @@ public sealed class NpcRepository
                 cmd.Parameters.AddWithValue("$bk",   GetBool(u, "is_banker", false) ? 1 : 0);
                 cmd.Parameters.AddWithValue("$atk",  GetBool(u, "attackable", true) ? 1 : 0);
                 cmd.Parameters.AddWithValue("$aggr", GetBool(u, "aggressive", false) ? 1 : 0);
-                cmd.Parameters.AddWithValue("$arange", GetInt(u, "aggro_range", 8));
+                cmd.Parameters.AddWithValue("$arange", Math.Max(1, GetInt(u, "aggro_range", 8)));
                 cmd.Parameters.AddWithValue("$ai",   GetString(u, "ai_package_state", "idle"));
                 cmd.Parameters.AddWithValue("$stimer", GetInt(u, "spawn_timer", 3));
                 cmd.Parameters.AddWithValue("$sf",   GetString(u, "spawn_flags", "{}"));
@@ -288,19 +288,19 @@ public sealed class NpcRepository
                         melee_defense = $md, ranged_defense = $rd, ether_defense = $ed,
                         attack_speed = $aspd
                     WHERE id = $id;";
-                cmd.Parameters.AddWithValue("$fl",   GetInt(u, "final_level", 1));
-                cmd.Parameters.AddWithValue("$hp",   GetInt(u, "max_hitpoints", 10));
-                cmd.Parameters.AddWithValue("$acc",  GetInt(u, "max_accuracy", 1));
-                cmd.Parameters.AddWithValue("$str",  GetInt(u, "max_strength", 1));
-                cmd.Parameters.AddWithValue("$def",  GetInt(u, "max_defence", 1));
-                cmd.Parameters.AddWithValue("$eth",  GetInt(u, "max_ether", 1));
+                cmd.Parameters.AddWithValue("$fl",   Math.Max(1, GetInt(u, "final_level", 1)));
+                cmd.Parameters.AddWithValue("$hp",   Math.Max(1, GetInt(u, "max_hitpoints", 10)));
+                cmd.Parameters.AddWithValue("$acc",  Math.Max(1, GetInt(u, "max_accuracy", 1)));
+                cmd.Parameters.AddWithValue("$str",  Math.Max(1, GetInt(u, "max_strength", 1)));
+                cmd.Parameters.AddWithValue("$def",  Math.Max(1, GetInt(u, "max_defence", 1)));
+                cmd.Parameters.AddWithValue("$eth",  Math.Max(1, GetInt(u, "max_ether", 1)));
                 cmd.Parameters.AddWithValue("$mb",   GetInt(u, "melee_bonus", 0));
                 cmd.Parameters.AddWithValue("$rb",   GetInt(u, "ranged_bonus", 0));
                 cmd.Parameters.AddWithValue("$eb",   GetInt(u, "ether_bonus", 0));
                 cmd.Parameters.AddWithValue("$md",   GetInt(u, "melee_defense", 0));
                 cmd.Parameters.AddWithValue("$rd",   GetInt(u, "ranged_defense", 0));
                 cmd.Parameters.AddWithValue("$ed",   GetInt(u, "ether_defense", 0));
-                cmd.Parameters.AddWithValue("$aspd", GetInt(u, "attack_speed", 10));
+                cmd.Parameters.AddWithValue("$aspd", Math.Max(1, GetInt(u, "attack_speed", 10)));
                 cmd.Parameters.AddWithValue("$id",   combatId);
                 cmd.ExecuteNonQuery();
             }
@@ -454,6 +454,32 @@ public sealed class NpcRepository
             WHERE id = $id;";
         cmd.Parameters.AddWithValue("$id", instanceId);
         cmd.ExecuteNonQuery();
+    });
+
+    public Task<long> CreateInstanceAsync(long typeId, int tileX, int tileY, int tileZ) => Task.Run(() =>
+    {
+        using var conn = _open();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = @"
+            INSERT INTO npc_instances
+                (npc_type_id, name_override, tile_x, tile_y, tile_z,
+                playing_animation, is_dead, is_dying)
+            VALUES ($tid, NULL, $x, $y, $z, 'idle', 0, 0)
+            RETURNING id;";
+        cmd.Parameters.AddWithValue("$tid", typeId);
+        cmd.Parameters.AddWithValue("$x",   tileX);
+        cmd.Parameters.AddWithValue("$y",   tileY);
+        cmd.Parameters.AddWithValue("$z",   tileZ);
+        return (long)cmd.ExecuteScalar()!;
+    });
+
+    public Task<bool> DeleteInstanceAsync(long instanceId) => Task.Run(() =>
+    {
+        using var conn = _open();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = "DELETE FROM npc_instances WHERE id = $id;";
+        cmd.Parameters.AddWithValue("$id", instanceId);
+        return cmd.ExecuteNonQuery() > 0;
     });
 
     public Task ReviveAsync(long instanceId) => Task.Run(() =>

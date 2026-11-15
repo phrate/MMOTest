@@ -1,0 +1,23 @@
+{
+	"mode_inspect": "Inspect",
+	"mode_paint": "Paint",
+	"mode_erase": "Erase",
+	"label_z": "Z:",
+	"label_walkable": "Walkable",
+	"brush_toggle": "NPC Brush",
+	"brush_search_placeholder": "Search NPC type...",
+	"npc_info_title": "NPC",
+	"npc_info_slug": "Slug:",
+	"npc_info_display": "Display:",
+	"clipboard_clear": "Clear Clipboard",
+	"clipboard_paste_hint": "Ctrl+V to paste at selected tile",
+	"save_saving": "Saving...",
+	"save_saved": "Saved ✓",
+	"save_failed": "Save Failed",
+	"save_reload_note": "World reloads on save",
+	"no_selection": "Click an NPC to inspect",
+	"npc_info_render": "Render",
+	"npc_info_tile": "Tile",
+	"clipboard_banner": "IN CLIPBOARD",
+	"save_button": "Save World"
+}

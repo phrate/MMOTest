@@ -7,7 +7,7 @@ extends Node
 ## Both flow through the same fetch loop.
 ##
 ## get_scene(slug) returns the real downloaded scene if cached, otherwise the
-## client-resident fallback (res://models/y-bot-4.gltf). Any entity whose
+## client-resident fallback (res://models/man.gltf). Any entity whose
 ## render scene fails to download or doesn't exist server-side still renders
 ## with the fallback — no capsules, no invisible entities.
 
@@ -17,7 +17,7 @@ signal sync_failed(reason: String)
 signal slug_ready(slug: String)
 
 const CACHE_DIR := "user://npc_render_cache"
-const FALLBACK_SCENE_PATH := "res://models/y-bot-4.gltf"
+const FALLBACK_SCENE_PATH := "res://models/man.gltf"
 
 var _sync_in_progress := false
 var _pending_slugs: Dictionary = {}
@@ -201,6 +201,30 @@ func _remove_cache_dir(slug: String) -> void:
 	DirAccess.remove_absolute(root)
 
 
+func _clear_cache_dir(slug: String) -> void:
+	var root := "%s/%s" % [CACHE_DIR, slug]
+	var dir := DirAccess.open(root)
+	if dir == null: return
+	dir.list_dir_begin()
+	var e := dir.get_next()
+	while e != "":
+		if dir.current_is_dir():
+			var sub := DirAccess.open(root + "/" + e)
+			if sub != null:
+				sub.list_dir_begin()
+				var se := sub.get_next()
+				while se != "":
+					if not sub.current_is_dir():
+						DirAccess.remove_absolute(root + "/" + e + "/" + se)
+					se = sub.get_next()
+				sub.list_dir_end()
+			DirAccess.remove_absolute(root + "/" + e)
+		else:
+			DirAccess.remove_absolute(root + "/" + e)
+		e = dir.get_next()
+	dir.list_dir_end()
+
+
 func _on_data(slug: String, file_hash: String, files: Dictionary) -> void:
 	if not _pending_slugs.has(slug): return
 	if str(_pending_slugs[slug]) != file_hash:
@@ -208,6 +232,10 @@ func _on_data(slug: String, file_hash: String, files: Dictionary) -> void:
 		return
 
 	var dir := "%s/%s" % [CACHE_DIR, slug]
+	# Clear stale files first so a server-side deletion (Reset Config) can't
+	# be masked by leftover local cache content (e.g. an old hitbox.json that
+	# the server no longer has).
+	_clear_cache_dir(slug)
 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(dir))
 
 	for rel_v in files.keys():
