@@ -8,3 +8,7 @@ res://scenes/dev_hub/panels/world_editor_panel.gd
 res://scenes/dev_hub/widgets/dev_tag_input.gd
 res://scenes/dev_hub/panels/item_editor/form.gd
 res://scenes/dev_hub/panels/item_editor_panel.gd
+res://autoload/Network.gd
+res://data/texts/ui/dev_hub/item_editor_texts.json
+res://scenes/dev_hub/panels/item_editor/give.gd
+res://scenes/dev_hub/widgets/dev_form_fields.gd

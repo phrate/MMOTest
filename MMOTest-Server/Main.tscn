@@ -6,3 +6,4 @@
 script = ExtResource("1_main")
 NpcViewChunkRadius = 7
 DiagNpcWander = true
+DiagRecipe = true

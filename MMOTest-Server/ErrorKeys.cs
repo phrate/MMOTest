@@ -59,4 +59,11 @@ public static class ErrorKeys
     // ---------- Recipe ----------
     public const string RecipeNothingHappened  = "recipe.error.nothing_happened";
     public const string RecipeInventoryFull    = "recipe.error.inventory_full";
+
+    // ---------- Dev: item give ----------
+    public const string ItemGivePlayerNotFound  = "ui.dev_hub.item_editor.give.error.player_not_found";
+    public const string ItemGiveInventoryFull   = "ui.dev_hub.item_editor.give.error.inventory_full";
+    public const string ItemGiveCertUnavailable = "ui.dev_hub.item_editor.give.error.cert_unavailable";
+    public const string ItemGivePlayerBusy      = "ui.dev_hub.item_editor.give.error.player_busy";
+    public const string ItemGiveFailed          = "ui.dev_hub.item_editor.give.error.failed";
 }

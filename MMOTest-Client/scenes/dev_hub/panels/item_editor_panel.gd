@@ -25,6 +25,7 @@ var _current_item_id: int = 0
 var _pending_item_id: int = 0
 var _available_tags: Array = []
 var _tags_fetched: bool = false
+var _pending_give_item_id: int = 0
 
 
 func _ready() -> void:
@@ -61,6 +62,7 @@ func _connect_network() -> void:
 	Network.dev_item_updated.connect(_on_item_updated)
 	Network.dev_item_deleted.connect(_on_item_deleted)
 	Network.dev_item_tags_list_result.connect(_on_tags_list_result)
+	Network.dev_item_give_result.connect(_on_give_result)
 
 
 func _on_icon_ready(_name: String) -> void:
@@ -190,6 +192,7 @@ func _build_edit_tab() -> Control:
 	var scroll := _scroll_wrap(edit)
 
 	_edit_form = ItemEditorForm.new()
+	_edit_form.give_requested.connect(_on_edit_form_give_requested)
 	scroll.add_child(_edit_form)
 
 	var btn_row := HBoxContainer.new()
@@ -318,3 +321,19 @@ func _on_create_pressed() -> void:
 func _show_create_error(msg: String) -> void:
 	_create_error_label.text = msg
 	_create_error_label.visible = true
+
+
+func _on_edit_form_give_requested(target_username: String, amount: int, is_cert: bool) -> void:
+	if _current_item_id == 0: return
+	_pending_give_item_id = _current_item_id
+	Network.send_dev_item_give(_current_item_id, target_username, amount, is_cert)
+
+
+func _on_give_result(ok: bool, error_key: String, error_params: Dictionary) -> void:
+	if _pending_give_item_id == 0: return
+	if _current_item_id != _pending_give_item_id:
+		_pending_give_item_id = 0
+		return
+	_pending_give_item_id = 0
+	if _edit_form:
+		_edit_form.show_give_result(ok, error_key, error_params)

@@ -4,6 +4,8 @@ extends VBoxContainer
 ## Two instances: one for Edit tab, one for Create tab. Both receive data via
 ## set_data() and emit their payload via get_payload(). Layout is 30/70.
 
+signal give_requested(target_username: String, amount: int, is_cert: bool)
+
 const ITEM_TYPES := ["weapon","consumable","armor","misc"]
 const ICON_BOX_MIN_SIZE := 120
 const ICON_BOX_PADDING := 8
@@ -17,6 +19,7 @@ var _tag_input: DevTagInput
 var _caps: ItemEditorCapabilities
 var _is_edit_mode: bool = false
 var _available_tags: Array = []
+var _give_panel: ItemEditorGive
 
 
 func _init() -> void:
@@ -42,11 +45,14 @@ func _rebuild() -> void:
 	_build_icon_section(row0)
 	_build_identity_section(row0)
 
-	# Row 1: blank | flags
+	# Row 1: give (edit only) | flags
 	var row1 := HBoxContainer.new()
 	row1.add_theme_constant_override("separation", SECTION_SPACING)
 	add_child(row1)
-	_add_blank(row1)
+	if _is_edit_mode:
+		_build_give_section(row1)
+	else:
+		_add_blank(row1)
 	_build_flags_section(row1)
 
 	# Row 2: blank | tags
@@ -104,6 +110,25 @@ func _build_icon_section(parent: HBoxContainer) -> void:
 	_populate_icon()
 	parent.add_child(sec)
 
+func _build_give_section(parent: HBoxContainer) -> void:
+	var sec := DevSection.new()
+	sec.set_ratio(3.0)
+	sec.add_header(Texts.get_text("ui.dev_hub.item_editor.give.header"))
+	_give_panel = ItemEditorGive.new()
+	_give_panel.set_item_data(_src)
+	_give_panel.set_current_username(Session.username)
+	_give_panel.give_requested.connect(_on_give_requested)
+	sec.content.add_child(_give_panel)
+	parent.add_child(sec)
+
+
+func _on_give_requested(target_username: String, amount: int, is_cert: bool) -> void:
+	give_requested.emit(target_username, amount, is_cert)
+
+
+func show_give_result(ok: bool, error_key: String, error_params: Dictionary) -> void:
+	if _give_panel != null and is_instance_valid(_give_panel):
+		_give_panel.show_result(ok, error_key, error_params)
 
 func _populate_icon() -> void:
 	for c in _icon_box.get_children():

@@ -68,6 +68,7 @@ signal dev_item_data(ok: bool, data: Dictionary)
 signal dev_item_created(ok: bool, item_id: int, error: String)
 signal dev_item_updated(ok: bool, item_id: int)
 signal dev_item_deleted(ok: bool, item_id: int)
+signal dev_item_give_result(ok: bool, error_key: String, error_params: Dictionary)
 
 signal item_icon_info_result(ok: bool, manifest: Dictionary)
 signal item_icon_data_received(name: String, hash: String, data_base64: String)
@@ -578,6 +579,11 @@ func _on_packet(_id: int, packet: PackedByteArray) -> void:
 			dev_item_deleted.emit(
 				bool(msg.get("ok", false)),
 				int(msg.get("item_id", 0)))
+		"dev_item_give_result":
+			dev_item_give_result.emit(
+				bool(msg.get("ok", false)),
+				String(msg.get("error_key", "")),
+				msg.get("error_params", {}))
 		"damage_number":
 			damage_number.emit(
 				String(msg.get("target_type", "")),
@@ -803,6 +809,16 @@ func send_dev_item_get(item_id: int) -> void:
 
 func send_dev_item_create(data: Dictionary) -> void:
 	send({"type": "dev_item_create", "data": data})
+
+
+func send_dev_item_give(item_id: int, target_username: String, amount: int, is_cert: bool) -> void:
+	send({
+		"type": "dev_item_give",
+		"item_id": item_id,
+		"target_username": target_username,
+		"amount": amount,
+		"is_cert": is_cert,
+	})
 
 
 func send_dev_item_update(item_id: int, data: Dictionary) -> void:

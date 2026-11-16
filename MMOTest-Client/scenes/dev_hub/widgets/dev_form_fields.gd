@@ -52,6 +52,7 @@ static func spin(minv: int, maxv: int, val: int, width: int = SPIN_WIDTH) -> Spi
 	sb.max_value = maxv
 	sb.step = 1
 	sb.value = val
+	sb.update_on_text_changed = true
 	sb.custom_minimum_size = Vector2(width, 0)
 	sb.add_theme_font_size_override("font_size", s.font_size_small)
 	return sb

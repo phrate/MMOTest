@@ -193,7 +193,7 @@ public partial class Main : Node
 			itemIcons.LoadAll();
 
 			_npc = new NpcSystem(_state, _world, _outbound, _db.Npcs, _gfs, _npcRender, _pathfinder, NpcViewChunkRadius, DiagNpcWander,
-    _lootTablesBySlug, _creditsLootBySlug);
+	_lootTablesBySlug, _creditsLootBySlug);
 			_npc.LoadAll();
 			_inv = new ItemSystem(_state, _outbound, _items, _db.Inventory, _db.Stats, _trade, _combatRng, _db.Players, _db.Items, itemIcons);
 			_ground = new GroundItemSystem(_state, _world, _outbound, _items, _inv, _trade, _db.Inventory, _pathfinder, NpcViewChunkRadius);
@@ -497,6 +497,7 @@ public partial class Main : Node
 				case "dev_item_create":     _inv.HandleDevItemCreate(peerId, root); break;
 				case "dev_item_update":     _inv.HandleDevItemUpdate(peerId, root); break;
 				case "dev_item_delete":     _inv.HandleDevItemDelete(peerId, root); break;
+				case "dev_item_give":       _inv.HandleDevItemGive(peerId, root); break;
 				case "player_walk": _walk.HandlePlayerWalk(peerId, root); break;
 				case "inventory_swap": _inv.HandleInventorySwap(peerId, root); break;
 				case "ping":         HandlePing(peerId, root); break;

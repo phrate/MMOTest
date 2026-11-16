@@ -412,6 +412,134 @@ internal sealed class ItemSystem
         _outbound.Send(peerId, new { type = "dev_item_deleted", ok, item_id = itemId });
     }
 
+    internal void HandleDevItemGive(long peerId, System.Text.Json.JsonElement root)
+    {
+        if (!_state.Sessions.TryGetValue(peerId, out var session)) return;
+        if (!session.IsAdmin) return;
+
+        if (!root.TryGetProperty("item_id", out var idEl) || !idEl.TryGetInt64(out long itemId)) return;
+        if (!root.TryGetProperty("target_username", out var unEl)
+            || unEl.ValueKind != System.Text.Json.JsonValueKind.String) return;
+        string targetUsername = (unEl.GetString() ?? "").Trim();
+        if (string.IsNullOrEmpty(targetUsername)) return;
+        if (!root.TryGetProperty("amount", out var amEl)
+            || !amEl.TryGetInt32(out int amount) || amount < 1) return;
+        bool isCert = root.TryGetProperty("is_cert", out var cEl)
+            && cEl.ValueKind == System.Text.Json.JsonValueKind.True;
+
+        _ = ProcessGiveAsync(peerId, itemId, targetUsername, amount, isCert);
+    }
+
+    private async System.Threading.Tasks.Task ProcessGiveAsync(
+        long peerId, long itemId, string targetUsername, int amount, bool isCert)
+    {
+        var item = _itemRepo.GetByIdSync(itemId);
+        if (item == null) { SendGiveError(peerId, ErrorKeys.ItemGiveFailed, null); return; }
+
+        string outputSlug = item.Slug;
+        if (isCert)
+        {
+            if (item.Stackable || item.NonCertable || !string.IsNullOrEmpty(item.CertOfSlug))
+            {
+                SendGiveError(peerId, ErrorKeys.ItemGiveCertUnavailable, null);
+                return;
+            }
+            outputSlug = item.Slug + "_cert";
+            if (!_items.ContainsSlug(outputSlug))
+            {
+                SendGiveError(peerId, ErrorKeys.ItemGiveCertUnavailable, null);
+                return;
+            }
+        }
+
+        var targetPlayer = await _players.GetByUsernameAsync(targetUsername);
+        if (targetPlayer == null)
+        {
+            SendGiveError(peerId, ErrorKeys.ItemGivePlayerNotFound,
+                new { username = targetUsername });
+            return;
+        }
+
+        if (!_items.TryGetById(_items.GetIdBySlug(outputSlug), out var outMeta))
+        {
+            SendGiveError(peerId, ErrorKeys.ItemGiveFailed, null);
+            return;
+        }
+
+        if (_trade.IsTradeInventoryLocked(targetPlayer.Id))
+        {
+            SendGiveError(peerId, ErrorKeys.ItemGivePlayerBusy, null);
+            return;
+        }
+
+        long[] inv;
+        if (_state.Inventories.TryGetValue(targetPlayer.Id, out var liveInv))
+        {
+            inv = liveInv;
+        }
+        else
+        {
+            var loaded = await _inventory.GetSlotsAsync(targetPlayer.Id);
+            if (loaded == null)
+            {
+                SendGiveError(peerId, ErrorKeys.ItemGiveInventoryFull, null);
+                return;
+            }
+            inv = loaded;
+        }
+
+        if (!HasSpaceFor(inv, outMeta, amount))
+        {
+            SendGiveError(peerId, ErrorKeys.ItemGiveInventoryFull,
+                new { amount });
+            return;
+        }
+
+        bool ok = await GiveItemAsync(targetPlayer.Id, outputSlug, amount);
+        if (!ok)
+        {
+            SendGiveError(peerId, ErrorKeys.ItemGiveFailed, null);
+            return;
+        }
+
+        _outbound.Send(peerId, new
+        {
+            type = "dev_item_give_result",
+            ok = true,
+            item_slug = outputSlug,
+            target_username = targetPlayer.Username,
+            amount,
+        });
+        Diag.Log("diag_item",
+            $"Dev give: {outputSlug} x{amount} to {targetPlayer.Username} (id {targetPlayer.Id})");
+    }
+
+    private static bool HasSpaceFor(long[] inv, ItemMeta meta, int amount)
+    {
+        if (meta.Stackable)
+        {
+            for (int i = 0; i < inv.Length; i++)
+                if (inv[i] != 0 && ItemStack.ItemId(inv[i]) == meta.Id) return true;
+            for (int i = 0; i < inv.Length; i++)
+                if (inv[i] == 0) return true;
+            return false;
+        }
+        int empty = 0;
+        for (int i = 0; i < inv.Length; i++) if (inv[i] == 0) empty++;
+        return empty >= amount;
+    }
+
+    private void SendGiveError(long peerId, string errorKey, object? errorParams)
+    {
+        _outbound.Send(peerId, new
+        {
+            type = "dev_item_give_result",
+            ok = false,
+            error_key = errorKey,
+            error_params = errorParams ?? new { },
+        });
+    }
+
     internal void HandleItemIconInfo(long peerId)
     {
         if (!_state.Sessions.ContainsKey(peerId)) return;

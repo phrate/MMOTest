@@ -68,5 +68,21 @@
 	"browse_reset_cols": "Reset Cols",
 	"tab_equipment": "Equipment",
 	"tab_consumable": "Consumable",
-	"enabled": "Enabled"
+	"enabled": "Enabled",
+	"give": {
+		"header": "GIVE TO PLAYER",
+		"label_player": "Player",
+		"label_amount": "Amount",
+		"label_cert": "Cert.",
+		"button_send": "Send",
+		"cert_tooltip": "Send as a cert (stackable — one slot regardless of amount).",
+		"success": "Sent {amount}x {item} to {username}.",
+		"error": {
+			"player_not_found": "No player named '{username}' exists.",
+			"inventory_full": "That player does not have enough inventory space.",
+			"cert_unavailable": "That item cannot be sent as a cert.",
+			"player_busy": "That player is currently busy.",
+			"failed": "Give failed."
+		}
+	}
 }
