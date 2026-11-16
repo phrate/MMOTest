@@ -491,6 +491,7 @@ private AstNode ParseComparison()
             case TokenKind.NULL:       Advance(); return new NullNode(t.Line);
             case TokenKind.SYSTEM_VAR: Advance(); return new RefNode("system", t.Text, t.Line);
             case TokenKind.ARG_VAR:    Advance(); return new RefNode("arg", t.Text, t.Line);
+            case TokenKind.ITEM_VAR:   Advance(); return new RefNode("item", t.Text, t.Line);
             case TokenKind.IDENT:      return ParseIdentExpr();
             case TokenKind.LBRACKET:   return ParseArray();
             case TokenKind.LBRACE:     return ParseDict();
@@ -722,10 +723,14 @@ private AstNode ParseComparison()
         while (Peek().Kind != TokenKind.DEDENT && Peek().Kind != TokenKind.EOF)
         {
             if (Peek().Kind == TokenKind.NEWLINE) { Advance(); continue; }
-            var slugTok = Expect(TokenKind.IDENT);
+            var slugTok = Advance();
+            string slug;
+            if (slugTok.Kind == TokenKind.ITEM_VAR) slug = slugTok.Text;
+            else if (slugTok.Kind == TokenKind.IDENT) slug = slugTok.Text;  // backwards compat
+            else throw Error($"Expected item slug (e.g. @knife) at {slugTok.Line}:{slugTok.Col}");
             Expect(TokenKind.COMMA);
             var qty = ParseExpr();
-            items.Add((slugTok.Text, qty));
+            items.Add((slug, qty));
             ConsumeNewline();
         }
         if (Peek().Kind == TokenKind.DEDENT) Advance();

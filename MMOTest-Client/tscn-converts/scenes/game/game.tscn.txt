@@ -1,8 +1,7 @@
-[gd_scene load_steps=8 format=3 uid="uid://d04ltou1ju0du"]
+[gd_scene load_steps=7 format=3 uid="uid://d04ltou1ju0du"]
 
 [ext_resource type="Script" uid="uid://sle5oo30t0bn" path="res://scenes/game/game.gd" id="1_sul5r"]
 [ext_resource type="Script" uid="uid://bf12drb84htoq" path="res://scenes/game/terrain/terrain_renderer.gd" id="3_0sr1o"]
-[ext_resource type="PackedScene" uid="uid://bvp4o38qluidj" path="res://ui/debug/debug_overlay.tscn" id="3_kelw5"]
 [ext_resource type="PackedScene" uid="uid://blcnrh5k6lhdv" path="res://scenes/game/chat_box/chat_box.tscn" id="4_kelw5"]
 [ext_resource type="PackedScene" uid="uid://b78js5vvgwyef" path="res://scenes/game/tile_highlighter.tscn" id="5_lfrn8"]
 
@@ -13,6 +12,7 @@ size = Vector2(1, 1)
 
 [node name="Game" type="Node3D"]
 script = ExtResource("1_sul5r")
+dev_hub_auto_open = true
 
 [node name="World" type="Node3D" parent="."]
 unique_name_in_owner = true
@@ -29,6 +29,7 @@ transform = Transform3D(0.866025, -0.353553, 0.353553, 0, 0.707107, 0.707107, -0
 [node name="Floor" type="Node3D" parent="World"]
 
 [node name="Node3D" type="MeshInstance3D" parent="World/Floor"]
+visible = false
 mesh = SubResource("PlaneMesh_sul5r")
 skeleton = NodePath("../..")
 
@@ -39,8 +40,6 @@ unique_name_in_owner = true
 script = ExtResource("3_0sr1o")
 floor_color_a = Color(0.52, 0.52, 0.52, 1)
 floor_color_b = Color(0.58, 0.58, 0.58, 1)
-
-[node name="DebugOverlay" parent="." instance=ExtResource("3_kelw5")]
 
 [node name="ChatBox" parent="." instance=ExtResource("4_kelw5")]
 

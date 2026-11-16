@@ -30,5 +30,6 @@ public sealed class CallContext
     //   ResolveIdent: "item_X" -> item id, "level_X" -> player skill level, else null
     //   CountItemInInventory: item id -> total quantity across the player's inventory
     public Func<string, object?>? ResolveIdent { get; set; }
+    public Func<string, object?>? ResolveItem { get; set; }
     public Func<int, int>? CountItemInInventory { get; set; }
 }

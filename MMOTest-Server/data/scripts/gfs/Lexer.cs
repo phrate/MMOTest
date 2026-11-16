@@ -12,7 +12,7 @@ public sealed class Lexer
     private bool _lineStart = true;
     private bool _inTag = false;
     private int _lineIndent;
-    private int _bracketDepth;                            // NEW
+    private int _bracketDepth;
     private readonly List<int> _indentStack = new() { 0 };
     private readonly List<Token> _tokens = new();
 
@@ -108,6 +108,7 @@ public sealed class Lexer
         if (c == '"') { LexString(); return; }
         if (c == '$' && Peek(1) == '{') { LexSystemVar(); return; }
         if (c == '$' && Peek(1) == '"') { LexArgVar(); return; }
+        if (c == '@') { LexItemVar(); return; }         // ← NEW
         if (c >= '0' && c <= '9') { LexNumber(); return; }
         if (IsIdentStart(c)) { LexIdent(); return; }
 
@@ -198,6 +199,17 @@ public sealed class Lexer
         while (_pos < _src.Length && Peek() != '"') { sb.Append(Peek()); Advance(); }
         if (Peek() == '"') Advance();
         _tokens.Add(new Token(TokenKind.ARG_VAR, sb.ToString(), _line, _col));
+    }
+
+    private void LexItemVar()
+    {
+        Advance(); // '@'
+        int start = _pos;
+        while (_pos < _src.Length && (char.IsLetterOrDigit(Peek()) || Peek() == '_')) Advance();
+        string name = _src.Substring(start, _pos - start);
+        if (string.IsNullOrEmpty(name))
+            throw new Exception($"Expected identifier after '@' at {_line}:{_col}");
+        _tokens.Add(new Token(TokenKind.ITEM_VAR, name, _line, _col));
     }
 
     private void LexNumber()

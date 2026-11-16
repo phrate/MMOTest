@@ -455,6 +455,7 @@ private static bool TryToDouble(object? v, out double result)
                  : ctx.ResolveIdent?.Invoke(name),
         "system" => ctx.System.TryGetValue(name, out var s2) ? s2
                  : ctx.ResolveIdent?.Invoke(name),
+        "item" => ctx.ResolveItem?.Invoke(name),
         _ => null
     };
 
@@ -588,7 +589,8 @@ public static void ExecuteRecipe(
         bool anyInsufficient = false;
         foreach (var (slug, qtyExpr) in ic.Items)
         {
-            var slugObj = ctx.ResolveIdent?.Invoke(slug);
+            var slugObj = ctx.ResolveItem?.Invoke(slug);
+            if (slugObj == null) slugObj = ctx.ResolveIdent?.Invoke(slug);
             if (slugObj == null) { anyMissing = true; continue; }
             int itemId;
             try { itemId = (int)Convert.ToInt64(slugObj); } catch { anyMissing = true; continue; }

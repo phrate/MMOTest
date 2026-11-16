@@ -28,6 +28,7 @@ Npcs="*res://autoload/Npcs.gd"
 Inventory="*res://autoload/Inventory.gd"
 Skills="*res://autoload/Skills.gd"
 NpcRender="*res://autoload/Npc_Render.gd"
+ItemIcons="*res://autoload/ItemIcons.gd"
 Hitboxes="*res://autoload/Hitboxes.gd"
 Trade="*res://autoload/Trade.gd"
 Bank="*res://autoload/Bank.gd"
@@ -44,9 +45,13 @@ gdscript/warnings/inference_on_variant=0
 
 [display]
 
-window/size/viewport_width=1280
+window/size/viewport_width=1360
 window/size/viewport_height=768
 
 [dotnet]
 
 project/assembly_name="MMOTest Client"
+
+[editor_plugins]
+
+enabled=PackedStringArray("res://addons/script-ide/plugin.cfg")

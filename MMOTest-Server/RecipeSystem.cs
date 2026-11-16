@@ -182,6 +182,12 @@ internal sealed class RecipeSystem
             return null;
         };
 
+        ctx.ResolveItem = (name) =>
+        {
+            var stripped = name.StartsWith("item_") ? name.Substring("item_".Length) : name;
+            return _items.TryGetIdBySlug(stripped, out var id) ? (long)id : null;
+        };
+
         ctx.CountItemInInventory = (itemId) => CountItemInSandbox(sandbox, itemId);
 
         try

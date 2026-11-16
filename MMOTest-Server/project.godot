@@ -14,8 +14,6 @@ config/name="MMOTest-Server"
 run/main_scene="uid://8x3narb7wycy"
 config/features=PackedStringArray("4.4", "C#")
 
-[autoload]
-
 [dotnet]
 
 project/assembly_name="MMOTest-Server"

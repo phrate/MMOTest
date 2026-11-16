@@ -10,6 +10,3 @@ anchor_bottom = 1.0
 grow_horizontal = 2
 grow_vertical = 2
 script = ExtResource("1")
-col_width_slug = 250
-col_width_display = 250
-col_width_tags_min = 80

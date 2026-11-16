@@ -363,8 +363,8 @@ public class GfsLexerParserTests
             "\n" +
             "REQUIRE:\n" +
             "    ITEMS:\n" +
-            "        item_knife, 1\n" +
-            "        item_log, 1\n" +
+            "        @knife, 1\n" +
+            "        @log, 1\n" +
             "\n" +
             "FAIL:\n" +
             "    MESSAGES:\n" +
@@ -373,10 +373,10 @@ public class GfsLexerParserTests
             "\n" +
             "SUCCESS:\n" +
             "    consume = [\n" +
-            "        item_log, 1\n" +
+            "        @log, 1\n" +
             "    ]\n" +
             "    output = [\n" +
-            "        item_stick, 1\n" +
+            "        @stick, 1\n" +
             "    ]\n";
 
         var ast = Parse(src);
@@ -389,8 +389,8 @@ public class GfsLexerParserTests
         Assert.Single(ast.Recipe!.Require);
         var itemsCheck = Assert.IsType<ItemsCheckNode>(ast.Recipe.Require[0]);
         Assert.Equal(2, itemsCheck.Items.Count);
-        Assert.Equal("item_knife", itemsCheck.Items[0].Slug);
-        Assert.Equal("item_log", itemsCheck.Items[1].Slug);
+        Assert.Equal("knife", itemsCheck.Items[0].Slug);
+        Assert.Equal("log", itemsCheck.Items[1].Slug);
 
         // FAIL contains one MessagesNode with a single BAD_ITEMS entry.
         Assert.Single(ast.Recipe.Fail);
@@ -462,13 +462,13 @@ public class GfsLexerParserTests
             "\n" +
             "REQUIRE:\n" +
             "    ITEMS:\n" +
-            "        item_a, 1\n" +
+            "        @a, 1\n" +
             "\n" +
             "SUCCESS:\n" +
             "    CHANCE 25/100:\n" +
-            "        consume = [ item_a, 1 ]\n" +
+            "        consume = [ @a, 1 ]\n" +
             "    CHANCE_FAIL:\n" +
-            "        consume = [ item_a, 2 ]\n";
+            "        consume = [ @a, 2 ]\n";
 
         var ast = Parse(src);
         Assert.NotNull(ast.Recipe);
@@ -560,6 +560,16 @@ public class GfsLexerParserTests
                 $"{failures.Count} of {files.Length} .gfs file(s) failed to parse:\n  "
                 + string.Join("\n  ", failures));
         }
+    }
+
+    [Fact]
+    public void Item_Var_Emits_ITEM_VAR_Token()
+    {
+        var tokens = new Lexer("@knife @long_slug_123").Tokenize();
+        Assert.Equal(TokenKind.ITEM_VAR, tokens[0].Kind);
+        Assert.Equal("knife", tokens[0].Text);
+        Assert.Equal(TokenKind.ITEM_VAR, tokens[1].Kind);
+        Assert.Equal("long_slug_123", tokens[1].Text);
     }
 
     // ------------------------------------------------------------------------

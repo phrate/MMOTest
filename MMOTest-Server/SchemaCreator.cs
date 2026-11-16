@@ -153,7 +153,6 @@ internal static class SchemaCreator
                 slug_id         TEXT    NOT NULL UNIQUE,
                 display_name    TEXT    NOT NULL,
                 type            TEXT    NOT NULL CHECK (type IN ('weapon', 'consumable', 'armor', 'misc')),
-                type_slug       TEXT    NOT NULL,
                 stackable       INTEGER NOT NULL DEFAULT 0 CHECK (stackable IN (0, 1)),
                 can_trade       INTEGER NOT NULL DEFAULT 1 CHECK (can_trade IN (0, 1)),
                 cert_of_slug    TEXT    NOT NULL DEFAULT '',
