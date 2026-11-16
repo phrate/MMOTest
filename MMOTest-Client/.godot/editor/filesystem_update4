@@ -9,3 +9,4 @@ res://scenes/dev_hub/panels/world_editor_panel.gd
 res://autoload/ItemIcons.gd
 res://scenes/game/game.gd
 res://scenes/dev_hub/dev_panel_registry.gd
+res://scenes/dev_hub/panels/item_editor_panel.tscn

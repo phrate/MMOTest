@@ -64,5 +64,9 @@
 	"type_weapon": "Weapon",
 	"type_consumable": "Consumable",
 	"type_armor": "Armor",
-	"type_misc": "Misc"
+	"type_misc": "Misc",
+	"browse_reset_cols": "Reset Cols",
+	"tab_equipment": "Equipment",
+	"tab_consumable": "Consumable",
+	"enabled": "Enabled"
 }

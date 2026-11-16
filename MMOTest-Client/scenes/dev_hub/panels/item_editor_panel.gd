@@ -1,20 +1,21 @@
 extends DevPanel
 ## Item editor — three sub-tabs: Browse / Edit / Create.
 ##
-## Cert items are filtered out entirely by the server (never shown).
-## Soft delete hides from Browse (is_active flag) but existing stacks keep
-## working in-game. Reactivate via the Active toggle in Edit.
+## Cert items are filtered out by the server. Soft delete hides from Browse
+## (is_active flag) but existing stacks keep working in-game.
 ##
-## Edit/Create layout is a 2-column grid:
+## Edit/Create layout (2-column 30/70 grid, each section on a lighter bg):
 ##   row 0: icon      | identity
-##   row 1: flags     | tags
-##   row 2: (blank)   | capabilities
-##   row 3: references (full width)
+##   row 1: blank     | flags
+##   row 2: blank     | tags
+##   row 3: blank     | capabilities (inner tabs: Equipment | Consumable)
+##   row 4: references (full width)
+##
+## Column widths are tuned via @export vars. Adjust in the scene inspector,
+## restart, and reopen the panel to see the change.
 ##
 ## Icons live at item_render/icons/<name>.png on the server, shipped through
-## ItemIcons autoload. The icon section shows the icon scaled by ICON_SCALE
-## (change ICON_SCALE to resize). If no icon is available for the item, a
-## "No icon" placeholder is shown.
+## ItemIcons autoload. Rendered at native resolution (no scaling).
 
 const TAB_BROWSE := 0
 const TAB_EDIT := 1
@@ -28,7 +29,7 @@ const EFFECT_TYPES := ["heal","buff","utility"]
 
 const FIELD_LABEL_WIDTH := 140
 const FIELD_ROW_SEP := 6
-const LINE_EDIT_WIDTH := 260
+const LINE_EDIT_WIDTH := 240
 const SPIN_WIDTH := 100
 const DROPDOWN_WIDTH := 180
 const TEXTAREA_MIN_HEIGHT := 80
@@ -36,22 +37,30 @@ const SAVE_BUTTON_HEIGHT := 48
 const TAG_CHIP_SEP := 4
 const TAG_INPUT_WIDTH := 260
 const SECTION_HEADER_HEIGHT := 28
+const SECTION_BG := Color(0.16, 0.16, 0.20, 1.0)
+const SECTION_PADDING := 10
+const CAPABILITY_TAB_PADDING := 10
 
-# Icon display
-const ICON_SCALE := 8.0
-const ICON_BOX_MIN_SIZE := 180
-const ICON_BOX_PADDING := 12
-
-const LEFT_COL_RATIO := 0.30
-const COLUMN_STATE_PATH := "user://dev_hub/item_editor_columns.json"
+const ICON_BOX_MIN_SIZE := 120
+const ICON_BOX_PADDING := 8
 
 const GOLD := Color(1.0, 0.85, 0.30)
 const ACTIVE_COLOR := Color(0.35, 0.20, 0.45, 1.0)
 const ACTIVE_BORDER := Color(0.70, 0.40, 0.90, 1.0)
 
+# --- Column widths (pixels). Tags column flexes to fill remaining space. ---
+@export_group("Browse Columns")
+@export var col_width_slug: int = 160
+@export var col_width_display: int = 220
+@export var col_width_type: int = 90
+@export var col_width_stacks: int = 60
+@export var col_width_trade: int = 60
+@export var col_width_price: int = 80
+@export var col_width_tags_min: int = 100
+
+@export_group("Buttons")
 @export var save_button_height: int = 48
 @export var save_button_font_size: int = 18
-@export var icon_scale: float = ICON_SCALE
 
 var _current_item_id: int = 0
 var _current_data: Dictionary = {}
@@ -90,7 +99,6 @@ func _ready() -> void:
 	_connect_network()
 	Network.send_dev_item_list(false)
 	_subtab_container.current_tab = TAB_BROWSE
-	call_deferred("_load_column_widths")
 	if ItemIcons:
 		ItemIcons.icon_ready.connect(_on_icon_ready)
 
@@ -98,13 +106,6 @@ func panel_opened() -> void:
 	Network.send_dev_item_list(_browse_show_inactive.button_pressed)
 	if ItemIcons and not ItemIcons._sync_in_progress:
 		ItemIcons.request_sync()
-
-func panel_closed() -> void:
-	_save_column_widths()
-
-func _notification(what: int) -> void:
-	if what == NOTIFICATION_PREDELETE:
-		_save_column_widths()
 
 func on_hub_open_for_entity(entity_type: String, entity_id: int) -> void:
 	if entity_type != "item": return
@@ -123,7 +124,6 @@ func _connect_network() -> void:
 	Network.dev_item_deleted.connect(_on_item_deleted)
 
 func _on_icon_ready(_name: String) -> void:
-	# Rebuild icon box if visible
 	if _current_item_id != 0 and _subtab_container.current_tab == TAB_EDIT:
 		_rebuild_edit_icon_box()
 
@@ -148,15 +148,13 @@ func _on_list_result(ok: bool, items: Array) -> void:
 		var tags: Array = it.get("tags", [])
 		row.set_text(6, ", ".join(tags))
 		row.set_metadata(0, iid)
-		# Column alignment
 		row.set_text_alignment(0, HORIZONTAL_ALIGNMENT_LEFT)
 		row.set_text_alignment(1, HORIZONTAL_ALIGNMENT_LEFT)
 		row.set_text_alignment(2, HORIZONTAL_ALIGNMENT_CENTER)
 		row.set_text_alignment(3, HORIZONTAL_ALIGNMENT_CENTER)
 		row.set_text_alignment(4, HORIZONTAL_ALIGNMENT_CENTER)
 		row.set_text_alignment(5, HORIZONTAL_ALIGNMENT_CENTER)
-		row.set_text_alignment(6, HORIZONTAL_ALIGNMENT_CENTER)
-		# Slug gold
+		row.set_text_alignment(6, HORIZONTAL_ALIGNMENT_LEFT)
 		row.set_custom_color(0, GOLD)
 		if not bool(it.get("is_active", true)):
 			for c in 7:
@@ -232,14 +230,12 @@ func _build_ui() -> void:
 	_subtab_container.set_tab_title(TAB_BROWSE, Texts.get_text("ui.dev_hub.item_editor.tab_browse"))
 	_subtab_container.set_tab_title(TAB_EDIT,   Texts.get_text("ui.dev_hub.item_editor.tab_edit"))
 	_subtab_container.set_tab_title(TAB_CREATE, Texts.get_text("ui.dev_hub.item_editor.tab_create"))
-	_subtab_container.tab_changed.connect(_on_subtab_changed)
-
-func _on_subtab_changed(_tab: int) -> void:
-	_save_column_widths()
 
 func _build_browse_tab() -> void:
 	var browse := VBoxContainer.new()
 	browse.name = "Browse"
+	browse.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	browse.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	browse.add_theme_constant_override("separation", _style.panel_separation)
 	_subtab_container.add_child(browse)
 
@@ -257,7 +253,7 @@ func _build_browse_tab() -> void:
 	_browse_show_inactive.toggle_mode = true
 	_browse_show_inactive.focus_mode = Control.FOCUS_NONE
 	_browse_show_inactive.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
-	_browse_show_inactive.text = "[ ] " + Texts.get_text("ui.dev_hub.item_editor.browse_show_inactive")
+	_browse_show_inactive.text = Texts.get_text("ui.dev_hub.item_editor.browse_show_inactive")
 	_browse_show_inactive.add_theme_font_size_override("font_size", _style.font_size_small)
 	_browse_show_inactive.add_theme_color_override("font_color", _style.text_primary)
 	_browse_show_inactive.toggled.connect(_on_show_inactive_toggled)
@@ -280,16 +276,26 @@ func _build_browse_tab() -> void:
 	_browse_tree.set_column_title(4, Texts.get_text("ui.dev_hub.item_editor.browse_col_trade"))
 	_browse_tree.set_column_title(5, Texts.get_text("ui.dev_hub.item_editor.browse_col_price"))
 	_browse_tree.set_column_title(6, Texts.get_text("ui.dev_hub.item_editor.browse_col_tags"))
-	for i in 7:
+
+	var fixed_widths := [col_width_slug, col_width_display, col_width_type,
+		col_width_stacks, col_width_trade, col_width_price]
+	for i in 6:
 		_browse_tree.set_column_expand(i, false)
+		_browse_tree.set_column_custom_minimum_width(i, int(fixed_widths[i]))
+	_browse_tree.set_column_expand(6, true)
+	_browse_tree.set_column_custom_minimum_width(6, col_width_tags_min)
+
 	_browse_tree.set_column_title_alignment(0, HORIZONTAL_ALIGNMENT_LEFT)
 	_browse_tree.set_column_title_alignment(1, HORIZONTAL_ALIGNMENT_LEFT)
 	_browse_tree.set_column_title_alignment(2, HORIZONTAL_ALIGNMENT_CENTER)
 	_browse_tree.set_column_title_alignment(3, HORIZONTAL_ALIGNMENT_CENTER)
 	_browse_tree.set_column_title_alignment(4, HORIZONTAL_ALIGNMENT_CENTER)
 	_browse_tree.set_column_title_alignment(5, HORIZONTAL_ALIGNMENT_CENTER)
-	_browse_tree.set_column_title_alignment(6, HORIZONTAL_ALIGNMENT_CENTER)
+	_browse_tree.set_column_title_alignment(6, HORIZONTAL_ALIGNMENT_LEFT)
+
 	_browse_tree.hide_root = true
+	_browse_tree.scroll_horizontal_enabled = false
+	_browse_tree.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_browse_tree.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	_browse_tree.select_mode = Tree.SELECT_ROW
 	_browse_tree.gui_input.connect(_on_browse_tree_input)
@@ -297,7 +303,7 @@ func _build_browse_tab() -> void:
 	browse.add_child(_browse_tree)
 
 func _on_show_inactive_toggled(pressed: bool) -> void:
-	_browse_show_inactive.text = ("[x] " if pressed else "[ ] ") + Texts.get_text("ui.dev_hub.item_editor.browse_show_inactive")
+	_browse_show_inactive.set_meta("is_on", pressed)
 	Network.send_dev_item_list(pressed)
 
 func _on_browse_filter_changed(_t: String) -> void:
@@ -352,32 +358,6 @@ func _on_browse_create_pressed() -> void:
 	_reset_create_state()
 	_subtab_container.current_tab = TAB_CREATE
 
-# Column width persistence
-func _save_column_widths() -> void:
-	if _browse_tree == null: return
-	var widths := []
-	for i in _browse_tree.columns:
-		widths.append(_browse_tree.get_column_width(i))
-	var dir := COLUMN_STATE_PATH.get_base_dir()
-	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(dir))
-	var f := FileAccess.open(COLUMN_STATE_PATH, FileAccess.WRITE)
-	if f == null: return
-	f.store_string(JSON.stringify({"widths": widths}))
-	f.close()
-
-func _load_column_widths() -> void:
-	if _browse_tree == null: return
-	if not FileAccess.file_exists(COLUMN_STATE_PATH): return
-	var f := FileAccess.open(COLUMN_STATE_PATH, FileAccess.READ)
-	if f == null: return
-	var parsed: Variant = JSON.parse_string(f.get_as_text())
-	f.close()
-	if typeof(parsed) != TYPE_DICTIONARY: return
-	var widths: Variant = parsed.get("widths", [])
-	if typeof(widths) != TYPE_ARRAY: return
-	for i in range(min(widths.size(), _browse_tree.columns)):
-		_browse_tree.set_column_custom_minimum_width(i, int(widths[i]))
-
 # ============================================================
 # Edit tab
 # ============================================================
@@ -385,6 +365,8 @@ func _load_column_widths() -> void:
 func _build_edit_tab() -> void:
 	var edit := VBoxContainer.new()
 	edit.name = "Edit"
+	edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	edit.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	edit.add_theme_constant_override("separation", _style.panel_separation)
 	_subtab_container.add_child(edit)
 
@@ -405,7 +387,7 @@ func _build_edit_tab() -> void:
 
 	_edit_form_container = VBoxContainer.new()
 	_edit_form_container.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	_edit_form_container.add_theme_constant_override("separation", _style.panel_separation)
+	_edit_form_container.add_theme_constant_override("separation", 8)
 	margin.add_child(_edit_form_container)
 
 	var btn_row := HBoxContainer.new()
@@ -425,6 +407,8 @@ func _build_edit_tab() -> void:
 func _build_create_tab() -> void:
 	var create := VBoxContainer.new()
 	create.name = "Create"
+	create.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	create.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	create.add_theme_constant_override("separation", _style.panel_separation)
 	_subtab_container.add_child(create)
 
@@ -445,7 +429,7 @@ func _build_create_tab() -> void:
 
 	_create_form_container = VBoxContainer.new()
 	_create_form_container.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	_create_form_container.add_theme_constant_override("separation", _style.panel_separation)
+	_create_form_container.add_theme_constant_override("separation", 8)
 	margin.add_child(_create_form_container)
 
 	_create_error_label = Label.new()
@@ -480,7 +464,48 @@ func _make_primary_button(text: String, base: Color) -> Button:
 	return b
 
 # ============================================================
-# Form construction (shared by Edit and Create)
+# Section backgrounds
+# ============================================================
+
+func _make_section_panel(ratio: float) -> Dictionary:
+	var panel := PanelContainer.new()
+	panel.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	panel.size_flags_stretch_ratio = ratio
+	var sb := StyleBoxFlat.new()
+	sb.bg_color = SECTION_BG
+	sb.corner_radius_top_left = 4
+	sb.corner_radius_top_right = 4
+	sb.corner_radius_bottom_left = 4
+	sb.corner_radius_bottom_right = 4
+	sb.content_margin_left = SECTION_PADDING
+	sb.content_margin_right = SECTION_PADDING
+	sb.content_margin_top = SECTION_PADDING
+	sb.content_margin_bottom = SECTION_PADDING
+	panel.add_theme_stylebox_override("panel", sb)
+	var vbox := VBoxContainer.new()
+	vbox.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	vbox.add_theme_constant_override("separation", 4)
+	panel.add_child(vbox)
+	return {"panel": panel, "vbox": vbox}
+
+func _add_blank_column(parent: HBoxContainer) -> void:
+	var blank := Control.new()
+	blank.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	blank.size_flags_stretch_ratio = 3.0
+	parent.add_child(blank)
+
+func _section_header(key: String) -> Control:
+	var box := CenterContainer.new()
+	box.custom_minimum_size = Vector2(0, SECTION_HEADER_HEIGHT)
+	var lbl := Label.new()
+	lbl.text = Texts.get_text("ui.dev_hub.item_editor." + key)
+	lbl.add_theme_font_size_override("font_size", _style.font_size_tab)
+	lbl.add_theme_color_override("font_color", _style.text_heading)
+	box.add_child(lbl)
+	return box
+
+# ============================================================
+# Form construction
 # ============================================================
 
 func _build_edit_form() -> void:
@@ -536,55 +561,42 @@ func _render_form(container: VBoxContainer, form: Dictionary) -> void:
 	_build_icon_section(row0, form)
 	_build_identity_section(row0, form)
 
-	# Row 1: flags | tags
+	# Row 1: blank | flags
 	var row1 := HBoxContainer.new()
 	row1.add_theme_constant_override("separation", _style.panel_separation)
 	container.add_child(row1)
+	_add_blank_column(row1)
 	_build_flags_section(row1, form)
-	_build_tags_section(row1, form)
 
-	# Row 2: blank | capabilities
+	# Row 2: blank | tags
 	var row2 := HBoxContainer.new()
 	row2.add_theme_constant_override("separation", _style.panel_separation)
 	container.add_child(row2)
-	var blank := Control.new()
-	blank.custom_minimum_size = Vector2(0, 0)
-	blank.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	blank.size_flags_stretch_ratio = LEFT_COL_RATIO
-	row2.add_child(blank)
-	_build_capabilities_section(row2, form)
+	_add_blank_column(row2)
+	_build_tags_section(row2, form)
 
-	# Row 3: references full width
+	# Row 3: blank | capabilities
+	var row3 := HBoxContainer.new()
+	row3.add_theme_constant_override("separation", _style.panel_separation)
+	container.add_child(row3)
+	_add_blank_column(row3)
+	_build_capabilities_section(row3, form)
+
+	# Row 4: references full width
 	if form["include_references"]:
 		_build_references_section(container, form)
-
-func _section_panel() -> VBoxContainer:
-	var p := VBoxContainer.new()
-	p.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	p.add_theme_constant_override("separation", 4)
-	return p
-
-func _section_header(key: String) -> Control:
-	var box := CenterContainer.new()
-	box.custom_minimum_size = Vector2(0, SECTION_HEADER_HEIGHT)
-	var lbl := Label.new()
-	lbl.text = Texts.get_text("ui.dev_hub.item_editor." + key)
-	lbl.add_theme_font_size_override("font_size", _style.font_size_tab)
-	lbl.add_theme_color_override("font_color", _style.text_heading)
-	box.add_child(lbl)
-	return box
 
 # --- Icon section ---
 
 func _build_icon_section(parent: HBoxContainer, form: Dictionary) -> void:
-	var sec := _section_panel()
-	sec.size_flags_stretch_ratio = LEFT_COL_RATIO
-	sec.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	var s := _make_section_panel(3.0)
+	var sec: VBoxContainer = s.vbox
 	sec.add_child(_section_header("section_icon"))
 
 	var box := PanelContainer.new()
 	box.custom_minimum_size = Vector2(ICON_BOX_MIN_SIZE, ICON_BOX_MIN_SIZE)
 	box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	box.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	var sb := StyleBoxFlat.new()
 	sb.bg_color = Color(0.10, 0.10, 0.14, 1.0)
 	sb.border_color = Color(0.35, 0.35, 0.42, 1.0)
@@ -600,7 +612,7 @@ func _build_icon_section(parent: HBoxContainer, form: Dictionary) -> void:
 	sec.add_child(box)
 	form["icon_box"] = box
 	_populate_icon_box(box, form)
-	parent.add_child(sec)
+	parent.add_child(s.panel)
 
 func _populate_icon_box(box: PanelContainer, form: Dictionary) -> void:
 	for c in box.get_children():
@@ -629,7 +641,7 @@ func _populate_icon_box(box: PanelContainer, form: Dictionary) -> void:
 
 	var tr := TextureRect.new()
 	tr.texture = tex
-	tr.custom_minimum_size = tex.get_size() * icon_scale
+	tr.custom_minimum_size = tex.get_size()
 	tr.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
 	tr.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
 	center.add_child(tr)
@@ -648,7 +660,8 @@ func _rebuild_edit_icon_box() -> void:
 # --- Identity section ---
 
 func _build_identity_section(parent: HBoxContainer, form: Dictionary) -> void:
-	var sec := _section_panel()
+	var s := _make_section_panel(7.0)
+	var sec: VBoxContainer = s.vbox
 	sec.add_child(_section_header("section_identity"))
 	var src: Dictionary = form["src"]
 	var fdict: Dictionary = form["fields"]
@@ -656,34 +669,51 @@ func _build_identity_section(parent: HBoxContainer, form: Dictionary) -> void:
 	_add_line_edit(sec, "label_slug_id", "slug_id", str(src.get("slug_id", "")), not form["include_references"], fdict)
 	_add_line_edit(sec, "label_display", "display", str(src.get("display", "")), false, fdict)
 	_add_textarea(sec, "label_description", "description", str(src.get("description", "")), fdict)
-	_add_line_edit(sec, "label_icon_path", "icon_path", str(src.get("icon_path", "")), false, fdict)
+
+	var icon_path_value := str(src.get("icon_path", ""))
+	var slug_for_placeholder := str(src.get("slug_id", ""))
+	var icon_placeholder := ""
+	if not slug_for_placeholder.is_empty():
+		icon_placeholder = "%s.png (uses slug)" % slug_for_placeholder
+	_add_line_edit(sec, "label_icon_path", "icon_path", icon_path_value, false, fdict, icon_placeholder)
+
 	_add_dropdown(sec, "label_type", "type", str(src.get("type", "misc")), ITEM_TYPES, fdict)
 	_add_spin(sec, "label_base_price", "base_price", int(src.get("base_price", 0)), 0, 999999999, fdict)
 
-	parent.add_child(sec)
+	parent.add_child(s.panel)
 
 # --- Flags section ---
 
 func _build_flags_section(parent: HBoxContainer, form: Dictionary) -> void:
-	var sec := _section_panel()
-	sec.size_flags_stretch_ratio = LEFT_COL_RATIO
-	sec.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	var s := _make_section_panel(7.0)
+	var sec: VBoxContainer = s.vbox
 	sec.add_child(_section_header("section_flags"))
 	var src: Dictionary = form["src"]
 	var fdict: Dictionary = form["fields"]
 
-	_add_toggle_vertical(sec, "label_is_active", "is_active", bool(src.get("is_active", true)), fdict)
-	_add_toggle_vertical(sec, "label_stackable", "stackable", bool(src.get("stackable", false)), fdict)
-	_add_toggle_vertical(sec, "label_can_trade", "can_trade", bool(src.get("can_trade", true)), fdict)
-	_add_toggle_vertical(sec, "label_can_bank", "can_bank", not bool(src.get("non_bankable", false)), fdict)
-	_add_toggle_vertical(sec, "label_can_cert", "can_cert", not bool(src.get("non_certable", false)), fdict)
+	var flow := HFlowContainer.new()
+	flow.add_theme_constant_override("h_separation", 6)
+	flow.add_theme_constant_override("v_separation", 6)
+	sec.add_child(flow)
 
-	parent.add_child(sec)
+	_add_toggle_to_flow(flow, "label_is_active", "is_active", bool(src.get("is_active", true)), fdict)
+	_add_toggle_to_flow(flow, "label_stackable", "stackable", bool(src.get("stackable", false)), fdict)
+	_add_toggle_to_flow(flow, "label_can_trade", "can_trade", bool(src.get("can_trade", true)), fdict)
+	_add_toggle_to_flow(flow, "label_can_bank", "can_bank", not bool(src.get("non_bankable", false)), fdict)
+	_add_toggle_to_flow(flow, "label_can_cert", "can_cert", not bool(src.get("non_certable", false)), fdict)
+
+	parent.add_child(s.panel)
+
+func _add_toggle_to_flow(container: HFlowContainer, label_key: String, save_key: String, pressed: bool, wdict: Dictionary) -> void:
+	var btn := _toggle_button(label_key, pressed)
+	container.add_child(btn)
+	wdict[save_key] = btn
 
 # --- Tags section ---
 
 func _build_tags_section(parent: HBoxContainer, form: Dictionary) -> void:
-	var sec := _section_panel()
+	var s := _make_section_panel(7.0)
+	var sec: VBoxContainer = s.vbox
 	sec.add_child(_section_header("section_tags"))
 	var chips_box := HFlowContainer.new()
 	chips_box.add_theme_constant_override("h_separation", TAG_CHIP_SEP)
@@ -697,7 +727,7 @@ func _build_tags_section(parent: HBoxContainer, form: Dictionary) -> void:
 	input.text_submitted.connect(_on_tag_input_submit.bind(form, chips_box, input))
 	sec.add_child(input)
 
-	parent.add_child(sec)
+	parent.add_child(s.panel)
 
 func _render_tags(chips_box: HFlowContainer, form: Dictionary) -> void:
 	for c in chips_box.get_children():
@@ -705,101 +735,148 @@ func _render_tags(chips_box: HFlowContainer, form: Dictionary) -> void:
 		c.queue_free()
 	var tags: Array = form["tags"]
 	for tag in tags:
-		var chip := PanelContainer.new()
-		var style := StyleBoxFlat.new()
-		style.bg_color = Color(0.20, 0.30, 0.45, 1.0)
-		style.border_color = Color(0.40, 0.55, 0.75, 1.0)
-		style.border_width_left = 1
-		style.border_width_right = 1
-		style.border_width_top = 1
-		style.border_width_bottom = 1
-		style.corner_radius_top_left = 4
-		style.corner_radius_top_right = 4
-		style.corner_radius_bottom_left = 4
-		style.corner_radius_bottom_right = 4
-		style.content_margin_left = 12
-		style.content_margin_right = 6
-		style.content_margin_top = 6
-		style.content_margin_bottom = 6
-		chip.add_theme_stylebox_override("panel", style)
+		_add_tag_chip(chips_box, form, str(tag))
 
-		var hbox := HBoxContainer.new()
-		hbox.add_theme_constant_override("separation", 8)
-		chip.add_child(hbox)
+func _add_tag_chip(chips_box: HFlowContainer, form: Dictionary, tag: String) -> void:
+	var chip := PanelContainer.new()
+	chip.set_meta("tag", tag)
+	var style := StyleBoxFlat.new()
+	style.bg_color = Color(0.20, 0.30, 0.45, 1.0)
+	style.border_color = Color(0.40, 0.55, 0.75, 1.0)
+	style.border_width_left = 1
+	style.border_width_right = 1
+	style.border_width_top = 1
+	style.border_width_bottom = 1
+	style.corner_radius_top_left = 4
+	style.corner_radius_top_right = 4
+	style.corner_radius_bottom_left = 4
+	style.corner_radius_bottom_right = 4
+	style.content_margin_left = 12
+	style.content_margin_right = 6
+	style.content_margin_top = 6
+	style.content_margin_bottom = 6
+	chip.add_theme_stylebox_override("panel", style)
 
-		var lbl := Label.new()
-		lbl.text = str(tag)
-		lbl.add_theme_font_size_override("font_size", _style.font_size_body)
-		lbl.add_theme_color_override("font_color", Color.WHITE)
-		lbl.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-		hbox.add_child(lbl)
+	var hbox := HBoxContainer.new()
+	hbox.add_theme_constant_override("separation", 8)
+	chip.add_child(hbox)
 
-		var x := Button.new()
-		x.text = "×"
-		x.flat = true
-		x.focus_mode = Control.FOCUS_NONE
-		x.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
-		x.add_theme_font_size_override("font_size", _style.font_size_body)
-		x.add_theme_color_override("font_color", Color.WHITE)
-		x.pressed.connect(_on_tag_remove.bind(form, chips_box, tag))
-		hbox.add_child(x)
+	var lbl := Label.new()
+	lbl.text = tag
+	lbl.add_theme_font_size_override("font_size", _style.font_size_body)
+	lbl.add_theme_color_override("font_color", Color.WHITE)
+	lbl.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	hbox.add_child(lbl)
 
-		chips_box.add_child(chip)
+	var x := Button.new()
+	x.text = "×"
+	x.flat = true
+	x.focus_mode = Control.FOCUS_NONE
+	x.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
+	x.add_theme_font_size_override("font_size", _style.font_size_body)
+	x.add_theme_color_override("font_color", Color.WHITE)
+	x.pressed.connect(_on_tag_remove.bind(form, chips_box, tag))
+	hbox.add_child(x)
+
+	chips_box.add_child(chip)
 
 func _on_tag_input_submit(text: String, form: Dictionary, chips_box: HFlowContainer, input: LineEdit) -> void:
 	var tag := text.strip_edges()
-	if tag.is_empty():
-		input.grab_focus()
-		return
-	var tags: Array = form["tags"]
-	if not tags.has(tag):
-		tags.append(tag)
-	_render_tags(chips_box, form)
-	input.text = ""
-	input.grab_focus()
+	if not tag.is_empty():
+		var tags: Array = form["tags"]
+		if not tags.has(tag):
+			tags.append(tag)
+			_add_tag_chip(chips_box, form, tag)
+	input.clear()
+	_synthetic_click(input)
+
+func _synthetic_click(input: LineEdit) -> void:
+	# LineEdit can end up in an internal state after text_submitted where it
+	# has focus but ignores keystrokes. A real mouse click resets it, so we
+	# inject one programmatically.
+	var center := input.get_global_rect().get_center()
+	var press := InputEventMouseButton.new()
+	press.button_index = MOUSE_BUTTON_LEFT
+	press.pressed = true
+	press.position = center
+	press.global_position = center
+	Input.parse_input_event(press)
+	var release := InputEventMouseButton.new()
+	release.button_index = MOUSE_BUTTON_LEFT
+	release.pressed = false
+	release.position = center
+	release.global_position = center
+	Input.parse_input_event(release)
 
 func _on_tag_remove(form: Dictionary, chips_box: HFlowContainer, tag: String) -> void:
 	var tags: Array = form["tags"]
 	tags.erase(tag)
-	_render_tags(chips_box, form)
+	for child in chips_box.get_children():
+		if child.get_meta("tag", "") == tag:
+			chips_box.remove_child(child)
+			child.queue_free()
+			return
 
-# --- Capabilities section ---
+# --- Capabilities section (inner tabs) ---
 
 func _build_capabilities_section(parent: HBoxContainer, form: Dictionary) -> void:
-	var sec := _section_panel()
+	var s := _make_section_panel(7.0)
+	var sec: VBoxContainer = s.vbox
 	sec.add_child(_section_header("section_capabilities"))
 
-	var eq_toggle := _toggle_button("equippable", form["has_equipment"])
-	eq_toggle.toggled.connect(func(p: bool) -> void:
+	var tabs := TabContainer.new()
+	tabs.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	tabs.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	sec.add_child(tabs)
+
+	# --- Equipment tab ---
+	var eq_margin := MarginContainer.new()
+	eq_margin.add_theme_constant_override("margin_left", CAPABILITY_TAB_PADDING)
+	eq_margin.add_theme_constant_override("margin_right", CAPABILITY_TAB_PADDING)
+	eq_margin.add_theme_constant_override("margin_top", CAPABILITY_TAB_PADDING)
+	eq_margin.add_theme_constant_override("margin_bottom", CAPABILITY_TAB_PADDING)
+	tabs.add_child(eq_margin)
+
+	var eq_tab := VBoxContainer.new()
+	eq_tab.name = "Equipment"
+	eq_tab.add_theme_constant_override("separation", FIELD_ROW_SEP)
+	eq_margin.add_child(eq_tab)
+
+	var eq_enable := _toggle_button("enabled", form["has_equipment"])
+	eq_enable.toggled.connect(func(p: bool) -> void:
 		form["has_equipment"] = p
-		_apply_toggle_style(eq_toggle, p, "equippable", false)
-		form["equipment_subform"].visible = p
+		_apply_toggle_style(eq_enable, p, "enabled", false)
 	)
-	sec.add_child(eq_toggle)
+	eq_tab.add_child(eq_enable)
 
-	var eq_subform := VBoxContainer.new()
-	eq_subform.add_theme_constant_override("separation", FIELD_ROW_SEP)
-	eq_subform.visible = form["has_equipment"]
-	sec.add_child(eq_subform)
-	form["equipment_subform"] = eq_subform
-	_build_equipment_subform(eq_subform, form)
+	_build_equipment_subform(eq_tab, form)
 
-	var cs_toggle := _toggle_button("consumable", form["has_consumable"])
-	cs_toggle.toggled.connect(func(p: bool) -> void:
+	# --- Consumable tab ---
+	var cs_margin := MarginContainer.new()
+	cs_margin.add_theme_constant_override("margin_left", CAPABILITY_TAB_PADDING)
+	cs_margin.add_theme_constant_override("margin_right", CAPABILITY_TAB_PADDING)
+	cs_margin.add_theme_constant_override("margin_top", CAPABILITY_TAB_PADDING)
+	cs_margin.add_theme_constant_override("margin_bottom", CAPABILITY_TAB_PADDING)
+	tabs.add_child(cs_margin)
+
+	var cs_tab := VBoxContainer.new()
+	cs_tab.name = "Consumable"
+	cs_tab.add_theme_constant_override("separation", FIELD_ROW_SEP)
+	cs_margin.add_child(cs_tab)
+
+	var cs_enable := _toggle_button("enabled", form["has_consumable"])
+	cs_enable.toggled.connect(func(p: bool) -> void:
 		form["has_consumable"] = p
-		_apply_toggle_style(cs_toggle, p, "consumable", false)
-		form["consumable_subform"].visible = p
+		_apply_toggle_style(cs_enable, p, "enabled", false)
 	)
-	sec.add_child(cs_toggle)
+	cs_tab.add_child(cs_enable)
 
-	var cs_subform := VBoxContainer.new()
-	cs_subform.add_theme_constant_override("separation", FIELD_ROW_SEP)
-	cs_subform.visible = form["has_consumable"]
-	sec.add_child(cs_subform)
-	form["consumable_subform"] = cs_subform
-	_build_consumable_subform(cs_subform, form)
+	_build_consumable_subform(cs_tab, form)
 
-	parent.add_child(sec)
+	tabs.set_tab_title(0, Texts.get_text("ui.dev_hub.item_editor.tab_equipment"))
+	tabs.set_tab_title(1, Texts.get_text("ui.dev_hub.item_editor.tab_consumable"))
+
+	parent.add_child(s.panel)
 
 func _build_equipment_subform(container: VBoxContainer, form: Dictionary) -> void:
 	var eq: Dictionary = form["equipment"]
@@ -832,14 +909,18 @@ func _build_consumable_subform(container: VBoxContainer, form: Dictionary) -> vo
 	_add_dropdown(container, "label_effect_type", "effect_type", str(cs.get("effect_type", "heal")), EFFECT_TYPES, wdict)
 	_add_spin(container, "label_heal_amount", "heal_amount", int(cs.get("heal_amount", 0)), 0, 999, wdict)
 
-func _build_references_section(container: VBoxContainer, form: Dictionary) -> void:
-	container.add_child(HSeparator.new())
-	container.add_child(_section_header("section_references"))
+# --- References section ---
+
+func _build_references_section(container: VBoxContainer, _form: Dictionary) -> void:
+	var s := _make_section_panel(1.0)
+	var sec: VBoxContainer = s.vbox
+	sec.add_child(_section_header("section_references"))
 	var refs := Label.new()
 	refs.text = Texts.get_text("ui.dev_hub.item_editor.references_none")
 	refs.add_theme_font_size_override("font_size", _style.font_size_small)
 	refs.add_theme_color_override("font_color", _style.text_muted)
-	container.add_child(refs)
+	sec.add_child(refs)
+	container.add_child(s.panel)
 
 # ============================================================
 # Field widget helpers
@@ -878,7 +959,7 @@ func _small_spin(minv: int, maxv: int, val: int) -> SpinBox:
 	s.add_theme_font_size_override("font_size", _style.font_size_small)
 	return s
 
-func _add_line_edit(container: VBoxContainer, label_key: String, save_key: String, value: String, readonly: bool, wdict: Dictionary) -> void:
+func _add_line_edit(container: VBoxContainer, label_key: String, save_key: String, value: String, readonly: bool, wdict: Dictionary, placeholder: String = "") -> void:
 	var row := _field_row()
 	row.add_child(_inline_label(Texts.get_text("ui.dev_hub.item_editor." + label_key)))
 	var le := LineEdit.new()
@@ -888,6 +969,8 @@ func _add_line_edit(container: VBoxContainer, label_key: String, save_key: Strin
 	le.add_theme_font_size_override("font_size", _style.font_size_small)
 	if readonly:
 		le.editable = false
+	if not placeholder.is_empty():
+		le.placeholder_text = placeholder
 	row.add_child(le)
 	container.add_child(row)
 	wdict[save_key] = le
@@ -941,18 +1024,13 @@ func _add_dropdown(container: VBoxContainer, label_key: String, save_key: String
 	container.add_child(row)
 	wdict[save_key] = dd
 
-func _add_toggle_vertical(container: VBoxContainer, label_key: String, save_key: String, pressed: bool, wdict: Dictionary) -> void:
-	var btn := _toggle_button(label_key, pressed)
-	btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	container.add_child(btn)
-	wdict[save_key] = btn
-
 func _toggle_button(label_key: String, pressed: bool, active_purple: bool = false) -> Button:
 	var btn := Button.new()
 	btn.toggle_mode = true
 	btn.button_pressed = pressed
 	btn.focus_mode = Control.FOCUS_NONE
 	btn.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
+	btn.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
 	btn.add_theme_font_size_override("font_size", _style.font_size_body)
 	btn.add_theme_color_override("font_color", _style.text_primary)
 	btn.add_theme_color_override("font_hover_color", _style.text_primary)
@@ -965,8 +1043,7 @@ func _toggle_button(label_key: String, pressed: bool, active_purple: bool = fals
 	return btn
 
 func _apply_toggle_style(btn: Button, on: bool, label_key: String, is_active: bool) -> void:
-	var base_text := Texts.get_text("ui.dev_hub.item_editor." + label_key)
-	btn.text = ("[x] " if on else "[ ] ") + base_text
+	btn.text = Texts.get_text("ui.dev_hub.item_editor." + label_key)
 	var sb := StyleBoxFlat.new()
 	if on:
 		if is_active:
@@ -1003,10 +1080,9 @@ func _apply_toggle_style(btn: Button, on: bool, label_key: String, is_active: bo
 func _compose_payload(form: Dictionary, baseline: Dictionary) -> Dictionary:
 	var data := baseline.duplicate()
 
-	# Straightforward widgets
 	for key in form["fields"].keys():
 		if key == "can_bank" or key == "can_cert":
-			continue  # handled specially below
+			continue
 		var w = form["fields"][key]
 		if w is SpinBox: data[key] = int((w as SpinBox).value)
 		elif w is LineEdit: data[key] = (w as LineEdit).text
@@ -1021,7 +1097,6 @@ func _compose_payload(form: Dictionary, baseline: Dictionary) -> Dictionary:
 		elif w is Button:
 			data[key] = (w as Button).button_pressed
 
-	# Inverted toggles
 	if form["fields"].has("can_bank"):
 		data["non_bankable"] = not (form["fields"]["can_bank"] as Button).button_pressed
 	if form["fields"].has("can_cert"):
@@ -1029,6 +1104,8 @@ func _compose_payload(form: Dictionary, baseline: Dictionary) -> Dictionary:
 
 	data["tags"] = (form["tags"] as Array).duplicate()
 
+	# Capability values are always sent (whether Enabled or not).
+	# Enabled toggle controls whether the capability row exists in DB.
 	if form["has_equipment"]:
 		var eq := {}
 		for key in form["equipment_widgets"].keys():
