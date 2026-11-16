@@ -1,0 +1,10 @@
+Decision answers:
+1. Confirmed
+2. We can defer high-charge items to phase 3. If anything, we can just have a separate table that keeps track of that item's special charges. For example, Player AB12 owns a warped sceptre with 4,000 charges. That's the entire `item_charges` table: player_id, item_slug_id, charges, extra_data. When the player wants to uncharge it, it calls an uncharging gfs script unique to the sceptre, gets the amount of charges, calculates how many runes to give to the player, then sets charges to 0). Even if the player has TWO warped sceptres in their bank and pulls BOTH of them out, they read from the same entry at all times. In the case of something like the "Rune pouch" in OSRS (wiki this real quick), the charges can just be set to 0 and the scripts will use the extra_data instead, reading what runes are currently inside of it. Same with "Master scroll book": 0 charges, extra_data dictionary shows I have nardah_teleport: 7, lunar_isle_teleport: 48. Even if I have multiple master scroll books, they all report to the same entry.
+3. Confirmed
+4. Confirmed
+5. No, I only included them as examples. Just keep what we already have, and we'll add more later.
+6. Confirm.
+7. Fixed list with these slots: head, back, neck, body, belt, legs, wrist_left, wrist_right, hands, ring_1, ring_2, feet, main_hand, off_hand, ammo
+
+Also as for the ItemEditor goes, we don't need a "Show cert items" toggle. We will never show cert items in the list.

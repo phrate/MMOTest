@@ -32,25 +32,25 @@ func _ready() -> void:
 	process_priority = 100
 	if not Session.is_logged_in():
 		return
-
+	
 	if players_root == null:
 		players_root = get_node_or_null("PlayersRoot") as Node3D
 	if players_root == null:
 		players_root = Node3D.new()
 		players_root.name = "PlayersRoot"
 		add_child(players_root)
-
+	
 	_local_player = PLAYER_SCENE.instantiate()
 	players_root.add_child(_local_player)
-
+	
 	for data in Players.all():
 		_spawn_remote(data)
-
+	
 	# Spawn NPCs the server sent during login (before this scene existed).
 	for entry in Npcs.all():
 		if typeof(entry) == TYPE_DICTIONARY:
 			_instantiate_npc(entry)
-
+	
 	Players.player_added.connect(_on_player_added)
 	Players.player_removed.connect(_on_player_removed)
 	Players.player_moved.connect(_on_player_moved)
@@ -69,29 +69,32 @@ func _ready() -> void:
 	Network.damage_number.connect(_on_damage_number)
 	Network.ground_item_dropped.connect(_on_ground_item_dropped)
 	Network.ground_item_removed.connect(_on_ground_item_removed)
-
+	
 	add_child(SidePanel.new())
 	add_child(preload("res://scenes/game/trade/trade_panel.gd").new())
 	add_child(preload("res://scenes/game/dialogue/dialogue_panel.gd").new())
 	add_child(preload("res://scenes/game/bank/bank_panel.gd").new())
-
+	
 	_build_target_hp_bar()
+	
+	if ItemIcons:
+		ItemIcons.request_sync()
 
 	if Session.is_admin:
 		_dev_hub = preload("res://scenes/dev_hub/dev_hub.tscn").instantiate()
 		add_child(_dev_hub)
-
+		
 		_dev_hub_button = preload("res://scenes/dev_hub/dev_hub_button.tscn").instantiate()
 		add_child(_dev_hub_button)
 		_dev_hub_button.open_requested.connect(_dev_hub.open)
-
+		
 		Network.npc_editor_open.connect(_on_npc_editor_open)
-
+	
 	if dev_hub_auto_open:
 			_dev_hub.open()
 
 
-func _process(_delta: float) -> void:
+func _process(_delta: float) -> void:	
 	_update_visibility()
 
 

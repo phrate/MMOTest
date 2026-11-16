@@ -124,7 +124,6 @@ internal sealed class OutboundChannel
                 slug = meta.Slug,
                 display = meta.Display,
                 type = meta.Type,
-                type_slug = meta.TypeSlug,
                 quantity = qty,
                 cert_of_slug = meta.CertOfSlug,
                 can_trade = meta.CanTrade,

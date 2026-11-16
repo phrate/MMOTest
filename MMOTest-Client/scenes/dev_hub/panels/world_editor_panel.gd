@@ -187,6 +187,7 @@ func _build_ui() -> void:
 	_walkable_toggle.toggle_mode = true
 	_walkable_toggle.button_pressed = _walkable
 	_walkable_toggle.focus_mode = Control.FOCUS_NONE
+	_walkable_toggle.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
 	_walkable_toggle.text = "[x] " + Texts.get_text("ui.dev_hub.world_editor.label_walkable")
 	_walkable_toggle.add_theme_font_size_override("font_size", _style.font_size_small)
 	_walkable_toggle.add_theme_color_override("font_color", _style.text_primary)
@@ -199,6 +200,7 @@ func _build_ui() -> void:
 	_brush_toggle.toggle_mode = true
 	_brush_toggle.button_pressed = false
 	_brush_toggle.focus_mode = Control.FOCUS_NONE
+	_brush_toggle.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
 	_brush_toggle.text = Texts.get_text("ui.dev_hub.world_editor.brush_toggle")
 	_brush_toggle.add_theme_font_size_override("font_size", _style.font_size_small)
 	_brush_toggle.add_theme_color_override("font_color", _style.text_primary)
@@ -353,6 +355,7 @@ func _make_mode_button(text: String, mode: int) -> Button:
 	b.text = text
 	b.toggle_mode = true
 	b.focus_mode = Control.FOCUS_NONE
+	b.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
 	b.add_theme_font_size_override("font_size", _style.font_size_small)
 	b.add_theme_color_override("font_color", _style.text_primary)
 	b.add_theme_color_override("font_hover_color", _style.text_primary)

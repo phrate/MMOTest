@@ -185,10 +185,17 @@ public partial class Main : Node
 				GD.PrintErr("[Server] WARNING: 0 NPC render bundles. NPCs will fall back to the y-bot. Check npc_render/ folder.");
 			}
 
+			var itemIcons = new ItemIconManager(new[]
+			{
+				ProjectSettings.GlobalizePath("res://item_render/icons"),
+				ProjectSettings.GlobalizePath("user://item_render/icons"),
+			});
+			itemIcons.LoadAll();
+
 			_npc = new NpcSystem(_state, _world, _outbound, _db.Npcs, _gfs, _npcRender, _pathfinder, NpcViewChunkRadius, DiagNpcWander,
     _lootTablesBySlug, _creditsLootBySlug);
 			_npc.LoadAll();
-			_inv = new ItemSystem(_state, _outbound, _items, _db.Inventory, _db.Stats, _trade, _combatRng, _db.Players);
+			_inv = new ItemSystem(_state, _outbound, _items, _db.Inventory, _db.Stats, _trade, _combatRng, _db.Players, _db.Items, itemIcons);
 			_ground = new GroundItemSystem(_state, _world, _outbound, _items, _inv, _trade, _db.Inventory, _pathfinder, NpcViewChunkRadius);
 
 			_combat = new CombatSystem(_state, _world, _outbound, _coordinator, _movement, _pathfinder,
@@ -484,6 +491,12 @@ public partial class Main : Node
 				case "dev_auto_login": await _auth.HandleDevAutoLoginAsync(peerId); break;
 				case "dev_world_instance_list":   _npc.HandleDevWorldInstanceList(peerId, root); break;
 				case "dev_world_save":            _worldFiles.HandleDevWorldSave(peerId, root); break;
+				case "dev_item_list":       _inv.HandleDevItemList(peerId, root); break;
+				case "dev_item_tags_list":  _inv.HandleDevItemTagsList(peerId); break;
+				case "dev_item_get":        _inv.HandleDevItemGet(peerId, root); break;
+				case "dev_item_create":     _inv.HandleDevItemCreate(peerId, root); break;
+				case "dev_item_update":     _inv.HandleDevItemUpdate(peerId, root); break;
+				case "dev_item_delete":     _inv.HandleDevItemDelete(peerId, root); break;
 				case "player_walk": _walk.HandlePlayerWalk(peerId, root); break;
 				case "inventory_swap": _inv.HandleInventorySwap(peerId, root); break;
 				case "ping":         HandlePing(peerId, root); break;
@@ -513,6 +526,8 @@ public partial class Main : Node
 				case "bank_close": _bank.HandleBankClose(peerId, root); break;
 				case "bank_cert_mode": _bank.HandleBankCertMode(peerId, root); break;
 				case "combine_attempt": _recipe.HandleCombineAttempt(peerId, root); break;
+				case "item_icon_info":   _inv.HandleItemIconInfo(peerId); break;
+				case "item_icon_fetch":  _inv.HandleItemIconFetch(peerId, root); break;
 				default:
 					GD.PrintErr($"[Server] Unknown message type '{type}' from {peerId}");
 					break;

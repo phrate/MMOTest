@@ -24,13 +24,16 @@ internal sealed class ItemSystem
     private readonly TradeSystem _trade;
     private readonly Random _combatRng;
     private readonly PlayerRepository _players;
+    private readonly ItemRepository _itemRepo;
+    private readonly ItemIconManager _icons;
 
     private readonly Dictionary<long, long> _lastConsumeTick = new();
 
     public ItemSystem(ServerState state, OutboundChannel outbound, ItemLookup items,
-                  InventoryRepository inventory, PlayerStatsRepository stats,
-                  TradeSystem trade, Random combatRng,
-                  PlayerRepository players)
+                    InventoryRepository inventory, PlayerStatsRepository stats,
+                    TradeSystem trade, Random combatRng,
+                    PlayerRepository players, ItemRepository itemRepo,
+                    ItemIconManager icons)
     {
         _state = state;
         _outbound = outbound;
@@ -40,6 +43,8 @@ internal sealed class ItemSystem
         _trade = trade;
         _combatRng = combatRng;
         _players = players;
+        _itemRepo = itemRepo;
+        _icons = icons;
     }
 
     internal void ClearPlayer(long playerId) => _lastConsumeTick.Remove(playerId);
@@ -256,5 +261,287 @@ internal sealed class ItemSystem
         _state.Credits[playerId] = newTotal;
         _players.SetCreditsSync(playerId, newTotal);
         _outbound.BroadcastCredits(playerId, newTotal);
+    }
+
+    // ============================================================
+    // Item editor CRUD
+    // ============================================================
+
+    internal void HandleDevItemList(long peerId, System.Text.Json.JsonElement root)
+    {
+        if (!_state.Sessions.TryGetValue(peerId, out var session)) return;
+        if (!session.IsAdmin) return;
+
+        bool includeInactive = root.TryGetProperty("include_inactive", out var incEl)
+            && incEl.ValueKind == System.Text.Json.JsonValueKind.True;
+
+        var items = _itemRepo.GetForEditorSync(includeInactive);
+        var list = new List<object>();
+        foreach (var it in items)
+        {
+            list.Add(new
+            {
+                id = it.Id,
+                slug_id = it.Slug,
+                display = it.Display,
+                type = it.Type,
+                stackable = it.Stackable,
+                can_trade = it.CanTrade,
+                base_price = it.BasePrice,
+                is_active = it.IsActive,
+                tags = it.Tags,
+            });
+        }
+        _outbound.Send(peerId, new { type = "dev_item_list_result", ok = true, items = list });
+    }
+
+    internal void HandleDevItemTagsList(long peerId)
+    {
+        if (!_state.Sessions.TryGetValue(peerId, out var session)) return;
+        if (!session.IsAdmin) return;
+        _outbound.Send(peerId, new
+        {
+            type = "dev_item_tags_list_result",
+            ok = true,
+            tags = _itemRepo.GetAllTagsSync(),
+        });
+    }
+
+    internal void HandleDevItemGet(long peerId, System.Text.Json.JsonElement root)
+    {
+        if (!_state.Sessions.TryGetValue(peerId, out var session)) return;
+        if (!session.IsAdmin) return;
+        if (!root.TryGetProperty("item_id", out var idEl) || !idEl.TryGetInt64(out long itemId)) return;
+
+        var item = _itemRepo.GetByIdSync(itemId);
+        if (item == null)
+        {
+            _outbound.Send(peerId, new { type = "dev_item_data", ok = false });
+            return;
+        }
+        _outbound.Send(peerId, new { type = "dev_item_data", ok = true, data = ItemMetaToDict(item) });
+    }
+
+    internal void HandleDevItemCreate(long peerId, System.Text.Json.JsonElement root)
+    {
+        if (!_state.Sessions.TryGetValue(peerId, out var session)) return;
+        if (!session.IsAdmin) return;
+        if (!root.TryGetProperty("data", out var dataEl)
+            || dataEl.ValueKind != System.Text.Json.JsonValueKind.Object) return;
+
+        var u = ParseItemPayload(dataEl);
+        string slug = GetStr(u, "slug_id", "").Trim();
+        string display = GetStr(u, "display", "").Trim();
+
+        string? error = null;
+        if (string.IsNullOrEmpty(slug))         error = "Slug is required.";
+        else if (string.IsNullOrEmpty(display)) error = "Display is required.";
+        else if (_itemRepo.SlugExistsSync(slug)) error = "That slug is already taken.";
+
+        if (error != null)
+        {
+            _outbound.Send(peerId, new { type = "dev_item_created", ok = false, item_id = 0L, error });
+            return;
+        }
+
+        u["slug_id"] = slug;
+        u["display"] = display;
+        _ = CreateItemAsync(peerId, u);
+    }
+
+    private async Task CreateItemAsync(long peerId, Dictionary<string, object> u)
+    {
+        try
+        {
+            long newId = await _itemRepo.CreateAsync(u);
+            await ReloadItemLookupAsync();
+            _outbound.Send(peerId, new { type = "dev_item_created", ok = true, item_id = newId });
+        }
+        catch (Exception e)
+        {
+            GD.PrintErr($"[ItemSystem] CreateItem failed: {e.Message}");
+            _outbound.Send(peerId, new { type = "dev_item_created", ok = false, item_id = 0L, error = e.Message });
+        }
+    }
+
+    internal void HandleDevItemUpdate(long peerId, System.Text.Json.JsonElement root)
+    {
+        if (!_state.Sessions.TryGetValue(peerId, out var session)) return;
+        if (!session.IsAdmin) return;
+        if (!root.TryGetProperty("item_id", out var idEl) || !idEl.TryGetInt64(out long itemId)) return;
+        if (!root.TryGetProperty("data", out var dataEl)
+            || dataEl.ValueKind != System.Text.Json.JsonValueKind.Object) return;
+
+        var u = ParseItemPayload(dataEl);
+        _ = UpdateItemAsync(peerId, itemId, u);
+    }
+
+    private async Task UpdateItemAsync(long peerId, long itemId, Dictionary<string, object> u)
+    {
+        try
+        {
+            bool ok = await _itemRepo.UpdateAsync(itemId, u);
+            if (ok) await ReloadItemLookupAsync();
+            _outbound.Send(peerId, new { type = "dev_item_updated", ok, item_id = itemId });
+        }
+        catch (Exception e)
+        {
+            GD.PrintErr($"[ItemSystem] UpdateItem failed: {e.Message}");
+            _outbound.Send(peerId, new { type = "dev_item_updated", ok = false, item_id = itemId });
+        }
+    }
+
+    internal void HandleDevItemDelete(long peerId, System.Text.Json.JsonElement root)
+    {
+        if (!_state.Sessions.TryGetValue(peerId, out var session)) return;
+        if (!session.IsAdmin) return;
+        if (!root.TryGetProperty("item_id", out var idEl) || !idEl.TryGetInt64(out long itemId)) return;
+        _ = DeleteItemAsync(peerId, itemId);
+    }
+
+    private async Task DeleteItemAsync(long peerId, long itemId)
+    {
+        bool ok;
+        try { ok = await _itemRepo.SoftDeleteAsync(itemId); }
+        catch (Exception e)
+        {
+            GD.PrintErr($"[ItemSystem] DeleteItem failed: {e.Message}");
+            ok = false;
+        }
+        if (ok) await ReloadItemLookupAsync();
+        _outbound.Send(peerId, new { type = "dev_item_deleted", ok, item_id = itemId });
+    }
+
+    internal void HandleItemIconInfo(long peerId)
+    {
+        if (!_state.Sessions.ContainsKey(peerId)) return;
+        _outbound.Send(peerId, new
+        {
+            type = "item_icon_info_result",
+            ok = true,
+            manifest = _icons.GetManifest(),
+        });
+    }
+
+    internal void HandleItemIconFetch(long peerId, System.Text.Json.JsonElement root)
+    {
+        if (!_state.Sessions.ContainsKey(peerId)) return;
+        if (!root.TryGetProperty("names", out var namesEl)
+            || namesEl.ValueKind != System.Text.Json.JsonValueKind.Array) return;
+
+        foreach (var nameEl in namesEl.EnumerateArray())
+        {
+            if (nameEl.ValueKind != System.Text.Json.JsonValueKind.String) continue;
+            string name = nameEl.GetString() ?? "";
+            if (string.IsNullOrEmpty(name)) continue;
+            var bytes = _icons.GetIconBytes(name);
+            if (bytes == null) continue;
+            _outbound.Send(peerId, new
+            {
+                type = "item_icon_data",
+                name,
+                hash = _icons.GetIconHash(name) ?? "",
+                data = Convert.ToBase64String(bytes),
+            });
+        }
+    }
+
+    private async Task ReloadItemLookupAsync()
+    {
+        var all = await _itemRepo.GetAllSync();
+        _items.Load(all);
+    }
+
+    private static Dictionary<string, object> ParseItemPayload(System.Text.Json.JsonElement obj)
+    {
+        var result = new Dictionary<string, object>();
+        foreach (var prop in obj.EnumerateObject())
+        {
+            switch (prop.Value.ValueKind)
+            {
+                case System.Text.Json.JsonValueKind.True:   result[prop.Name] = true; break;
+                case System.Text.Json.JsonValueKind.False:  result[prop.Name] = false; break;
+                case System.Text.Json.JsonValueKind.String: result[prop.Name] = prop.Value.GetString() ?? ""; break;
+                case System.Text.Json.JsonValueKind.Number: result[prop.Name] = prop.Value.TryGetInt64(out long l) ? l : 0L; break;
+                case System.Text.Json.JsonValueKind.Array:
+                    var list = new List<string>();
+                    foreach (var el in prop.Value.EnumerateArray())
+                        if (el.ValueKind == System.Text.Json.JsonValueKind.String)
+                            list.Add(el.GetString() ?? "");
+                    result[prop.Name] = list;
+                    break;
+                case System.Text.Json.JsonValueKind.Object:
+                    var dict = new Dictionary<string, object>();
+                    foreach (var inner in prop.Value.EnumerateObject())
+                    {
+                        dict[inner.Name] = inner.Value.ValueKind switch
+                        {
+                            System.Text.Json.JsonValueKind.True => true,
+                            System.Text.Json.JsonValueKind.False => false,
+                            System.Text.Json.JsonValueKind.String => inner.Value.GetString() ?? "",
+                            System.Text.Json.JsonValueKind.Number => inner.Value.TryGetInt64(out long il) ? il : 0L,
+                            _ => (object)0L,
+                        };
+                    }
+                    result[prop.Name] = dict;
+                    break;
+                case System.Text.Json.JsonValueKind.Null:
+                    result[prop.Name] = null!;
+                    break;
+            }
+        }
+        return result;
+    }
+
+    private static string GetStr(Dictionary<string, object> u, string key, string fallback)
+    {
+        if (!u.TryGetValue(key, out var v) || v == null) return fallback;
+        return v.ToString() ?? fallback;
+    }
+
+    private static Dictionary<string, object> ItemMetaToDict(ItemMeta it)
+    {
+        var d = new Dictionary<string, object>
+        {
+            ["id"] = it.Id,
+            ["slug_id"] = it.Slug,
+            ["display"] = it.Display,
+            ["type"] = it.Type,
+            ["stackable"] = it.Stackable,
+            ["can_trade"] = it.CanTrade,
+            ["non_certable"] = it.NonCertable,
+            ["non_bankable"] = it.NonBankable,
+            ["is_active"] = it.IsActive,
+            ["base_price"] = it.BasePrice,
+            ["description"] = it.Description,
+            ["icon_path"] = it.IconPath,
+            ["tags"] = it.Tags,
+        };
+        if (it.Equipment != null)
+        {
+            d["equipment"] = new Dictionary<string, object>
+            {
+                ["slot"] = it.Equipment.Slot,
+                ["attack_speed_override"] = it.Equipment.AttackSpeedOverride,
+                ["attack_bonus_melee"] = it.Equipment.AttackMelee,
+                ["attack_bonus_ranged"] = it.Equipment.AttackRanged,
+                ["attack_bonus_ether"] = it.Equipment.AttackEther,
+                ["defense_bonus_melee"] = it.Equipment.DefenseMelee,
+                ["defense_bonus_ranged"] = it.Equipment.DefenseRanged,
+                ["defense_bonus_ether"] = it.Equipment.DefenseEther,
+                ["bonus_melee_strength"] = it.Equipment.StrengthMelee,
+                ["bonus_ranged_strength"] = it.Equipment.StrengthRanged,
+                ["bonus_ether_strength"] = it.Equipment.StrengthEther,
+            };
+        }
+        if (it.Consumable != null)
+        {
+            d["consumable"] = new Dictionary<string, object>
+            {
+                ["effect_type"] = it.Consumable.EffectType,
+                ["heal_amount"] = it.Consumable.HealAmount,
+            };
+        }
+        return d;
     }
 }

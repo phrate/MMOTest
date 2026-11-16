@@ -605,7 +605,6 @@ func _on_edit_delete_pressed() -> void:
 	dlg.dialog_text = Texts.get_text("ui.dev_hub.npc_editor.delete_confirm")
 	dlg.title = Texts.get_text("ui.dev_hub.npc_editor.delete_button")
 	dlg.ok_button_text = "Delete"
-	dlg.add_cancel_button("Cancel")
 	dlg.confirmed.connect(func():
 		Network.send_dev_npc_type_delete(_current_type_id)
 		dlg.queue_free())
@@ -916,6 +915,7 @@ func _make_view_toggle(text: String, view_id: String) -> Button:
 	b.toggle_mode = true
 	b.focus_mode = Control.FOCUS_NONE
 	b.custom_minimum_size = Vector2(0, MODE_BUTTON_HEIGHT)
+	b.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
 	b.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	b.alignment = HORIZONTAL_ALIGNMENT_CENTER
 	b.add_theme_font_size_override("font_size", _style.font_size_body)
@@ -1428,6 +1428,7 @@ func _add_checkbox_to_row(row: HBoxContainer, label_key: String, save_key: Strin
 	btn.button_pressed = pressed
 	btn.focus_mode = Control.FOCUS_NONE
 	btn.add_theme_font_size_override("font_size", _style.font_size_body)
+	btn.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
 	btn.add_theme_color_override("font_color", _style.text_primary)
 	btn.add_theme_color_override("font_hover_color", _style.text_primary)
 	btn.add_theme_color_override("font_pressed_color", Color(0.75, 1.0, 0.75))

@@ -62,6 +62,15 @@ signal dev_npc_type_updated(ok: bool, type_id: int)
 signal dev_npc_type_deleted(ok: bool, type_id: int)
 signal dev_world_instance_list_result(ok: bool, items: Array)
 signal dev_world_save_result(ok: bool, error: String)
+signal dev_item_list_result(ok: bool, items: Array)
+signal dev_item_tags_list_result(ok: bool, tags: Array)
+signal dev_item_data(ok: bool, data: Dictionary)
+signal dev_item_created(ok: bool, item_id: int, error: String)
+signal dev_item_updated(ok: bool, item_id: int)
+signal dev_item_deleted(ok: bool, item_id: int)
+
+signal item_icon_info_result(ok: bool, manifest: Dictionary)
+signal item_icon_data_received(name: String, hash: String, data_base64: String)
 
 signal ground_item_dropped(item: Dictionary)
 signal ground_item_removed(id: int)
@@ -544,6 +553,31 @@ func _on_packet(_id: int, packet: PackedByteArray) -> void:
 			dev_world_save_result.emit(
 				bool(msg.get("ok", false)),
 				String(msg.get("error", "")))
+		"dev_item_list_result":
+			var items_el: Variant = msg.get("items", [])
+			if typeof(items_el) == TYPE_ARRAY:
+				dev_item_list_result.emit(bool(msg.get("ok", false)), items_el)
+		"dev_item_tags_list_result":
+			var tags_el: Variant = msg.get("tags", [])
+			if typeof(tags_el) == TYPE_ARRAY:
+				dev_item_tags_list_result.emit(bool(msg.get("ok", false)), tags_el)
+		"dev_item_data":
+			var data_el: Variant = msg.get("data", {})
+			if typeof(data_el) == TYPE_DICTIONARY:
+				dev_item_data.emit(bool(msg.get("ok", false)), data_el)
+		"dev_item_created":
+			dev_item_created.emit(
+				bool(msg.get("ok", false)),
+				int(msg.get("item_id", 0)),
+				String(msg.get("error", "")))
+		"dev_item_updated":
+			dev_item_updated.emit(
+				bool(msg.get("ok", false)),
+				int(msg.get("item_id", 0)))
+		"dev_item_deleted":
+			dev_item_deleted.emit(
+				bool(msg.get("ok", false)),
+				int(msg.get("item_id", 0)))
 		"damage_number":
 			damage_number.emit(
 				String(msg.get("target_type", "")),
@@ -612,6 +646,15 @@ func _on_packet(_id: int, packet: PackedByteArray) -> void:
 			bank_notice.emit(
 				String(msg.get("error_key", "")),
 				msg.get("error_params", {}))
+		"item_icon_info_result":
+			var manifest_el: Variant = msg.get("manifest", {})
+			if typeof(manifest_el) == TYPE_DICTIONARY:
+				item_icon_info_result.emit(bool(msg.get("ok", false)), manifest_el)
+		"item_icon_data":
+			item_icon_data_received.emit(
+				String(msg.get("name", "")),
+				String(msg.get("hash", "")),
+				String(msg.get("data", "")))
 		_:
 			push_warning("Unknown message from server: %s" % str(msg))
 
@@ -744,3 +787,35 @@ func send_bank_cert_mode(session_id: String, enabled: bool) -> void:
 
 func send_combine_attempt(slot_a: int, slot_b: int) -> void:
 	send({"type": "combine_attempt", "slot_a": slot_a, "slot_b": slot_b})
+
+
+func send_dev_item_list(include_inactive: bool) -> void:
+	send({"type": "dev_item_list", "include_inactive": include_inactive})
+
+
+func send_dev_item_tags_list() -> void:
+	send({"type": "dev_item_tags_list"})
+
+
+func send_dev_item_get(item_id: int) -> void:
+	send({"type": "dev_item_get", "item_id": item_id})
+
+
+func send_dev_item_create(data: Dictionary) -> void:
+	send({"type": "dev_item_create", "data": data})
+
+
+func send_dev_item_update(item_id: int, data: Dictionary) -> void:
+	send({"type": "dev_item_update", "item_id": item_id, "data": data})
+
+
+func send_dev_item_delete(item_id: int) -> void:
+	send({"type": "dev_item_delete", "item_id": item_id})
+
+
+func request_item_icon_info() -> void:
+	send({"type": "item_icon_info"})
+
+
+func request_item_icon_fetch(names: Array) -> void:
+	send({"type": "item_icon_fetch", "names": names})
