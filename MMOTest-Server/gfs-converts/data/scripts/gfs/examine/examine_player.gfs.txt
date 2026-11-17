@@ -1,0 +1,4 @@
+[server]
+[generic]
+
+chat local "It's a player."

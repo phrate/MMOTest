@@ -60,6 +60,7 @@ public partial class Main : Node
 	private CombatSystem _combat;
 	private NpcSystem _npc;
 	private ItemSystem _inv;
+	private PlayerSystem _playerSys;
 	private GroundItemSystem _ground;
 	private ChatSystem _chat;
 	private AuthSystem _auth;
@@ -196,6 +197,7 @@ public partial class Main : Node
 	_lootTablesBySlug, _creditsLootBySlug);
 			_npc.LoadAll();
 			_inv = new ItemSystem(_state, _outbound, _items, _db.Inventory, _db.Stats, _trade, _combatRng, _db.Players, _db.Items, itemIcons);
+			_playerSys = new PlayerSystem(_state, _outbound, _items, _world, _db.Players, _db.Stats, _db.Inventory, _db.Bank);
 			_ground = new GroundItemSystem(_state, _world, _outbound, _items, _inv, _trade, _db.Inventory, _pathfinder, NpcViewChunkRadius);
 
 			_combat = new CombatSystem(_state, _world, _outbound, _coordinator, _movement, _pathfinder,
@@ -498,6 +500,13 @@ public partial class Main : Node
 				case "dev_item_update":     _inv.HandleDevItemUpdate(peerId, root); break;
 				case "dev_item_delete":     _inv.HandleDevItemDelete(peerId, root); break;
 				case "dev_item_give":       _inv.HandleDevItemGive(peerId, root); break;
+				case "dev_player_list":              _playerSys.HandleDevPlayerList(peerId, root); break;
+				case "dev_player_get":               _playerSys.HandleDevPlayerGet(peerId, root); break;
+				case "dev_player_set_admin":         _playerSys.HandleDevPlayerSetAdmin(peerId, root); break;
+				case "dev_player_update_level":      _playerSys.HandleDevPlayerUpdateLevel(peerId, root); break;
+				case "dev_player_teleport":          _playerSys.HandleDevPlayerTeleport(peerId, root); break;
+				case "dev_player_teleport_to_admin": _playerSys.HandleDevPlayerTeleportToAdmin(peerId, root); break;
+				case "dev_player_teleport_admin_to": _playerSys.HandleDevPlayerTeleportAdminTo(peerId, root); break;
 				case "player_walk": _walk.HandlePlayerWalk(peerId, root); break;
 				case "inventory_swap": _inv.HandleInventorySwap(peerId, root); break;
 				case "ping":         HandlePing(peerId, root); break;

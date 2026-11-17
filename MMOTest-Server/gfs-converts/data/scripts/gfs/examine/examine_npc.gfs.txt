@@ -1,0 +1,6 @@
+[server]
+[generic]
+
+npc_id = $"npc_id"
+
+chat local "It's an NPC (id `npc_id`)."

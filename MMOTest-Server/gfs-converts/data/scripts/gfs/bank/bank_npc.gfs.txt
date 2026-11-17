@@ -1,0 +1,5 @@
+[server]
+[generic]
+
+npc_id = $"npc_id"
+RequestBank(npc_id)

@@ -1,0 +1,21 @@
+[server]
+[recipe]
+
+REQUIRE:
+	ITEMS:
+		@knife, 1
+		@log, 1
+
+SUCCESS:
+	consume = [
+		@log, 1
+	]
+
+	output = [
+		@stick, 1
+	]
+
+	MESSAGES:
+		DEFAULT:
+			chat local "You whittle the log..."
+			chat local ".. into a stick!"

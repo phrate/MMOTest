@@ -1,0 +1,52 @@
+[gd_scene load_steps=6 format=3 uid="uid://dr7vfxjm6ghv1"]
+
+[ext_resource type="Script" uid="uid://bjjybsuvgixxj" path="res://scenes/login/login.gd" id="1_wc656"]
+[ext_resource type="PackedScene" path="res://ui/status_bar.tscn" id="2_sce6i"]
+[ext_resource type="PackedScene" path="res://ui/login_form.tscn" id="3_1ijbp"]
+[ext_resource type="PackedScene" path="res://ui/register_form.tscn" id="4_mypl2"]
+[ext_resource type="PackedScene" path="res://ui/log_panel.tscn" id="5_wgg2f"]
+
+[node name="Login" type="Control"]
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+script = ExtResource("1_wc656")
+
+[node name="Margin" type="MarginContainer" parent="."]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+theme_override_constants/margin_left = 16
+theme_override_constants/margin_top = 16
+theme_override_constants/margin_right = 16
+theme_override_constants/margin_bottom = 16
+
+[node name="VBox" type="VBoxContainer" parent="Margin"]
+layout_mode = 2
+theme_override_constants/separation = 8
+
+[node name="StatusBar" parent="Margin/VBox" instance=ExtResource("2_sce6i")]
+layout_mode = 2
+
+[node name="Tabs" type="TabContainer" parent="Margin/VBox"]
+layout_mode = 2
+current_tab = 0
+
+[node name="Login" parent="Margin/VBox/Tabs" instance=ExtResource("3_1ijbp")]
+layout_mode = 2
+metadata/_tab_index = 0
+
+[node name="Register" parent="Margin/VBox/Tabs" instance=ExtResource("4_mypl2")]
+visible = false
+layout_mode = 2
+metadata/_tab_index = 1
+
+[node name="LogPanel" parent="Margin/VBox" instance=ExtResource("5_wgg2f")]
+layout_mode = 2
+size_flags_vertical = 3

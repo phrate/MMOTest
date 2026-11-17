@@ -1,0 +1,47 @@
+[server]
+[recipe]
+
+REQUIRE:
+	ITEMS:
+		@soldering_iron, 1
+		@computer_greenboard, 1
+		@computer_chip, 4
+		@computer_capacitor, 20
+
+	LEVELS:
+		engineering, 38
+
+FAIL:
+	MESSAGES:
+		BAD_ITEMS:
+			chat local "You do not have all the required items to make a motherboard."
+
+		BAD_QUANTITIES:
+			chat local "You do not have enough of the required items to make a motherboard."
+
+		BAD_LEVELS:
+			chat local "Your Engineering skill is not high enough to make a motherboard."
+
+SUCCESS:
+	consume = [
+		@computer_greenboard, 1
+		@computer_chip, 4
+	]
+
+	if level_engineering >= 70:
+		CHANCE 25/100:
+			consume = [
+				@computer_capacitor, 10
+			]
+		CHANCE_FAIL:
+			consume = [
+				@computer_capacitor, 20
+			]
+	else:
+		consume = [
+			@computer_capacitor, 20
+		]
+
+	output = [
+		@computer_motherboard, 1
+	]

@@ -1,0 +1,28 @@
+[server]
+[recipe]
+
+REQUIRE:
+	ITEMS:
+		@chem_bottle_empty, 1
+		@pill_gray, 50
+
+	LEVELS:
+		medicine, 5
+
+FAIL:
+	MESSAGES:
+		BAD_QUANTITIES:
+			chat local "You do not have enough pills to fill the bottle."
+
+		BAD_LEVELS:
+			chat local "Your level in Medicine is not high enough to do this."
+
+SUCCESS:
+	consume = [
+		@chem_bottle_empty, 1
+		@pill_gray, 50
+	]
+
+	output = [
+		@chem_bottle, 1
+	]

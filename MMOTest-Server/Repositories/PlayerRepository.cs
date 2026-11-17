@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
@@ -128,6 +129,60 @@ public sealed class PlayerRepository
         cmd.Parameters.AddWithValue("$id", playerId);
         return cmd.ExecuteNonQuery() == 1;
     }
+
+	// ============================================================
+	// PlayerEditor: paged browse + by-id lookup
+	// ============================================================
+
+	public record PlayerListItem(long Id, string Username, int FinalLevel, int Credits);
+
+	public Task<(List<PlayerListItem> Items, int TotalCount)> GetPagedAsync(
+		string search, int page, int pageSize) => Task.Run(() =>
+	{
+		using var conn = _open();
+		bool hasSearch = !string.IsNullOrWhiteSpace(search);
+		string whereSql = hasSearch ? "WHERE p.username LIKE $search COLLATE NOCASE" : "";
+
+		int totalCount;
+		using (var countCmd = conn.CreateCommand())
+		{
+			countCmd.CommandText = $"SELECT COUNT(*) FROM players p {whereSql};";
+			if (hasSearch) countCmd.Parameters.AddWithValue("$search", "%" + search + "%");
+			totalCount = (int)(long)countCmd.ExecuteScalar()!;
+		}
+
+		int offset = Math.Max(0, page) * pageSize;
+		var items = new List<PlayerListItem>();
+		using (var cmd = conn.CreateCommand())
+		{
+			cmd.CommandText = $@"
+				SELECT p.id, p.username, COALESCE(c.final_level, 1), p.credits
+				FROM players p
+				LEFT JOIN levels_combat c ON p.levels_combat_id = c.id
+				{whereSql}
+				ORDER BY p.username COLLATE NOCASE
+				LIMIT $limit OFFSET $offset;";
+			cmd.Parameters.AddWithValue("$limit", pageSize);
+			cmd.Parameters.AddWithValue("$offset", offset);
+			if (hasSearch) cmd.Parameters.AddWithValue("$search", "%" + search + "%");
+			using var r = cmd.ExecuteReader();
+			while (r.Read())
+				items.Add(new PlayerListItem(
+					r.GetInt64(0), r.GetString(1), r.GetInt32(2), r.GetInt32(3)));
+		}
+		return (items, totalCount);
+	});
+
+	public Task<PlayerRecord?> GetByIdAsync(long playerId) => Task.Run(() =>
+	{
+		using var conn = _open();
+		using var cmd = conn.CreateCommand();
+		cmd.CommandText = "SELECT id, username, password_hash, is_admin FROM players WHERE id = $id;";
+		cmd.Parameters.AddWithValue("$id", playerId);
+		using var reader = cmd.ExecuteReader();
+		if (!reader.Read()) return null;
+		return new PlayerRecord(reader.GetInt64(0), reader.GetString(1), reader.GetString(2), reader.GetInt64(3) != 0);
+	});
 
     public long GetMaxSid()
     {

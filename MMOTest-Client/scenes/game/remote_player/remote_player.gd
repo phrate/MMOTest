@@ -223,6 +223,8 @@ func teleport(pos: Vector3, yaw: float) -> void:
 	if is_inside_tree():
 		global_position = pos
 		rotation.y = yaw
+		if visuals != null and is_instance_valid(visuals):
+			visuals.reset_position_tracking()
 
 
 func set_target(pos: Vector3, yaw: float) -> void:

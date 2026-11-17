@@ -1,0 +1,26 @@
+[server]
+[recipe]
+
+REQUIRE:
+	ITEMS:
+		@tray_empty, 1
+		@meat, 2
+
+FAIL:
+	MESSAGES:
+		BAD_QUANTITIES:
+			chat local "You do not have enough meat to put on the tray."
+
+SUCCESS:
+	consume = [
+		@tray_empty, 1
+		@meat, 2
+	]
+
+	output = [
+		@tray_meat, 1
+	]
+
+	MESSAGES:
+		DEFAULT:
+			chat local "You load the tray with meat."

@@ -1,0 +1,11 @@
+[client]
+[tooltip]
+
+id = ${PLAYER_ID}
+player_display_name = ${PLAYER_NAME}
+
+actions = [
+    follow: "player/follow_player.gfs", "Follow `player_display_name`", {"follow_id"=id}
+    trade: "trade/trade_player.gfs", "Trade `player_display_name`", {"id"=id}
+    examine: "examine/examine_player.gfs", "Examine `player_display_name`", {"id"=id}
+]

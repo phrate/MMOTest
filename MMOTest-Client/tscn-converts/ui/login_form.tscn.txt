@@ -1,0 +1,19 @@
+[gd_scene load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://ui/login_form.gd" id="1_login"]
+
+[node name="LoginForm" type="VBoxContainer"]
+script = ExtResource("1_login")
+
+[node name="UsernameEdit" type="LineEdit" parent="."]
+unique_name_in_owner = true
+layout_mode = 2
+
+[node name="PasswordEdit" type="LineEdit" parent="."]
+unique_name_in_owner = true
+layout_mode = 2
+secret = true
+
+[node name="LoginButton" type="Button" parent="."]
+unique_name_in_owner = true
+layout_mode = 2

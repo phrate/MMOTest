@@ -1,0 +1,30 @@
+[server]
+[recipe]
+
+REQUIRE:
+	ITEMS:
+		@knife, 1
+		@log, 1
+
+	if level_woodcutting < 10:
+		CHANCE 70/100:
+			FAIL(RUINED)
+
+FAIL:
+	MESSAGES:
+		RUINED:
+			chat local "You try to carve a figurine, but ruin it on accident.."
+			consume = [
+				@log, 1
+			]
+
+SUCCESS:
+	consume = [
+		@log, 1
+	]
+	output = [
+		@figurine, 1
+	]
+	MESSAGES:
+		DEFAULT:
+			chat local "You carve a figurine."

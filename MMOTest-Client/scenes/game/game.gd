@@ -69,6 +69,7 @@ func _ready() -> void:
 	Network.damage_number.connect(_on_damage_number)
 	Network.ground_item_dropped.connect(_on_ground_item_dropped)
 	Network.ground_item_removed.connect(_on_ground_item_removed)
+	Network.player_teleported.connect(_on_player_teleported)
 	
 	add_child(SidePanel.new())
 	add_child(preload("res://scenes/game/trade/trade_panel.gd").new())
@@ -135,6 +136,8 @@ func _exit_tree() -> void:
 		Network.ground_item_dropped.disconnect(_on_ground_item_dropped)
 	if Network.ground_item_removed.is_connected(_on_ground_item_removed):
 		Network.ground_item_removed.disconnect(_on_ground_item_removed)
+	if Network.player_teleported.is_connected(_on_player_teleported):
+		Network.player_teleported.disconnect(_on_player_teleported)
 
 
 func _on_player_added(player_id: int) -> void:
@@ -165,6 +168,12 @@ func _on_player_moved(player_id: int) -> void:
 	else:
 		node.set_target(new_pos, data["yaw"])
 
+func _on_player_teleported(player_id: int, x: float, y: float, z: float, yaw: float) -> void:
+	if not is_inside_tree(): return
+	if player_id == Session.player_id: return  # player.gd handles self
+	if not _remote_players.has(player_id): return
+	var node: Node3D = _remote_players[player_id]
+	node.teleport(Vector3(x, y, z), yaw)
 
 func _spawn_remote(data: Dictionary) -> void:
 	var player_id: int = data["player_id"]

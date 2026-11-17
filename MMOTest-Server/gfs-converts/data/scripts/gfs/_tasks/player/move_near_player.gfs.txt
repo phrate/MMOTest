@@ -1,0 +1,13 @@
+[server]
+[task]
+name MOVE_NEAR_PLAYER
+args "target_id", "target_tile", "following_player"
+
+TASK:
+    IF following_player NOT target_id
+    RUN follow_player(target_id)
+
+    IF NOT GetPlayerAdjacentToTile(target_tile)
+        CODE SKIP
+    ELSE
+        CODE CONTINUE

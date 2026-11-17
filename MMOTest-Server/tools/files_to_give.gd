@@ -10,7 +10,7 @@ const SKIP_DIR_SEGMENTS := [
 const SKIP_EXTENSIONS := [
 	".guid", ".uid", ".csproj",
 	".gfs", ".py", ".godot",
-	".tres", ".res", ".tscn",
+	".tres", ".res", ".tscn", ".tmp",
 	".import", ".fbx", ".gltf", ".glb", ".png",
 ]
 

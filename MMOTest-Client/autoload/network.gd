@@ -14,6 +14,7 @@ signal player_joined(player_id: int, username: String, is_admin: bool, x: float,
 signal player_left(player_id: int)
 signal player_moved(player_id: int, x: float, y: float, z: float, yaw: float)
 signal self_position_updated(x: float, y: float, z: float, yaw: float, wx: float, wy: float, wz: float, wyaw: float)
+signal player_teleported(player_id: int, x: float, y: float, z: float, yaw: float)
 signal player_hp_updated(player_id: int, hitpoints: int, max_hitpoints: int)
 signal player_combat_state(player_id: int, in_combat: bool, npc_id: int)
 signal player_respawned(x: float, y: float, z: float, yaw: float, hitpoints: int, max_hitpoints: int)
@@ -69,6 +70,11 @@ signal dev_item_created(ok: bool, item_id: int, error: String)
 signal dev_item_updated(ok: bool, item_id: int)
 signal dev_item_deleted(ok: bool, item_id: int)
 signal dev_item_give_result(ok: bool, error_key: String, error_params: Dictionary)
+signal dev_player_list_result(ok: bool, items: Array, total_count: int, page: int, page_size: int)
+signal dev_player_data(ok: bool, data: Dictionary)
+signal dev_player_admin_updated(ok: bool, player_id: int, is_admin: bool)
+signal dev_player_level_updated(ok: bool, player_id: int, skill_id: String, new_level: int, current_xp: int)
+signal dev_player_teleport_result(ok: bool, player_id: int, tile_x: int, tile_y: int, tile_z: int, error: String)
 
 signal item_icon_info_result(ok: bool, manifest: Dictionary)
 signal item_icon_data_received(name: String, hash: String, data_base64: String)
@@ -398,6 +404,13 @@ func _on_packet(_id: int, packet: PackedByteArray) -> void:
 					self_position_updated.emit(ux, uy, uz, uyaw, uwx, uwy, uwz, uwyaw)
 				else:
 					player_moved.emit(pid, ux, uy, uz, uyaw)
+		"player_teleported":
+			player_teleported.emit(
+				int(msg.get("player_id", 0)),
+				float(msg.get("x", 0.0)),
+				float(msg.get("y", 0.0)),
+				float(msg.get("z", 0.0)),
+				float(msg.get("yaw", 0.0)))
 		"pong":
 			var sent_t := int(msg.get("t", 0))
 			if sent_t > 0:
@@ -584,6 +597,43 @@ func _on_packet(_id: int, packet: PackedByteArray) -> void:
 				bool(msg.get("ok", false)),
 				String(msg.get("error_key", "")),
 				msg.get("error_params", {}))
+		"dev_player_list_result":
+			var pitems: Variant = msg.get("items", [])
+			if typeof(pitems) == TYPE_ARRAY:
+				dev_player_list_result.emit(
+					bool(msg.get("ok", false)),
+					pitems,
+					int(msg.get("total_count", 0)),
+					int(msg.get("page", 0)),
+					int(msg.get("page_size", 20)))
+			else:
+				push_warning("dev_player_list_result missing 'items' array")
+		"dev_player_data":
+			var pdata: Variant = msg.get("data", {})
+			if typeof(pdata) == TYPE_DICTIONARY:
+				dev_player_data.emit(bool(msg.get("ok", false)), pdata)
+			else:
+				dev_player_data.emit(bool(msg.get("ok", false)), {})
+		"dev_player_admin_updated":
+			dev_player_admin_updated.emit(
+				bool(msg.get("ok", false)),
+				int(msg.get("player_id", 0)),
+				bool(msg.get("is_admin", false)))
+		"dev_player_level_updated":
+			dev_player_level_updated.emit(
+				bool(msg.get("ok", false)),
+				int(msg.get("player_id", 0)),
+				String(msg.get("skill_id", "")),
+				int(msg.get("new_level", 0)),
+				int(msg.get("current_xp", 0)))
+		"dev_player_teleport_result":
+			dev_player_teleport_result.emit(
+				bool(msg.get("ok", false)),
+				int(msg.get("player_id", 0)),
+				int(msg.get("tile_x", 0)),
+				int(msg.get("tile_y", 0)),
+				int(msg.get("tile_z", 0)),
+				String(msg.get("error", "")))
 		"damage_number":
 			damage_number.emit(
 				String(msg.get("target_type", "")),
@@ -835,3 +885,31 @@ func request_item_icon_info() -> void:
 
 func request_item_icon_fetch(names: Array) -> void:
 	send({"type": "item_icon_fetch", "names": names})
+
+func send_dev_player_list(search: String, page: int) -> void:
+	send({"type": "dev_player_list", "search": search, "page": page})
+
+
+func send_dev_player_get(player_id: int) -> void:
+	send({"type": "dev_player_get", "player_id": player_id})
+
+
+func send_dev_player_set_admin(player_id: int, is_admin: bool) -> void:
+	send({"type": "dev_player_set_admin", "player_id": player_id, "is_admin": is_admin})
+
+
+func send_dev_player_update_level(player_id: int, skill_id: String, new_level: int) -> void:
+	send({"type": "dev_player_update_level",
+		  "player_id": player_id, "skill_id": skill_id, "new_level": new_level})
+
+
+func send_dev_player_teleport(player_id: int, x: int, y: int) -> void:
+	send({"type": "dev_player_teleport", "player_id": player_id, "x": x, "y": y})
+
+
+func send_dev_player_teleport_to_admin(player_id: int) -> void:
+	send({"type": "dev_player_teleport_to_admin", "player_id": player_id})
+
+
+func send_dev_player_teleport_admin_to(player_id: int) -> void:
+	send({"type": "dev_player_teleport_admin_to", "player_id": player_id})

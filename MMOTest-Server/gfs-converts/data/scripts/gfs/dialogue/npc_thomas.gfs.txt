@@ -1,0 +1,25 @@
+[server]
+[dialogue]
+
+credits = ${PLAYER_CREDITS}
+
+topic start:
+    say "Hello `username`.\n\nWhat can I do for you?"
+    options = [
+        if credits >= 1000:
+            "rich": "I am rich!"
+        "what_do_you_do": "What do you do here?"
+        "end": "Goodbye."
+    ]
+
+topic rich:
+    say "That indeed you are.\n\nYou have: [b]`credits`[/b] credits!"
+    options = [
+        "end": "Thanks, bye!"
+    ]
+
+topic what_do_you_do:
+    say "I stand around, waiting for people like you to ask me pointless questions."
+    options = [
+        "end": "Goodbye."
+    ]

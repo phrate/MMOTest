@@ -20,6 +20,7 @@ func _ready() -> void:
 	Network.state_changed.connect(_on_state_changed)
 	Network.player_hp_updated.connect(_on_network_player_hp_updated)
 	Network.player_combat_state.connect(_on_network_player_combat_state)
+	Network.player_teleported.connect(_on_network_player_teleported)
 
 
 func all() -> Array:
@@ -77,6 +78,16 @@ func _on_network_player_moved(player_id: int, x: float, y: float, z: float, yaw:
 	_players[player_id]["yaw"] = yaw
 	player_moved.emit(player_id)
 
+func _on_network_player_teleported(player_id: int, x: float, y: float, z: float, yaw: float) -> void:
+	if player_id == Session.player_id: return
+	var pos := Vector3(x, y, z)
+	if _players.has(player_id):
+		_players[player_id]["position"] = pos
+		_players[player_id]["yaw"] = yaw
+		# Do NOT emit player_moved — game.gd handles teleports via Network
+		# directly so it uses node.teleport() instead of node.set_target().
+	elif _pending_positions.has(player_id):
+		_pending_positions[player_id] = {"position": pos, "yaw": yaw}
 
 func _on_state_changed(state: int) -> void:
 	if state == Network.State.DISCONNECTED and not _players.is_empty():

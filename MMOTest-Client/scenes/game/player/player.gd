@@ -83,6 +83,7 @@ func _ready() -> void:
 	set_username(Session.username)
 	Session.changed.connect(_on_session_changed)
 	Network.self_position_updated.connect(_on_self_position_updated)
+	Network.player_teleported.connect(_on_player_teleported)
 	Network.player_respawned.connect(_on_player_respawned)
 	Network.anim_changed_received.connect(_on_anim_changed)
 	Pathfinder.path_found.connect(_on_path_found)
@@ -706,6 +707,22 @@ func _on_self_position_updated(x: float, y: float, z: float, yaw: float,
 		_waypoint_pos = Vector3(wx, wy, wz)
 		_waypoint_yaw = wyaw
 
+func _on_player_teleported(player_id: int, x: float, y: float, z: float, yaw: float) -> void:
+	if player_id != Session.player_id: return
+	_pending_path_id = -1
+	_last_path_length = 0
+	_walking_should_message = false
+	_walking_message_shown = false
+	_walking_to_message_destination = Vector3.INF
+	_waypoint_pos = Vector3(NAN, NAN, NAN)
+	global_position = Vector3(x, y, z)
+	rotation.y = yaw
+	_target_pos = global_position
+	_target_yaw = yaw
+	if visuals != null and is_instance_valid(visuals):
+		visuals.reset_position_tracking()
+	if camera != null and camera.has_method("snap_now"):
+		camera.snap_now()
 
 func _on_player_respawned(x: float, y: float, z: float, yaw: float, hp: int, max_hp: int) -> void:
 	visuals.reset_hp_tracking()
@@ -716,6 +733,8 @@ func _on_player_respawned(x: float, y: float, z: float, yaw: float, hp: int, max
 	_walking_to_message_destination = Vector3.INF
 	_waypoint_pos = Vector3(NAN, NAN, NAN)
 	global_position = Vector3(x, y, z)
+	if visuals != null and is_instance_valid(visuals):
+		visuals.reset_position_tracking()
 	rotation.y = yaw
 	_target_pos = global_position
 	_target_yaw = yaw

@@ -201,6 +201,14 @@ func reset_hp_tracking() -> void:
 	if _hp_bar != null:
 		_hp_bar.visible = false
 
+## Called after a hard snap (teleport, respawn). Prevents the next _process
+## frame from seeing a huge position delta and flashing the walk animation.
+func reset_position_tracking() -> void:
+	var p := get_parent()
+	if p is Node3D:
+		_last_pos = (p as Node3D).global_position
+		_frame_vel = 0.0
+		_pos_initialized = true
 
 func show_damage(amount: int) -> void:
 	if _damage_label == null: return

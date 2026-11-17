@@ -319,6 +319,52 @@ public sealed class PlayerStatsRepository
         cmd.ExecuteNonQuery();
     });
 
+	/// <summary>
+	/// Set a skill's level (both current and max) AND set the matching xp
+	/// column to GetXpForLevelTenths(level). Called by the PlayerEditor's
+	/// level-edit action. Updating only the level column would be unstable
+	/// because the next combat/skill xp gain calls GetLevelForXpTenths and
+	/// reverts the override.
+	/// </summary>
+	public Task SetSkillLevelAndXpAsync(long playerId, string skillId, int level, long xpTenths) => Task.Run(() =>
+	{
+		bool isCombat = skillId is "hitpoints" or "accuracy" or "strength" or "defence" or "ether";
+		bool isSkill  = skillId is "woodcutting" or "mining" or "fishing" or "medicine" or "engineering";
+		if (!isCombat && !isSkill) return;
+
+		using var conn = _open();
+		using var tx = conn.BeginTransaction();
+		try
+		{
+			using (var xp = conn.CreateCommand())
+			{
+				xp.Transaction = tx;
+				xp.CommandText = $"UPDATE player_xp SET {skillId} = $xp WHERE id = (SELECT xp_id FROM players WHERE id = $pid);";
+				xp.Parameters.AddWithValue("$xp", xpTenths);
+				xp.Parameters.AddWithValue("$pid", playerId);
+				xp.ExecuteNonQuery();
+			}
+
+			using (var lv = conn.CreateCommand())
+			{
+				lv.Transaction = tx;
+				lv.CommandText = isCombat
+					? $"UPDATE levels_combat SET {skillId} = $level, max_{skillId} = $level WHERE id = (SELECT levels_combat_id FROM players WHERE id = $pid);"
+					: $"UPDATE levels_skill SET {skillId} = $level, max_{skillId} = $level WHERE player_id = $pid;";
+				lv.Parameters.AddWithValue("$level", level);
+				lv.Parameters.AddWithValue("$pid", playerId);
+				lv.ExecuteNonQuery();
+			}
+
+			tx.Commit();
+		}
+		catch
+		{
+			try { tx.Rollback(); } catch { }
+			throw;
+		}
+	});
+
     public Task<List<SkillLevel>> GetSkillsAsync(long playerId) => Task.Run(() =>
     {
         using var conn = _open();

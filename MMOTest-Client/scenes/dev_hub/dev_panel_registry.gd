@@ -10,7 +10,7 @@ extends RefCounted
 ##   shortcut     — optional single-key shortcut (Ctrl+N) to jump to this tab
 ##   entity_types — list of entity types this panel can accept via hub-open-for-entity
 
-const DEFAULT_TAB := "item_editor"
+const DEFAULT_TAB := "player_editor"
 
 const PANELS := [
 	{
