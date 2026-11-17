@@ -38,6 +38,7 @@ func _ready() -> void:
 	container.stretch = true
 	container.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	container.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	container.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	container.gui_input.connect(_on_viewport_input)
 	add_child(container)
 
@@ -115,6 +116,13 @@ func frame_camera() -> void:
 	orbit_target = aabb.get_center()
 	var size := maxf(aabb.size.x, maxf(aabb.size.y, aabb.size.z))
 	orbit_distance = maxf(size, 0.5) * 2.5
+	# Scale zoom bounds with the model. Without this, a model whose native size
+	# exceeds ~20 units sets orbit_distance above the fixed max_distance of 50,
+	# and the first wheel-down event clamps straight to max_distance (visually a
+	# snap-zoom). Bounds only expand (floor at 0.5 / 50), so small models keep
+	# the exact previous behavior.
+	min_distance = maxf(size * 0.1, 0.5)
+	max_distance = maxf(size * 10.0, 50.0)
 	apply_orbit()
 
 

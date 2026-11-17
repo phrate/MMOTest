@@ -1,6 +1,0 @@
-[server]
-[generic]
-
-npc_id = $"npc_id"
-
-EngageNpc(npc_id)

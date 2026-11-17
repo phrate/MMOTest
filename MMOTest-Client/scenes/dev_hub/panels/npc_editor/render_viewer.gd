@@ -2,12 +2,19 @@ class_name NpcRenderViewer
 extends DevModelViewer
 ## Render-tab 3D preview: extends DevModelViewer with hitbox and scale gizmos.
 ## Coordinates gizmo drag → model transform updates in the render tab context.
+##
+## Gizmos live in `gizmo_holder`, a sibling of `model_holder` under the
+## SubViewport. This is critical: `DevModelViewer.clear_model()` (called on
+## every model load) wipes `model_holder.get_children()`, which would
+## otherwise free the gizmos mid-frame and leave dangling references in the
+## render tab. Keeping gizmos on a separate holder makes clear_model safe.
 
 signal hitbox_gizmo_changed(config: Dictionary)
 signal scale_gizmo_changed(scale: Vector3)
 
 var hitbox_gizmo: HitboxGizmo = null
 var scale_gizmo: ScaleGizmo = null
+var gizmo_holder: Node3D = null
 
 var render_mode: String = "hitbox"  # "hitbox" | "scale"
 
@@ -19,15 +26,19 @@ var _current_scale: Vector3 = Vector3.ONE
 func _ready() -> void:
 	super._ready()
 
+	gizmo_holder = Node3D.new()
+	gizmo_holder.name = "GizmoHolder"
+	sub_viewport.add_child(gizmo_holder)
+
 	hitbox_gizmo = HitboxGizmo.new()
 	hitbox_gizmo.camera = camera
-	model_holder.add_child(hitbox_gizmo)
+	gizmo_holder.add_child(hitbox_gizmo)
 	hitbox_gizmo.hitbox_changed.connect(func(c: Dictionary) -> void: hitbox_gizmo_changed.emit(c))
 	hitbox_gizmo.set_gizmo_visible(false)
 
 	scale_gizmo = ScaleGizmo.new()
 	scale_gizmo.camera = camera
-	model_holder.add_child(scale_gizmo)
+	gizmo_holder.add_child(scale_gizmo)
 	scale_gizmo.scale_changed.connect(func(s: Vector3) -> void:
 		_current_scale = s
 		_apply_model_scale()
@@ -62,23 +73,24 @@ func is_current_slug_empty() -> bool:
 
 func get_model() -> Node3D:
 	for c in model_holder.get_children():
-		if c is HitboxGizmo or c is ScaleGizmo: continue
 		if c is Node3D: return c
 	return null
 
 
 func push_hitbox(config: Dictionary) -> void:
+	if hitbox_gizmo == null or not is_instance_valid(hitbox_gizmo): return
 	hitbox_gizmo.set_hitbox(config)
 
 
 func push_scale(scale: Vector3, base_bounds: Vector3) -> void:
+	if scale_gizmo == null or not is_instance_valid(scale_gizmo): return
 	_current_scale = scale
 	scale_gizmo.set_scale_and_bounds(scale, base_bounds)
 	scale_gizmo.position = measure_aabb().get_center()
 
 
 func is_scale_dragging() -> bool:
-	return scale_gizmo != null and scale_gizmo.is_dragging()
+	return scale_gizmo != null and is_instance_valid(scale_gizmo) and scale_gizmo.is_dragging()
 
 
 func _compute_base_fit(model: Node3D, slug: String) -> float:
@@ -114,10 +126,10 @@ func _compute_bounds_at_scale_one(model: Node3D) -> Vector3:
 
 func _on_viewport_pre_input(event: InputEvent) -> bool:
 	if event is InputEventMouseButton or event is InputEventMouseMotion:
-		if render_mode == "hitbox" and hitbox_gizmo != null:
+		if render_mode == "hitbox" and hitbox_gizmo != null and is_instance_valid(hitbox_gizmo):
 			if hitbox_gizmo.handle_input(event, event.position):
 				return true
-		elif render_mode == "scale" and scale_gizmo != null:
+		elif render_mode == "scale" and scale_gizmo != null and is_instance_valid(scale_gizmo):
 			if scale_gizmo.handle_input(event, event.position):
 				return true
 	return false

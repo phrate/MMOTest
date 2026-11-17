@@ -65,8 +65,7 @@ func _input(event: InputEvent) -> void:
 				if caret > 0 and caret <= text.length() and text[caret - 1] == " ":
 					get_viewport().set_input_as_handled()
 					return
-			return  # other keys flow through to LineEdit normally
-			
+
 			if event.keycode == KEY_ESCAPE:
 				_cancel_input()
 				get_viewport().set_input_as_handled()

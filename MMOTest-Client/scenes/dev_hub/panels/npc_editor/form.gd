@@ -3,6 +3,7 @@ extends VBoxContainer
 ## Spec-driven NPC type form. Used identically for Edit (readonly slug,
 ## references section) and Create (editable slug, no references).
 ## Call set_data(src, is_edit, options) to populate; get_payload() to collect.
+signal render_slug_changed(slug: String)
 
 const VIEW_SPEC := [
 	{"kind": "row", "fields": [
@@ -78,6 +79,11 @@ func _rebuild() -> void:
 			_combat_grid.set_data(_src)
 			add_child(_combat_grid)
 
+	# Hook the render dropdown so the panel's preview viewer can track changes.
+	var render_dd = _fields.get("render_slug")
+	if render_dd is OptionButton:
+		render_dd.item_selected.connect(_on_render_dropdown_changed)
+
 
 func get_payload() -> Dictionary:
 	var data := DevFormFields.collect_payload(_fields, _src)
@@ -87,6 +93,19 @@ func get_payload() -> Dictionary:
 			data[key] = grid_data[key]
 	return data
 
+func _on_render_dropdown_changed(idx: int) -> void:
+	var dd = _fields.get("render_slug") as OptionButton
+	if dd == null or idx < 0: return
+	var md = dd.get_item_metadata(idx)
+	render_slug_changed.emit(str(md) if md != null else "")
+
+
+func get_current_render_slug() -> String:
+	var dd = _fields.get("render_slug")
+	if dd is OptionButton and dd.selected >= 0:
+		var md = dd.get_item_metadata(dd.selected)
+		return str(md) if md != null else ""
+	return ""
 
 func _section_header(key: String) -> Control:
 	var s := DevStyle.instance

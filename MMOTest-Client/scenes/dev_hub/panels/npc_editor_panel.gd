@@ -28,6 +28,8 @@ var _options: Dictionary = {}
 var _type_list: Array = []
 var _options_loaded: bool = false
 var _pending_type_id: int = 0
+var _viewer_panel: VBoxContainer
+var _preview_viewer: DevModelViewer
 
 
 func _ready() -> void:
@@ -42,6 +44,8 @@ func panel_opened() -> void:
 	if not _options_loaded:
 		_request_options()
 	_request_type_list()
+	if _subtab_container:
+		_on_subtab_changed(_subtab_container.current_tab)
 
 
 func on_hub_open_for_entity(entity_type: String, entity_id: int) -> void:
@@ -109,6 +113,7 @@ func _on_type_data(ok: bool, data: Dictionary) -> void:
 	_edit_delete_btn.disabled = false
 	_pending_type_id = 0
 	_subtab_container.current_tab = TAB_EDIT
+	_update_preview_model()
 
 
 func _on_type_created(ok: bool, type_id: int, error: String) -> void:
@@ -157,10 +162,32 @@ func _build_ui() -> void:
 	vbox.add_theme_constant_override("separation", s.panel_separation)
 	add_child(vbox)
 
+	var split := HSplitContainer.new()
+	split.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	split.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	vbox.add_child(split)
+
+	_viewer_panel = VBoxContainer.new()
+	_viewer_panel.custom_minimum_size = Vector2(320, 0)
+	split.add_child(_viewer_panel)
+
+	var viewer_label := Label.new()
+	viewer_label.text = "Model Preview"
+	viewer_label.add_theme_font_size_override("font_size", s.font_size_tab)
+	viewer_label.add_theme_color_override("font_color", s.text_heading)
+	_viewer_panel.add_child(viewer_label)
+
+	_preview_viewer = DevModelViewer.new()
+	_preview_viewer.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	_preview_viewer.custom_minimum_size = Vector2(300, 400)
+	_viewer_panel.add_child(_preview_viewer)
+	_viewer_panel.visible = false
+
 	_subtab_container = TabContainer.new()
 	_subtab_container.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_subtab_container.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	vbox.add_child(_subtab_container)
+	split.add_child(_subtab_container)
+	_subtab_container.tab_changed.connect(_on_subtab_changed)
 
 	_browse = NpcEditorBrowse.new()
 	_browse.type_selected.connect(_on_browse_type_selected)
@@ -177,6 +204,9 @@ func _build_ui() -> void:
 	_subtab_container.set_tab_title(TAB_EDIT, Texts.get_text("ui.dev_hub.npc_editor.tab_edit"))
 	_subtab_container.set_tab_title(TAB_CREATE, Texts.get_text("ui.dev_hub.npc_editor.tab_create"))
 	_subtab_container.set_tab_title(TAB_RENDER, Texts.get_text("ui.dev_hub.npc_editor.tab_render"))
+
+	_edit_form.render_slug_changed.connect(_on_form_render_slug_changed)
+	_create_form.render_slug_changed.connect(_on_form_render_slug_changed)
 
 
 func _build_edit_tab() -> Control:
@@ -283,7 +313,36 @@ func _on_browse_create() -> void:
 	_create_form.set_data({}, false, _options)
 	_create_error_label.visible = false
 	_subtab_container.current_tab = TAB_CREATE
+	_update_preview_model()
 
+func _on_subtab_changed(tab: int) -> void:
+	_viewer_panel.visible = tab == TAB_EDIT or tab == TAB_CREATE
+	_update_preview_model()
+
+
+func _on_form_render_slug_changed(_slug: String) -> void:
+	_update_preview_model()
+
+
+func _update_preview_model() -> void:
+	if _preview_viewer == null: return
+	if _viewer_panel == null or not _viewer_panel.visible:
+		_preview_viewer.clear_model()
+		return
+	_preview_viewer.clear_model()
+	var slug := ""
+	match _subtab_container.current_tab:
+		TAB_EDIT:
+			if _edit_form:
+				slug = _edit_form.get_current_render_slug()
+		TAB_CREATE:
+			if _create_form:
+				slug = _create_form.get_current_render_slug()
+		_:
+			return
+	if slug.is_empty(): return
+	_preview_viewer.load_model(slug)
+	_preview_viewer.frame_camera()
 
 func _on_edit_save_pressed() -> void:
 	if _current_type_id == 0: return

@@ -268,12 +268,7 @@ func _update_slot_hover() -> void:
 		var qty := int(data.get("quantity", 1))
 		var item_text := name_text if qty <= 1 else "%s x%d" % [name_text, qty]
 		_slot_hover_label.text = UIStyle.format_primary_bbcode("Deposit " + item_text) if can_bank else item_text
-		_slot_hover_panel.reset_size()
-		var vp := get_viewport().get_visible_rect().size
-		var pos := mouse + Vector2(16, -_slot_hover_panel.size.y - 8)
-		pos.x = min(pos.x, vp.x - _slot_hover_panel.size.x - 4)
-		pos.y = max(pos.y, 4.0)
-		_slot_hover_panel.position = Vector2i(pos)
+		_position_hover_panel(mouse)
 		_slot_hover_panel.visible = true
 		return
 
@@ -286,12 +281,7 @@ func _update_slot_hover() -> void:
 			_slot_hover_label.text = UIStyle.format_primary_bbcode("Offer " + item_text)
 		else:
 			_slot_hover_label.text = item_text
-		_slot_hover_panel.reset_size()
-		var vp := get_viewport().get_visible_rect().size
-		var pos := mouse + Vector2(16, -_slot_hover_panel.size.y - 8)
-		pos.x = min(pos.x, vp.x - _slot_hover_panel.size.x - 4)
-		pos.y = max(pos.y, 4.0)
-		_slot_hover_panel.position = Vector2i(pos)
+		_position_hover_panel(mouse)
 		_slot_hover_panel.visible = true
 		return
 
@@ -307,13 +297,7 @@ func _update_slot_hover() -> void:
 
 	var display: String = str(actions[0].get("display", ""))
 	_slot_hover_label.text = UIStyle.format_primary_bbcode(display)
-	_slot_hover_panel.reset_size()
-
-	var vp_size := get_viewport().get_visible_rect().size
-	var pos := mouse + Vector2(16, -_slot_hover_panel.size.y - 8)
-	pos.x = min(pos.x, vp_size.x - _slot_hover_panel.size.x - 4)
-	pos.y = max(pos.y, 4.0)
-	_slot_hover_panel.position = Vector2i(pos)
+	_position_hover_panel(mouse)
 	_slot_hover_panel.visible = true
 
 
@@ -549,14 +533,16 @@ func _update_use_mode_hover() -> void:
 	else:
 		_slot_hover_label.text = "Use [color=%s]%s[/color] on [color=%s]%s[/color]" % [blue, source_name, blue, target_name]
 
-	_slot_hover_panel.reset_size()
-	var vp := get_viewport().get_visible_rect().size
-	var pos := mouse + Vector2(16, -_slot_hover_panel.size.y - 8)
-	pos.x = min(pos.x, vp.x - _slot_hover_panel.size.x - 4)
-	pos.y = max(pos.y, 4.0)
-	_slot_hover_panel.position = Vector2i(pos)
+	_position_hover_panel(mouse)
 	_slot_hover_panel.visible = true
 
+func _position_hover_panel(mouse: Vector2) -> void:
+	_slot_hover_panel.reset_size()
+	var vp := get_viewport().get_visible_rect().size
+	var target := mouse + Vector2(16, -_slot_hover_panel.size.y - 8)
+	target.x = min(target.x, vp.x - _slot_hover_panel.size.x - 4)
+	target.y = max(target.y, 4.0)
+	_slot_hover_panel.position = Vector2i(target)
 
 func tab_deselected() -> void:
 	if _using_slot >= 0:

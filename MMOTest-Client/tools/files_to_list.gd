@@ -5,11 +5,11 @@ const OUTPUT_PATH := "res://files-to-give.txt"
 const PREFIX := "Client"
 const SKIP_DIR_SEGMENTS := [
 	"models", "resources", ".vscode", ".godot",
-	".git",  # not requested, but including .git would be absurd
+	".git", "addons"
 ]
 const SKIP_EXTENSIONS := [
 	".guid", ".uid", ".csproj",
-	".gfs",     # excluded — we want .gfs.txt instead
+	".gfs", ".py",
 	".tres", ".res", ".tscn",
 	".import", ".fbx", ".gltf", ".glb", ".png",
 ]

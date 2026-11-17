@@ -1,5 +1,0 @@
-[server]
-[generic]
-target_id = $"id"
-RequestTrade(target_id)
-_end_script()

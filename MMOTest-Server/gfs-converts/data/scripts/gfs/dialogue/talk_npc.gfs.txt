@@ -1,5 +1,0 @@
-[server]
-[generic]
-
-npc_id = $"npc_id"
-RequestTalk(npc_id)
