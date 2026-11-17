@@ -226,7 +226,8 @@ internal static class SchemaCreator
         Exec(conn, "CREATE INDEX IF NOT EXISTS idx_levels_skill_player    ON levels_skill  (player_id);");
         Exec(conn, "CREATE INDEX IF NOT EXISTS idx_npcs_tile              ON npcs (tile_x, tile_y);");
         Exec(conn, "CREATE INDEX IF NOT EXISTS idx_npcs_combat            ON npcs (levels_combat_id);");
-        Exec(conn, "CREATE INDEX IF NOT EXISTS idx_items_type             ON items (type, type_slug);");
+		Exec(conn, "DROP INDEX IF EXISTS idx_items_type;");
+		Exec(conn, "CREATE INDEX IF NOT EXISTS idx_items_type ON items (type);");
         Exec(conn, "CREATE INDEX IF NOT EXISTS idx_items_slug             ON items (slug_id);");
         Exec(conn, "CREATE INDEX IF NOT EXISTS idx_recipes_pair           ON recipes (pair);");
     }

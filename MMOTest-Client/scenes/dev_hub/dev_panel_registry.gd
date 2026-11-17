@@ -35,17 +35,24 @@ const PANELS := [
 		"entity_types": [],
 	},
 	{
+		"id": "loot_editor",
+		"name_key": "ui.dev_hub.tab.loot_editor",
+		"scene": "res://scenes/dev_hub/panels/loot_editor_panel.tscn",
+		"shortcut": KEY_4,
+		"entity_types": [],
+	},
+	{
 		"id": "player_editor",
 		"name_key": "ui.dev_hub.tab.player_editor",
 		"scene": "res://scenes/dev_hub/panels/player_editor_panel.tscn",
-		"shortcut": KEY_4,
+		"shortcut": KEY_5,
 		"entity_types": ["player"],
 	},
 	{
 		"id": "gfs_hub",
 		"name_key": "ui.dev_hub.tab.gfs_hub",
 		"scene": "res://scenes/dev_hub/panels/gfs_hub_panel.tscn",
-		"shortcut": KEY_5,
+		"shortcut": KEY_6,
 		"entity_types": [],
 	},
 ]

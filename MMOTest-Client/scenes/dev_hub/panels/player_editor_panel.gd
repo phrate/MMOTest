@@ -10,6 +10,7 @@ const TAB_BROWSE := 0
 const TAB_EDIT := 1
 
 @export_group("Browse Columns")
+@export var browse_col_width_check: int = 32
 @export var browse_col_width_id: int = 80
 @export var browse_col_width_username: int = 220
 @export var browse_col_width_final_level: int = 100
@@ -35,6 +36,7 @@ func _ready() -> void:
 	_build_ui()
 	_connect_network()
 	_browse.configure(
+		browse_col_width_check,
 		browse_col_width_id,
 		browse_col_width_username,
 		browse_col_width_final_level,
@@ -71,6 +73,7 @@ func _connect_network() -> void:
 	Network.dev_player_admin_updated.connect(_on_admin_updated)
 	Network.dev_player_level_updated.connect(_on_level_updated)
 	Network.dev_player_teleport_result.connect(_on_teleport_result)
+	Network.dev_player_deleted.connect(_on_player_deleted)
 
 
 func _on_list_result(ok: bool, items: Array, total_count: int, page: int, page_size: int) -> void:
@@ -149,6 +152,48 @@ func _on_subtab_changed(tab: int) -> void:
 	if tab != TAB_EDIT:
 		_flush()
 
+func _on_browse_delete_requested(ids: Array) -> void:
+	if ids.is_empty():
+		_browse.set_delete_pending(false)
+		return
+	var dlg := ConfirmationDialog.new()
+	dlg.title = Texts.get_text("ui.dev_hub.player_editor.delete_dialog_title")
+	dlg.ok_button_text = Texts.get_text("ui.dev_hub.player_editor.delete_dialog_ok")
+	dlg.dialog_text = Texts.get_text("ui.dev_hub.player_editor.delete_dialog_body",
+		{"count": ids.size()})
+	dlg.confirmed.connect(func() -> void:
+		Network.send_dev_player_delete(ids)
+		dlg.queue_free())
+	dlg.canceled.connect(func() -> void:
+		_browse.set_delete_pending(false)
+		dlg.queue_free())
+	add_child(dlg)
+	dlg.popup_centered()
+
+
+func _on_player_deleted(ok: bool, _deleted: int, error: String) -> void:
+	_browse.set_delete_pending(false)
+	if not ok:
+		_show_error(error if not error.is_empty() \
+			else Texts.get_text("ui.dev_hub.player_editor.error_delete_failed"))
+		return
+	if _current_player_id != 0:
+		_current_player_id = 0
+		_pending_player_id = 0
+		if _form != null: _form.clear()
+		_show_loading(false)
+	Network.send_dev_player_list(_browse.get_search_text(), _browse.get_current_page())
+
+
+func _show_error(text: String) -> void:
+	var dlg := AcceptDialog.new()
+	dlg.title = Texts.get_text("ui.dev_hub.player_editor.dialog_error_title")
+	dlg.dialog_text = text
+	add_child(dlg)
+	dlg.popup_centered()
+	dlg.confirmed.connect(dlg.queue_free)
+	dlg.close_requested.connect(dlg.queue_free)
+
 
 # ============================================================
 # Form → Network dispatch
@@ -194,6 +239,7 @@ func _build_ui() -> void:
 	_browse = PlayerEditorBrowse.new()
 	_browse.player_selected.connect(_on_browse_player_selected)
 	_browse.page_changed.connect(_on_browse_page_changed)
+	_browse.delete_requested.connect(_on_browse_delete_requested)
 	_subtabs.add_child(_browse)
 
 	_edit_tab = _build_edit_tab()

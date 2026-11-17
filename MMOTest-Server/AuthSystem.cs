@@ -42,6 +42,7 @@ internal sealed class AuthSystem
 
     private const bool DevAutoLoginEnabled = true;
     private const string DevUsername = "phrate";
+    private const string DevUsername2 = "dev_account";
     private const string DevPassword = "12345678";
     private const string DevDisabledKey = "account.dev.error.disabled";
     private const string DevAccountWrongPasswordKey = "account.dev.error.account_wrong_password";
@@ -363,7 +364,10 @@ internal sealed class AuthSystem
 
             if (alreadyInSession || alreadyClaimed)
             {
-                GD.Print($"[Server] DEV: '{DevUsername}' already in use; generating fallback account");
+                GD.Print($"[Server] DEV: '{DevUsername}' already in use; trying '{DevUsername2}'");
+                if (await TryLoginAsDev2Async(peerId))
+                    return;
+                GD.Print($"[Server] DEV: '{DevUsername2}' unavailable; generating fallback account");
                 await CreateFallbackDevAccountAsync(peerId);
                 return;
             }
@@ -443,6 +447,23 @@ internal sealed class AuthSystem
 
         GD.Print($"[Server] DEV: fallback account '{username}' (id {playerId}) created and logged in");
         await CompleteLoginAsync(peerId, player);
+    }
+
+    private async System.Threading.Tasks.Task<bool> TryLoginAsDev2Async(long peerId)
+    {
+        // Already logged in from another peer?
+        foreach (var kv in _state.Sessions)
+            if (kv.Value.Username.Equals(DevUsername2, StringComparison.OrdinalIgnoreCase))
+                return false;
+
+        PlayerRecord player = await _db.Players.GetByUsernameAsync(DevUsername2);
+        if (player == null) return false;
+        if (!await PasswordHasher.VerifyAsync(DevPassword, player.PasswordHash)) return false;
+        if (!player.IsAdmin) return false;
+
+        GD.Print($"[Server] DEV: auto-login as '{player.Username}'");
+        await CompleteLoginAsync(peerId, player);
+        return true;
     }
 
     private void SendError(long peerId, string type, string errorKey, object? errorParams = null)

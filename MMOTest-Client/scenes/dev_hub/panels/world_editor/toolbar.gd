@@ -3,6 +3,10 @@ extends HBoxContainer
 ## Top row of the world editor. Owns mode buttons, Z spinbox, walkable toggle,
 ## brush toggle + typeahead popup, and Save button. Emits state-change signals
 ## that the panel forwards to the canvas and to its own tile-bookkeeping.
+##
+## Brush suggestions use a PanelContainer with top_level = true (inline,
+## no focus steal) instead of PopupMenu — matches the LootEditor / DevTagInput
+## pattern that keeps the LineEdit focused while the popup is shown.
 
 signal mode_changed(mode: int)
 signal z_changed(z: int)
@@ -14,6 +18,7 @@ signal save_pressed()
 const SAVE_BTN_WIDTH := 200
 const SAVE_BTN_HEIGHT := 48
 const BRUSH_MAX_SUGGESTIONS := 8
+const BRUSH_MIN_SUGGEST_CHARS := 1
 
 var _mode := WorldEditorCanvas.MODE_INSPECT
 var _mode_btn_group: Array = []
@@ -21,7 +26,8 @@ var _z_spin: SpinBox
 var _walkable_toggle: Button
 var _brush_toggle: Button
 var _brush_input: LineEdit
-var _brush_popup: PopupMenu
+var _brush_suggest_panel: PanelContainer
+var _brush_suggest_vbox: VBoxContainer
 var _save_button: Button
 var _type_options: Array = []
 
@@ -94,10 +100,31 @@ func _build_ui() -> void:
 	_brush_input.visible = false
 	add_child(_brush_input)
 
-	_brush_popup = PopupMenu.new()
-	_brush_popup.add_theme_font_size_override("font_size", s.font_size_small)
-	_brush_popup.id_pressed.connect(_on_brush_suggestion_chosen)
-	add_child(_brush_popup)
+	_brush_suggest_panel = PanelContainer.new()
+	_brush_suggest_panel.top_level = true
+	_brush_suggest_panel.visible = false
+	_brush_suggest_panel.mouse_filter = Control.MOUSE_FILTER_STOP
+	var sb := StyleBoxFlat.new()
+	sb.bg_color = Color(0.10, 0.10, 0.14, 0.98)
+	sb.border_color = Color(0.35, 0.35, 0.42, 1.0)
+	sb.border_width_left = 1
+	sb.border_width_right = 1
+	sb.border_width_top = 1
+	sb.border_width_bottom = 1
+	sb.corner_radius_top_left = 3
+	sb.corner_radius_top_right = 3
+	sb.corner_radius_bottom_left = 3
+	sb.corner_radius_bottom_right = 3
+	sb.content_margin_left = 4
+	sb.content_margin_right = 4
+	sb.content_margin_top = 4
+	sb.content_margin_bottom = 4
+	_brush_suggest_panel.add_theme_stylebox_override("panel", sb)
+	add_child(_brush_suggest_panel)
+
+	_brush_suggest_vbox = VBoxContainer.new()
+	_brush_suggest_vbox.add_theme_constant_override("separation", 2)
+	_brush_suggest_panel.add_child(_brush_suggest_vbox)
 
 	var spacer := Control.new()
 	spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -119,6 +146,19 @@ func _build_ui() -> void:
 	_save_button.add_theme_stylebox_override("disabled", s.make_button_style(green.darkened(0.35)))
 	_save_button.pressed.connect(func() -> void: save_pressed.emit())
 	add_child(_save_button)
+
+
+func _input(event: InputEvent) -> void:
+	if _brush_suggest_panel == null: return
+	if not _brush_suggest_panel.visible: return
+	if not is_visible_in_tree(): return
+	if event is InputEventMouseButton and event.pressed:
+		if not _brush_suggest_panel.get_global_rect().has_point(event.position):
+			_hide_brush_suggestions()
+	elif event is InputEventKey and event.pressed and not event.echo:
+		if event.keycode == KEY_ESCAPE:
+			_hide_brush_suggestions()
+			get_viewport().set_input_as_handled()
 
 
 # ---------- Public API ----------
@@ -152,7 +192,7 @@ func _on_mode_button_pressed(mode: int) -> void:
 	if _brush_toggle.button_pressed:
 		_brush_toggle.button_pressed = false
 		_brush_input.visible = false
-		_brush_popup.hide()
+		_hide_brush_suggestions()
 		brush_cleared.emit()
 	_mode = mode
 	_sync_mode_buttons()
@@ -184,16 +224,18 @@ func _on_brush_toggled(pressed: bool) -> void:
 		_mode = WorldEditorCanvas.MODE_INSPECT
 		_sync_mode_buttons()
 		_brush_input.text = ""
-		_brush_popup.hide()
+		_hide_brush_suggestions()
 		brush_cleared.emit()
 		mode_changed.emit(WorldEditorCanvas.MODE_INSPECT)
 
 func _on_brush_filter_changed(t: String) -> void:
 	var filter := t.strip_edges().to_lower()
-	if filter.is_empty():
-		_brush_popup.hide()
+	if filter.length() < BRUSH_MIN_SUGGEST_CHARS:
+		_hide_brush_suggestions()
 		return
-	_brush_popup.clear()
+
+	_clear_brush_suggestions()
+	var s := DevStyle.instance
 	var count := 0
 	for it in _type_options:
 		if typeof(it) != TYPE_DICTIONARY: continue
@@ -202,22 +244,51 @@ func _on_brush_filter_changed(t: String) -> void:
 		if not (slug.to_lower().contains(filter) or disp.to_lower().contains(filter)):
 			continue
 		if count >= BRUSH_MAX_SUGGESTIONS: break
-		_brush_popup.add_item("%s  (%s)" % [disp, slug], count)
-		_brush_popup.set_item_metadata(count, int(it.get("id", 0)))
+		var type_id := int(it.get("id", 0))
+		var btn := Button.new()
+		btn.text = "%s  (%s)" % [disp, slug]
+		btn.alignment = HORIZONTAL_ALIGNMENT_LEFT
+		btn.focus_mode = Control.FOCUS_NONE
+		btn.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
+		btn.add_theme_font_size_override("font_size", s.font_size_small)
+		btn.add_theme_color_override("font_color", Color.WHITE)
+		btn.add_theme_color_override("font_hover_color", Color.WHITE)
+		btn.add_theme_stylebox_override("normal", StyleBoxEmpty.new())
+		btn.add_theme_stylebox_override("pressed", StyleBoxEmpty.new())
+		var hover := StyleBoxFlat.new()
+		hover.bg_color = Color(1, 1, 1, 0.12)
+		hover.content_margin_left = 6
+		hover.content_margin_right = 6
+		hover.content_margin_top = 2
+		hover.content_margin_bottom = 2
+		btn.add_theme_stylebox_override("hover", hover)
+		btn.pressed.connect(_on_brush_suggestion_pressed.bind(type_id, slug))
+		_brush_suggest_vbox.add_child(btn)
 		count += 1
-	if count > 0:
-		var rect := _brush_input.get_global_rect()
-		_brush_popup.position = Vector2i(int(rect.position.x), int(rect.position.y + rect.size.y + 2))
-		_brush_popup.reset_size()
-		_brush_popup.popup()
-	else:
-		_brush_popup.hide()
 
-func _on_brush_suggestion_chosen(id: int) -> void:
-	var type_id: int = int(_brush_popup.get_item_metadata(id))
-	_brush_popup.hide()
-	for it in _type_options:
-		if int(it.get("id", 0)) == type_id:
-			_brush_input.text = str(it.get("slug_id", ""))
-			break
+	if count > 0:
+		_show_brush_suggestions()
+
+func _on_brush_suggestion_pressed(type_id: int, slug: String) -> void:
+	_brush_input.text = slug
+	_brush_input.caret_column = slug.length()
+	_hide_brush_suggestions()
 	brush_chosen.emit(type_id)
+
+func _show_brush_suggestions() -> void:
+	_brush_suggest_panel.reset_size()
+	var rect := _brush_input.get_global_rect()
+	_brush_suggest_panel.global_position = Vector2(
+		rect.position.x,
+		rect.position.y + rect.size.y + 2)
+	_brush_suggest_panel.visible = true
+
+func _hide_brush_suggestions() -> void:
+	if _brush_suggest_panel == null: return
+	_brush_suggest_panel.visible = false
+
+func _clear_brush_suggestions() -> void:
+	if _brush_suggest_vbox == null: return
+	for c in _brush_suggest_vbox.get_children():
+		_brush_suggest_vbox.remove_child(c)
+		c.queue_free()

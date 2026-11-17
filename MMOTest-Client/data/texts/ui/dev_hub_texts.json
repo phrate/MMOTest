@@ -6,6 +6,7 @@
 	"world_editor": "World Editor",
 	"npc_editor": "NPC Editor",
 	"item_editor": "Item Editor",
+	"loot_editor": "Loot Editor",
 	"player_editor": "Player Editor",
 	"gfs_hub": "GFS Hub"
   },

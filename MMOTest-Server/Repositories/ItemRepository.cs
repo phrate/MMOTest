@@ -74,6 +74,28 @@ public sealed class ItemRepository
         return result;
     }
 
+	public List<(long Id, string Slug, string Display)> SearchSync(string search, int limit)
+	{
+		var result = new List<(long, string, string)>();
+		if (limit <= 0) limit = 20;
+		using var conn = _open();
+		using var cmd = conn.CreateCommand();
+		bool hasSearch = !string.IsNullOrWhiteSpace(search);
+		cmd.CommandText = hasSearch
+			? @"SELECT id, slug_id, display_name FROM items
+				WHERE is_active = 1 AND (slug_id LIKE $s COLLATE NOCASE OR display_name LIKE $s COLLATE NOCASE)
+				ORDER BY slug_id COLLATE NOCASE LIMIT $limit;"
+			: @"SELECT id, slug_id, display_name FROM items
+				WHERE is_active = 1
+				ORDER BY slug_id COLLATE NOCASE LIMIT $limit;";
+		if (hasSearch) cmd.Parameters.AddWithValue("$s", "%" + search + "%");
+		cmd.Parameters.AddWithValue("$limit", limit);
+		using var r = cmd.ExecuteReader();
+		while (r.Read())
+			result.Add((r.GetInt64(0), r.GetString(1), r.GetString(2)));
+		return result;
+	}
+
     private List<ItemMeta> LoadItems(string whereClause, Dictionary<string, object>? parameters = null)
     {
         using var conn = _open();

@@ -32,10 +32,12 @@ internal sealed class PlayerSystem
 	private readonly PlayerStatsRepository _stats;
 	private readonly InventoryRepository _inventory;
 	private readonly BankRepository _bank;
+	private readonly Action<long> _disconnectPlayer;
 
 	public PlayerSystem(ServerState state, OutboundChannel outbound, ItemLookup items,
 		WorldService world, PlayerRepository players, PlayerStatsRepository stats,
-		InventoryRepository inventory, BankRepository bank)
+		InventoryRepository inventory, BankRepository bank,
+		Action<long> disconnectPlayer)
 	{
 		_state = state;
 		_outbound = outbound;
@@ -45,6 +47,7 @@ internal sealed class PlayerSystem
 		_stats = stats;
 		_inventory = inventory;
 		_bank = bank;
+		_disconnectPlayer = disconnectPlayer;
 	}
 
 	// ============================================================
@@ -585,5 +588,56 @@ internal sealed class PlayerSystem
 			&& _state.Sessions.TryGetValue(peerId, out var sess))
 			return sess.Username;
 		return $"player {playerId}";
+	}
+
+	// ============================================================
+	// dev_player_delete — bulk delete with online disconnect
+	// ============================================================
+
+	internal void HandleDevPlayerDelete(long peerId, JsonElement root)
+	{
+		if (!_state.Sessions.TryGetValue(peerId, out var session)) return;
+		if (!session.IsAdmin) return;
+		if (!root.TryGetProperty("player_ids", out var idsEl)
+			|| idsEl.ValueKind != JsonValueKind.Array) return;
+
+		var ids = new List<long>();
+		foreach (var el in idsEl.EnumerateArray())
+			if (el.TryGetInt64(out long id) && id > 0) ids.Add(id);
+		if (ids.Count == 0) return;
+
+		_ = DeleteAsync(peerId, ids);
+	}
+
+	private async System.Threading.Tasks.Task DeleteAsync(long peerId, List<long> ids)
+	{
+		try
+		{
+			// Disconnect any online players first. The socket close will fire
+			// Main.OnPeerDisconnected, which runs the full per-player cleanup
+			// (bank session, trade session, dialogue session, etc.).
+			foreach (var id in ids)
+				_disconnectPlayer(id);
+
+			int deleted = await _players.DeletePlayersAsync(ids);
+
+			_outbound.Send(peerId, new
+			{
+				type = "dev_player_deleted",
+				ok = true,
+				deleted,
+			});
+		}
+		catch (Exception e)
+		{
+			GD.PrintErr($"[PlayerSystem] DeleteAsync: {e.Message}");
+			_outbound.Send(peerId, new
+			{
+				type = "dev_player_deleted",
+				ok = false,
+				deleted = 0,
+				error = e.Message,
+			});
+		}
 	}
 }

@@ -61,6 +61,7 @@ public partial class Main : Node
 	private NpcSystem _npc;
 	private ItemSystem _inv;
 	private PlayerSystem _playerSys;
+	private LootSystem _lootSys;
 	private GroundItemSystem _ground;
 	private ChatSystem _chat;
 	private AuthSystem _auth;
@@ -107,6 +108,7 @@ public partial class Main : Node
 			// Ensure the canonical dev account exists before anything else.
 			// Cheap no-op when it already exists.
 			AuthSystem.EnsureDevAccountSync(_db, "phrate", "12345678");
+			AuthSystem.EnsureDevAccountSync(_db, "dev_account", "12345678");
 
 			if (ResetPlayersOnStartup)
 			{
@@ -197,7 +199,13 @@ public partial class Main : Node
 	_lootTablesBySlug, _creditsLootBySlug);
 			_npc.LoadAll();
 			_inv = new ItemSystem(_state, _outbound, _items, _db.Inventory, _db.Stats, _trade, _combatRng, _db.Players, _db.Items, itemIcons);
-			_playerSys = new PlayerSystem(_state, _outbound, _items, _world, _db.Players, _db.Stats, _db.Inventory, _db.Bank);
+			_playerSys = new PlayerSystem(_state, _outbound, _items, _world, _db.Players, _db.Stats, _db.Inventory, _db.Bank,
+				playerId =>
+				{
+					if (_state.PeerByPlayerId.TryGetValue(playerId, out long peer))
+						_mp?.MultiplayerPeer?.DisconnectPeer((int)peer);
+				});
+			_lootSys = new LootSystem(_state, _outbound, _db.Loot, _db.Items, _lootTablesBySlug, _creditsLootBySlug);
 			_ground = new GroundItemSystem(_state, _world, _outbound, _items, _inv, _trade, _db.Inventory, _pathfinder, NpcViewChunkRadius);
 
 			_combat = new CombatSystem(_state, _world, _outbound, _coordinator, _movement, _pathfinder,
@@ -484,29 +492,6 @@ public partial class Main : Node
 				case "login":       await _auth.HandleLoginAsync(peerId, GetString(root, "username"), GetString(root, "password"), GetString(root, "reason")); break;
 				case "world_info":  _worldFiles.HandleWorldInfo(peerId); break;
 				case "world_fetch": _worldFiles.HandleWorldFetch(peerId); break;
-				case "dev_npc_editor_options": _npc.HandleDevNpcEditorOptions(peerId); break;
-				case "dev_npc_type_list":    _npc.HandleDevNpcTypeList(peerId, root); break;
-				case "dev_npc_type_get":     _npc.HandleDevNpcTypeGet(peerId, root); break;
-				case "dev_npc_type_create":  _npc.HandleDevNpcTypeCreate(peerId, root); break;
-				case "dev_npc_type_update":  _npc.HandleDevNpcTypeUpdate(peerId, root); break;
-				case "dev_npc_type_delete":  _npc.HandleDevNpcTypeDelete(peerId, root); break;
-				case "dev_auto_login": await _auth.HandleDevAutoLoginAsync(peerId); break;
-				case "dev_world_instance_list":   _npc.HandleDevWorldInstanceList(peerId, root); break;
-				case "dev_world_save":            _worldFiles.HandleDevWorldSave(peerId, root); break;
-				case "dev_item_list":       _inv.HandleDevItemList(peerId, root); break;
-				case "dev_item_tags_list":  _inv.HandleDevItemTagsList(peerId); break;
-				case "dev_item_get":        _inv.HandleDevItemGet(peerId, root); break;
-				case "dev_item_create":     _inv.HandleDevItemCreate(peerId, root); break;
-				case "dev_item_update":     _inv.HandleDevItemUpdate(peerId, root); break;
-				case "dev_item_delete":     _inv.HandleDevItemDelete(peerId, root); break;
-				case "dev_item_give":       _inv.HandleDevItemGive(peerId, root); break;
-				case "dev_player_list":              _playerSys.HandleDevPlayerList(peerId, root); break;
-				case "dev_player_get":               _playerSys.HandleDevPlayerGet(peerId, root); break;
-				case "dev_player_set_admin":         _playerSys.HandleDevPlayerSetAdmin(peerId, root); break;
-				case "dev_player_update_level":      _playerSys.HandleDevPlayerUpdateLevel(peerId, root); break;
-				case "dev_player_teleport":          _playerSys.HandleDevPlayerTeleport(peerId, root); break;
-				case "dev_player_teleport_to_admin": _playerSys.HandleDevPlayerTeleportToAdmin(peerId, root); break;
-				case "dev_player_teleport_admin_to": _playerSys.HandleDevPlayerTeleportAdminTo(peerId, root); break;
 				case "player_walk": _walk.HandlePlayerWalk(peerId, root); break;
 				case "inventory_swap": _inv.HandleInventorySwap(peerId, root); break;
 				case "ping":         HandlePing(peerId, root); break;
@@ -538,6 +523,41 @@ public partial class Main : Node
 				case "combine_attempt": _recipe.HandleCombineAttempt(peerId, root); break;
 				case "item_icon_info":   _inv.HandleItemIconInfo(peerId); break;
 				case "item_icon_fetch":  _inv.HandleItemIconFetch(peerId, root); break;
+				case "dev_npc_editor_options": _npc.HandleDevNpcEditorOptions(peerId); break;
+				case "dev_npc_type_list":    _npc.HandleDevNpcTypeList(peerId, root); break;
+				case "dev_npc_type_get":     _npc.HandleDevNpcTypeGet(peerId, root); break;
+				case "dev_npc_type_create":  _npc.HandleDevNpcTypeCreate(peerId, root); break;
+				case "dev_npc_type_update":  _npc.HandleDevNpcTypeUpdate(peerId, root); break;
+				case "dev_npc_type_delete":  _npc.HandleDevNpcTypeDelete(peerId, root); break;
+				case "dev_auto_login": await _auth.HandleDevAutoLoginAsync(peerId); break;
+				case "dev_world_instance_list":   _npc.HandleDevWorldInstanceList(peerId, root); break;
+				case "dev_world_save":            _worldFiles.HandleDevWorldSave(peerId, root); break;
+				case "dev_item_list":       _inv.HandleDevItemList(peerId, root); break;
+				case "dev_item_tags_list":  _inv.HandleDevItemTagsList(peerId); break;
+				case "dev_item_get":        _inv.HandleDevItemGet(peerId, root); break;
+				case "dev_item_create":     _inv.HandleDevItemCreate(peerId, root); break;
+				case "dev_item_update":     _inv.HandleDevItemUpdate(peerId, root); break;
+				case "dev_item_delete":     _inv.HandleDevItemDelete(peerId, root); break;
+				case "dev_item_give":       _inv.HandleDevItemGive(peerId, root); break;
+				case "dev_player_list":              _playerSys.HandleDevPlayerList(peerId, root); break;
+				case "dev_player_get":               _playerSys.HandleDevPlayerGet(peerId, root); break;
+				case "dev_player_set_admin":         _playerSys.HandleDevPlayerSetAdmin(peerId, root); break;
+				case "dev_player_update_level":      _playerSys.HandleDevPlayerUpdateLevel(peerId, root); break;
+				case "dev_player_teleport":          _playerSys.HandleDevPlayerTeleport(peerId, root); break;
+				case "dev_player_teleport_to_admin": _playerSys.HandleDevPlayerTeleportToAdmin(peerId, root); break;
+				case "dev_player_teleport_admin_to": _playerSys.HandleDevPlayerTeleportAdminTo(peerId, root); break;
+				case "dev_loot_list_items":   _lootSys.HandleDevLootListItems(peerId, root); break;
+				case "dev_loot_get_items":    _lootSys.HandleDevLootGetItems(peerId, root); break;
+				case "dev_loot_save_items":   _lootSys.HandleDevLootSaveItems(peerId, root); break;
+				case "dev_loot_list_credits": _lootSys.HandleDevLootListCredits(peerId, root); break;
+				case "dev_loot_get_credits":  _lootSys.HandleDevLootGetCredits(peerId, root); break;
+				case "dev_loot_save_credits": _lootSys.HandleDevLootSaveCredits(peerId, root); break;
+				case "dev_item_search":       _lootSys.HandleDevItemSearch(peerId, root); break;
+				case "dev_loot_create_items":   _lootSys.HandleDevLootCreateItems(peerId, root); break;
+				case "dev_loot_delete_items":   _lootSys.HandleDevLootDeleteItems(peerId, root); break;
+				case "dev_loot_create_credits": _lootSys.HandleDevLootCreateCredits(peerId, root); break;
+				case "dev_loot_delete_credits": _lootSys.HandleDevLootDeleteCredits(peerId, root); break;
+				case "dev_player_delete":            _playerSys.HandleDevPlayerDelete(peerId, root); break;
 				default:
 					GD.PrintErr($"[Server] Unknown message type '{type}' from {peerId}");
 					break;

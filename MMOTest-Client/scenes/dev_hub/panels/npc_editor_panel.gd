@@ -1,8 +1,11 @@
 extends DevPanel
 ## NPC editor root — sub-tabs Browse / Edit / Create / Render.
-## Owns: network wiring, tab dispatch, save/delete button state.
-## Delegates: Browse list (NpcEditorBrowse), type form (NpcEditorForm),
-## Render tab (NpcEditorRender).
+## Sub-tabs span the full panel width at all times. The model viewer is
+## embedded inside Edit and Create tabs, reparented between them on tab
+## change, so the tab bar never shifts.
+##
+## panel_opened() always re-requests options (loot lists, dialogue scripts,
+## render slugs) so loot-editor changes propagate here without a restart.
 
 const TAB_BROWSE := 0
 const TAB_EDIT := 1
@@ -28,8 +31,11 @@ var _options: Dictionary = {}
 var _type_list: Array = []
 var _options_loaded: bool = false
 var _pending_type_id: int = 0
+
 var _viewer_panel: VBoxContainer
 var _preview_viewer: DevModelViewer
+var _edit_row: HBoxContainer
+var _create_row: HBoxContainer
 
 
 func _ready() -> void:
@@ -41,8 +47,8 @@ func _ready() -> void:
 
 
 func panel_opened() -> void:
-	if not _options_loaded:
-		_request_options()
+	# Always refresh options — loot lists / dialogue scripts may have changed.
+	_request_options()
 	_request_type_list()
 	if _subtab_container:
 		_on_subtab_changed(_subtab_container.current_tab)
@@ -81,6 +87,10 @@ func _on_options_result(ok: bool, options: Dictionary) -> void:
 	_options_loaded = true
 	if _current_type_id != 0:
 		_edit_form.set_data(_current_data, true, _options)
+	# Also seed the Create form with real options. Without this, the create
+	# form keeps the empty {} it was built with, leaving every options-backed
+	# dropdown (render_slug, dialogue_script, loot_table_name, …) blank.
+	_create_form.set_data({}, false, _options)
 	_refresh_render_slugs()
 
 
@@ -121,6 +131,7 @@ func _on_type_created(ok: bool, type_id: int, error: String) -> void:
 	if ok:
 		_create_error_label.visible = false
 		_pending_type_id = type_id
+		_request_type_list()
 		Network.send_dev_npc_type_get(type_id)
 	else:
 		_show_create_error(error if error != "" else Texts.get_text("ui.dev_hub.npc_editor.error_create_failed"))
@@ -132,6 +143,7 @@ func _on_type_updated(ok: bool, type_id: int) -> void:
 	if ok:
 		_edit_save_btn.text = Texts.get_text("ui.dev_hub.npc_editor.save_all_saved")
 		Network.send_dev_npc_type_get(type_id)
+		_request_type_list()
 		await get_tree().create_timer(1.2).timeout
 		if _edit_save_btn and _edit_save_btn.text == Texts.get_text("ui.dev_hub.npc_editor.save_all_saved"):
 			_edit_save_btn.text = Texts.get_text("ui.dev_hub.npc_editor.save_all")
@@ -162,14 +174,16 @@ func _build_ui() -> void:
 	vbox.add_theme_constant_override("separation", s.panel_separation)
 	add_child(vbox)
 
-	var split := HSplitContainer.new()
-	split.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	split.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	vbox.add_child(split)
+	_subtab_container = TabContainer.new()
+	_subtab_container.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_subtab_container.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	vbox.add_child(_subtab_container)
 
+	# Viewer panel is constructed but NOT parented yet — it gets reparented
+	# into the active tab's row on tab change.
 	_viewer_panel = VBoxContainer.new()
 	_viewer_panel.custom_minimum_size = Vector2(320, 0)
-	split.add_child(_viewer_panel)
+	_viewer_panel.add_theme_constant_override("separation", s.panel_separation)
 
 	var viewer_label := Label.new()
 	viewer_label.text = "Model Preview"
@@ -181,13 +195,6 @@ func _build_ui() -> void:
 	_preview_viewer.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	_preview_viewer.custom_minimum_size = Vector2(300, 400)
 	_viewer_panel.add_child(_preview_viewer)
-	_viewer_panel.visible = false
-
-	_subtab_container = TabContainer.new()
-	_subtab_container.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	_subtab_container.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	split.add_child(_subtab_container)
-	_subtab_container.tab_changed.connect(_on_subtab_changed)
 
 	_browse = NpcEditorBrowse.new()
 	_browse.type_selected.connect(_on_browse_type_selected)
@@ -208,6 +215,9 @@ func _build_ui() -> void:
 	_edit_form.render_slug_changed.connect(_on_form_render_slug_changed)
 	_create_form.render_slug_changed.connect(_on_form_render_slug_changed)
 
+	_subtab_container.tab_changed.connect(_on_subtab_changed)
+	_on_subtab_changed(_subtab_container.current_tab)
+
 
 func _build_edit_tab() -> Control:
 	var s := DevStyle.instance
@@ -217,12 +227,24 @@ func _build_edit_tab() -> Control:
 	edit.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	edit.add_theme_constant_override("separation", s.panel_separation)
 
+	_edit_row = HBoxContainer.new()
+	_edit_row.add_theme_constant_override("separation", s.panel_separation)
+	_edit_row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_edit_row.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	edit.add_child(_edit_row)
+
+	var form_wrap := VBoxContainer.new()
+	form_wrap.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	form_wrap.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	form_wrap.add_theme_constant_override("separation", s.panel_separation)
+	_edit_row.add_child(form_wrap)
+
 	var scroll := ScrollContainer.new()
 	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
 	scroll.clip_contents = true
-	edit.add_child(scroll)
+	form_wrap.add_child(scroll)
 
 	var margin := MarginContainer.new()
 	margin.add_theme_constant_override("margin_left", s.panel_content_margin)
@@ -237,7 +259,7 @@ func _build_edit_tab() -> Control:
 
 	var btn_row := HBoxContainer.new()
 	btn_row.add_theme_constant_override("separation", s.panel_separation)
-	edit.add_child(btn_row)
+	form_wrap.add_child(btn_row)
 
 	_edit_save_btn = DevFormFields.action_button(
 		Texts.get_text("ui.dev_hub.npc_editor.save_all"),
@@ -264,12 +286,24 @@ func _build_create_tab() -> Control:
 	create.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	create.add_theme_constant_override("separation", s.panel_separation)
 
+	_create_row = HBoxContainer.new()
+	_create_row.add_theme_constant_override("separation", s.panel_separation)
+	_create_row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_create_row.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	create.add_child(_create_row)
+
+	var form_wrap := VBoxContainer.new()
+	form_wrap.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	form_wrap.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	form_wrap.add_theme_constant_override("separation", s.panel_separation)
+	_create_row.add_child(form_wrap)
+
 	var scroll := ScrollContainer.new()
 	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
 	scroll.clip_contents = true
-	create.add_child(scroll)
+	form_wrap.add_child(scroll)
 
 	var margin := MarginContainer.new()
 	margin.add_theme_constant_override("margin_left", s.panel_content_margin)
@@ -287,16 +321,55 @@ func _build_create_tab() -> Control:
 	_create_error_label.add_theme_color_override("font_color", Color(1.0, 0.4, 0.4))
 	_create_error_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_create_error_label.visible = false
-	create.add_child(_create_error_label)
+	form_wrap.add_child(_create_error_label)
 
 	_create_submit_btn = DevFormFields.action_button(
 		Texts.get_text("ui.dev_hub.npc_editor.create_button"),
 		Color(0.28, 0.62, 0.28), save_button_height, save_button_font_size)
 	_create_submit_btn.pressed.connect(_on_create_pressed)
-	create.add_child(_create_submit_btn)
+	form_wrap.add_child(_create_submit_btn)
 
 	_create_form.set_data({}, false, {})
 	return create
+
+
+# ============================================================
+# Viewer reparenting
+# ============================================================
+
+func _on_subtab_changed(tab: int) -> void:
+	match tab:
+		TAB_EDIT:
+			_reparent_viewer_to(_edit_row, 0)
+		TAB_CREATE:
+			_reparent_viewer_to(_create_row, 0)
+		_:
+			_detach_viewer()
+	_update_preview_model()
+
+
+func _reparent_viewer_to(container: HBoxContainer, index: int) -> void:
+	if container == null: return
+	if _viewer_panel.get_parent() == container and container.get_child(index) == _viewer_panel:
+		_viewer_panel.visible = true
+		return
+	if _viewer_panel.get_parent() != null:
+		_viewer_panel.get_parent().remove_child(_viewer_panel)
+	container.add_child(_viewer_panel)
+	container.move_child(_viewer_panel, index)
+	_viewer_panel.visible = true
+
+
+func _detach_viewer() -> void:
+	# Keep the viewer in the tree so its SubViewport stays initialized across
+	# tab switches. Park it as a hidden child of _edit_row — invisible VBox
+	# children occupy no layout space, so it can't affect the tab bar.
+	if _edit_row != null and _viewer_panel.get_parent() != _edit_row:
+		if _viewer_panel.get_parent() != null:
+			_viewer_panel.get_parent().remove_child(_viewer_panel)
+		_edit_row.add_child(_viewer_panel)
+		_edit_row.move_child(_viewer_panel, 0)
+	_viewer_panel.visible = false
 
 
 # ============================================================
@@ -315,10 +388,6 @@ func _on_browse_create() -> void:
 	_subtab_container.current_tab = TAB_CREATE
 	_update_preview_model()
 
-func _on_subtab_changed(tab: int) -> void:
-	_viewer_panel.visible = tab == TAB_EDIT or tab == TAB_CREATE
-	_update_preview_model()
-
 
 func _on_form_render_slug_changed(_slug: String) -> void:
 	_update_preview_model()
@@ -326,23 +395,22 @@ func _on_form_render_slug_changed(_slug: String) -> void:
 
 func _update_preview_model() -> void:
 	if _preview_viewer == null: return
-	if _viewer_panel == null or not _viewer_panel.visible:
+	if not _preview_viewer.is_node_ready(): return
+	var tab := _subtab_container.current_tab
+	if tab != TAB_EDIT and tab != TAB_CREATE:
 		_preview_viewer.clear_model()
 		return
 	_preview_viewer.clear_model()
 	var slug := ""
-	match _subtab_container.current_tab:
+	match tab:
 		TAB_EDIT:
-			if _edit_form:
-				slug = _edit_form.get_current_render_slug()
+			if _edit_form: slug = _edit_form.get_current_render_slug()
 		TAB_CREATE:
-			if _create_form:
-				slug = _create_form.get_current_render_slug()
-		_:
-			return
+			if _create_form: slug = _create_form.get_current_render_slug()
 	if slug.is_empty(): return
 	_preview_viewer.load_model(slug)
 	_preview_viewer.frame_camera()
+
 
 func _on_edit_save_pressed() -> void:
 	if _current_type_id == 0: return

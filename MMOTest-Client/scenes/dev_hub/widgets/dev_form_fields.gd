@@ -245,3 +245,20 @@ static func collect_payload(wdict: Dictionary, baseline: Dictionary) -> Dictiona
 		elif w is Button:
 			data[key] = (w as Button).button_pressed
 	return data
+
+static func read_spin(spin: SpinBox) -> int:
+	## SpinBox only commits typed text to `value` on blur/Enter. This reads the
+	## live text from the LineEdit, clamps it, writes it back, and returns it —
+	## so click-Save-without-blurring works.
+	if spin == null: return 0
+	var le := spin.get_line_edit()
+	var txt := le.text.strip_edges()
+	if txt.is_valid_int():
+		var v := int(txt)
+		v = clampi(v, int(spin.min_value), int(spin.max_value))
+		if str(v) != txt:
+			le.text = str(v)
+			le.caret_column = le.text.length()
+		spin.value = v
+		return v
+	return int(spin.value)

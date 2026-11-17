@@ -54,27 +54,6 @@ signal npc_combat_state(npc_id: int, in_combat: bool)
 
 signal npc_editor_open(type_id: int)
 signal npc_render_save_result(ok: bool, kind: String, slug: String)
-signal dev_npc_render_config_reset(ok: bool, slug: String)
-signal dev_npc_editor_options_result(ok: bool, options: Dictionary)
-signal dev_npc_type_list_result(ok: bool, items: Array)
-signal dev_npc_type_data(ok: bool, data: Dictionary)
-signal dev_npc_type_created(ok: bool, type_id: int, error: String)
-signal dev_npc_type_updated(ok: bool, type_id: int)
-signal dev_npc_type_deleted(ok: bool, type_id: int)
-signal dev_world_instance_list_result(ok: bool, items: Array)
-signal dev_world_save_result(ok: bool, error: String)
-signal dev_item_list_result(ok: bool, items: Array)
-signal dev_item_tags_list_result(ok: bool, tags: Array)
-signal dev_item_data(ok: bool, data: Dictionary)
-signal dev_item_created(ok: bool, item_id: int, error: String)
-signal dev_item_updated(ok: bool, item_id: int)
-signal dev_item_deleted(ok: bool, item_id: int)
-signal dev_item_give_result(ok: bool, error_key: String, error_params: Dictionary)
-signal dev_player_list_result(ok: bool, items: Array, total_count: int, page: int, page_size: int)
-signal dev_player_data(ok: bool, data: Dictionary)
-signal dev_player_admin_updated(ok: bool, player_id: int, is_admin: bool)
-signal dev_player_level_updated(ok: bool, player_id: int, skill_id: String, new_level: int, current_xp: int)
-signal dev_player_teleport_result(ok: bool, player_id: int, tile_x: int, tile_y: int, tile_z: int, error: String)
 
 signal item_icon_info_result(ok: bool, manifest: Dictionary)
 signal item_icon_data_received(name: String, hash: String, data_base64: String)
@@ -97,6 +76,40 @@ signal bank_state_received(state: Dictionary)
 signal bank_closed(session_id: String, error_key: String, error_params: Dictionary)
 signal bank_notice(error_key: String, error_params: Dictionary)
 
+signal dev_npc_render_config_reset(ok: bool, slug: String)
+signal dev_npc_editor_options_result(ok: bool, options: Dictionary)
+signal dev_npc_type_list_result(ok: bool, items: Array)
+signal dev_npc_type_data(ok: bool, data: Dictionary)
+signal dev_npc_type_created(ok: bool, type_id: int, error: String)
+signal dev_npc_type_updated(ok: bool, type_id: int)
+signal dev_npc_type_deleted(ok: bool, type_id: int)
+signal dev_world_instance_list_result(ok: bool, items: Array)
+signal dev_world_save_result(ok: bool, error: String)
+signal dev_item_list_result(ok: bool, items: Array)
+signal dev_item_tags_list_result(ok: bool, tags: Array)
+signal dev_item_data(ok: bool, data: Dictionary)
+signal dev_item_created(ok: bool, item_id: int, error: String)
+signal dev_item_updated(ok: bool, item_id: int)
+signal dev_item_deleted(ok: bool, item_id: int)
+signal dev_item_give_result(ok: bool, error_key: String, error_params: Dictionary)
+signal dev_player_list_result(ok: bool, items: Array, total_count: int, page: int, page_size: int)
+signal dev_player_data(ok: bool, data: Dictionary)
+signal dev_player_admin_updated(ok: bool, player_id: int, is_admin: bool)
+signal dev_player_level_updated(ok: bool, player_id: int, skill_id: String, new_level: int, current_xp: int)
+signal dev_player_teleport_result(ok: bool, player_id: int, tile_x: int, tile_y: int, tile_z: int, error: String)
+signal dev_loot_list_items_result(ok: bool, items: Array, total_count: int, page: int, page_size: int)
+signal dev_loot_list_credits_result(ok: bool, items: Array, total_count: int, page: int, page_size: int)
+signal dev_loot_items_data(ok: bool, data: Dictionary)
+signal dev_loot_credits_data(ok: bool, data: Dictionary)
+signal dev_loot_items_saved(ok: bool, id: int, slug: String, error: String)
+signal dev_loot_credits_saved(ok: bool, id: int, slug: String, error: String)
+signal dev_item_search_result(ok: bool, items: Array)
+signal dev_loot_created_items(ok: bool, id: int, error: String)
+signal dev_loot_deleted_items(ok: bool, id: int)
+signal dev_loot_created_credits(ok: bool, id: int, error: String)
+signal dev_loot_deleted_credits(ok: bool, id: int)
+signal dev_player_deleted(ok: bool, deleted: int, error: String)
+
 const HOST := "127.0.0.1"
 const PORT := 9999
 const SERVER_ID := 1
@@ -108,6 +121,7 @@ var server_tick: int = 0     # NEW: last tick_positions.tick
 var _mp: SceneMultiplayer
 
 var _intentional_disconnect := false
+
 
 
 func _ready() -> void:
@@ -534,6 +548,83 @@ func _on_packet(_id: int, packet: PackedByteArray) -> void:
 				bool(msg.get("in_combat", false)))
 		"npc_editor_open":
 			npc_editor_open.emit(int(msg.get("type_id", 0)))
+		"damage_number":
+			damage_number.emit(
+				String(msg.get("target_type", "")),
+				int(msg.get("target_id", 0)),
+				int(msg.get("amount", 0)))
+		"inventory_data":
+			var inv_slots: Variant = msg.get("slots", [])
+			if typeof(inv_slots) == TYPE_ARRAY:
+				inventory_data_received.emit(inv_slots)
+			else:
+				push_warning("inventory_data missing 'slots' array")
+		"ground_item_dropped":
+			var gi: Variant = msg.get("item", {})
+			if typeof(gi) == TYPE_DICTIONARY:
+				ground_item_dropped.emit(gi)
+			else:
+				push_warning("ground_item_dropped missing 'item'")
+		"ground_item_removed":
+			ground_item_removed.emit(int(msg.get("id", 0)))
+		"credits_updated":
+			credits_updated.emit(int(msg.get("credits", 0)))
+		"skills_data":
+			var skills: Variant = msg.get("skills", [])
+			if typeof(skills) == TYPE_ARRAY:
+				skills_data_received.emit(skills)
+			else:
+				push_warning("skills_data missing 'skills' array")
+		"trade_request_incoming":
+			trade_request_incoming.emit(
+				String(msg.get("invite_id", "")),
+				int(msg.get("from_player_id", 0)),
+				String(msg.get("from_username", "")))
+		"trade_request_cancelled":
+			trade_request_cancelled.emit(
+				String(msg.get("invite_id", "")),
+				String(msg.get("error_key", "")),
+				msg.get("error_params", {}))
+		"trade_state":
+			trade_state_received.emit(msg)
+		"trade_error":
+			trade_error.emit(
+				String(msg.get("error_key", "")),
+				msg.get("error_params", {}))
+		"trade_cancelled":
+			trade_cancelled.emit(
+				String(msg.get("session_id", "")),
+				String(msg.get("error_key", "")),
+				msg.get("error_params", {}))
+		"trade_completed":
+			trade_completed.emit(String(msg.get("session_id", "")))
+		"dialogue_open", "dialogue_state":
+			dialogue_state_received.emit(msg)
+		"dialogue_close":
+			dialogue_closed.emit(
+				String(msg.get("session_id", "")),
+				String(msg.get("error_key", "")),
+				msg.get("error_params", {}))
+		"bank_open", "bank_state":
+			bank_state_received.emit(msg)
+		"bank_close":
+			bank_closed.emit(
+				String(msg.get("session_id", "")),
+				String(msg.get("error_key", "")),
+				msg.get("error_params", {}))
+		"bank_notice":
+			bank_notice.emit(
+				String(msg.get("error_key", "")),
+				msg.get("error_params", {}))
+		"item_icon_info_result":
+			var manifest_el: Variant = msg.get("manifest", {})
+			if typeof(manifest_el) == TYPE_DICTIONARY:
+				item_icon_info_result.emit(bool(msg.get("ok", false)), manifest_el)
+		"item_icon_data":
+			item_icon_data_received.emit(
+				String(msg.get("name", "")),
+				String(msg.get("hash", "")),
+				String(msg.get("data", "")))
 		"dev_npc_editor_options_result":
 			var opts: Variant = msg.get("options", {})
 			if typeof(opts) == TYPE_DICTIONARY:
@@ -634,83 +725,71 @@ func _on_packet(_id: int, packet: PackedByteArray) -> void:
 				int(msg.get("tile_y", 0)),
 				int(msg.get("tile_z", 0)),
 				String(msg.get("error", "")))
-		"damage_number":
-			damage_number.emit(
-				String(msg.get("target_type", "")),
-				int(msg.get("target_id", 0)),
-				int(msg.get("amount", 0)))
-		"inventory_data":
-			var inv_slots: Variant = msg.get("slots", [])
-			if typeof(inv_slots) == TYPE_ARRAY:
-				inventory_data_received.emit(inv_slots)
-			else:
-				push_warning("inventory_data missing 'slots' array")
-		"ground_item_dropped":
-			var gi: Variant = msg.get("item", {})
-			if typeof(gi) == TYPE_DICTIONARY:
-				ground_item_dropped.emit(gi)
-			else:
-				push_warning("ground_item_dropped missing 'item'")
-		"ground_item_removed":
-			ground_item_removed.emit(int(msg.get("id", 0)))
-		"credits_updated":
-			credits_updated.emit(int(msg.get("credits", 0)))
-		"skills_data":
-			var skills: Variant = msg.get("skills", [])
-			if typeof(skills) == TYPE_ARRAY:
-				skills_data_received.emit(skills)
-			else:
-				push_warning("skills_data missing 'skills' array")
-		"trade_request_incoming":
-			trade_request_incoming.emit(
-				String(msg.get("invite_id", "")),
-				int(msg.get("from_player_id", 0)),
-				String(msg.get("from_username", "")))
-		"trade_request_cancelled":
-			trade_request_cancelled.emit(
-				String(msg.get("invite_id", "")),
-				String(msg.get("error_key", "")),
-				msg.get("error_params", {}))
-		"trade_state":
-			trade_state_received.emit(msg)
-		"trade_error":
-			trade_error.emit(
-				String(msg.get("error_key", "")),
-				msg.get("error_params", {}))
-		"trade_cancelled":
-			trade_cancelled.emit(
-				String(msg.get("session_id", "")),
-				String(msg.get("error_key", "")),
-				msg.get("error_params", {}))
-		"trade_completed":
-			trade_completed.emit(String(msg.get("session_id", "")))
-		"dialogue_open", "dialogue_state":
-			dialogue_state_received.emit(msg)
-		"dialogue_close":
-			dialogue_closed.emit(
-				String(msg.get("session_id", "")),
-				String(msg.get("error_key", "")),
-				msg.get("error_params", {}))
-		"bank_open", "bank_state":
-			bank_state_received.emit(msg)
-		"bank_close":
-			bank_closed.emit(
-				String(msg.get("session_id", "")),
-				String(msg.get("error_key", "")),
-				msg.get("error_params", {}))
-		"bank_notice":
-			bank_notice.emit(
-				String(msg.get("error_key", "")),
-				msg.get("error_params", {}))
-		"item_icon_info_result":
-			var manifest_el: Variant = msg.get("manifest", {})
-			if typeof(manifest_el) == TYPE_DICTIONARY:
-				item_icon_info_result.emit(bool(msg.get("ok", false)), manifest_el)
-		"item_icon_data":
-			item_icon_data_received.emit(
-				String(msg.get("name", "")),
-				String(msg.get("hash", "")),
-				String(msg.get("data", "")))
+		"dev_loot_list_items_result":
+			var li: Variant = msg.get("items", [])
+			if typeof(li) == TYPE_ARRAY:
+				dev_loot_list_items_result.emit(
+					bool(msg.get("ok", false)), li,
+					int(msg.get("total_count", 0)),
+					int(msg.get("page", 0)),
+					int(msg.get("page_size", 100)))
+		"dev_loot_list_credits_result":
+			var lc: Variant = msg.get("items", [])
+			if typeof(lc) == TYPE_ARRAY:
+				dev_loot_list_credits_result.emit(
+					bool(msg.get("ok", false)), lc,
+					int(msg.get("total_count", 0)),
+					int(msg.get("page", 0)),
+					int(msg.get("page_size", 100)))
+		"dev_loot_items_data":
+			var idata: Variant = msg.get("data", {})
+			dev_loot_items_data.emit(
+				bool(msg.get("ok", false)),
+				idata if typeof(idata) == TYPE_DICTIONARY else {})
+		"dev_loot_credits_data":
+			var cdata: Variant = msg.get("data", {})
+			dev_loot_credits_data.emit(
+				bool(msg.get("ok", false)),
+				cdata if typeof(cdata) == TYPE_DICTIONARY else {})
+		"dev_loot_items_saved":
+			dev_loot_items_saved.emit(
+				bool(msg.get("ok", false)),
+				int(msg.get("id", 0)),
+				String(msg.get("slug", "")),
+				String(msg.get("error", "")))
+		"dev_loot_credits_saved":
+			dev_loot_credits_saved.emit(
+				bool(msg.get("ok", false)),
+				int(msg.get("id", 0)),
+				String(msg.get("slug", "")),
+				String(msg.get("error", "")))
+		"dev_item_search_result":
+			var ds: Variant = msg.get("items", [])
+			if typeof(ds) == TYPE_ARRAY:
+				dev_item_search_result.emit(bool(msg.get("ok", false)), ds)
+		"dev_loot_created_items":
+			dev_loot_created_items.emit(
+				bool(msg.get("ok", false)),
+				int(msg.get("id", 0)),
+				String(msg.get("error", "")))
+		"dev_loot_deleted_items":
+			dev_loot_deleted_items.emit(
+				bool(msg.get("ok", false)),
+				int(msg.get("id", 0)))
+		"dev_loot_created_credits":
+			dev_loot_created_credits.emit(
+				bool(msg.get("ok", false)),
+				int(msg.get("id", 0)),
+				String(msg.get("error", "")))
+		"dev_loot_deleted_credits":
+			dev_loot_deleted_credits.emit(
+				bool(msg.get("ok", false)),
+				int(msg.get("id", 0)))
+		"dev_player_deleted":
+			dev_player_deleted.emit(
+				bool(msg.get("ok", false)),
+				int(msg.get("deleted", 0)),
+				String(msg.get("error", "")))
 		_:
 			push_warning("Unknown message from server: %s" % str(msg))
 
@@ -913,3 +992,51 @@ func send_dev_player_teleport_to_admin(player_id: int) -> void:
 
 func send_dev_player_teleport_admin_to(player_id: int) -> void:
 	send({"type": "dev_player_teleport_admin_to", "player_id": player_id})
+
+func send_dev_loot_list_items(search: String, page: int) -> void:
+	send({"type": "dev_loot_list_items", "search": search, "page": page})
+
+
+func send_dev_loot_get_items(id: int) -> void:
+	send({"type": "dev_loot_get_items", "id": id})
+
+
+func send_dev_loot_save_items(id: int, slug_id: String, item_bag: Array) -> void:
+	send({"type": "dev_loot_save_items", "id": id, "slug_id": slug_id, "item_bag": item_bag})
+
+
+func send_dev_loot_list_credits(search: String, page: int) -> void:
+	send({"type": "dev_loot_list_credits", "search": search, "page": page})
+
+
+func send_dev_loot_get_credits(id: int) -> void:
+	send({"type": "dev_loot_get_credits", "id": id})
+
+
+func send_dev_loot_save_credits(id: int, slug_id: String, min_credits: int, max_credits: int) -> void:
+	send({"type": "dev_loot_save_credits", "id": id, "slug_id": slug_id,
+		  "min_credits": min_credits, "max_credits": max_credits})
+
+
+func send_dev_item_search(search: String) -> void:
+	send({"type": "dev_item_search", "search": search})
+
+
+func send_dev_loot_create_items(slug_id: String) -> void:
+	send({"type": "dev_loot_create_items", "slug_id": slug_id})
+
+
+func send_dev_loot_delete_items(id: int) -> void:
+	send({"type": "dev_loot_delete_items", "id": id})
+
+
+func send_dev_loot_create_credits(slug_id: String) -> void:
+	send({"type": "dev_loot_create_credits", "slug_id": slug_id})
+
+
+func send_dev_loot_delete_credits(id: int) -> void:
+	send({"type": "dev_loot_delete_credits", "id": id})
+
+
+func send_dev_player_delete(player_ids: Array) -> void:
+	send({"type": "dev_player_delete", "player_ids": player_ids})

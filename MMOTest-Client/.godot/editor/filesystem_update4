@@ -23,3 +23,12 @@ res://scenes/game/game.gd
 res://scenes/game/remote_player/remote_player.gd
 res://scripts/entity/entity_visuals.gd
 res://scenes/dev_hub/dev_panel_registry.gd
+res://data/texts/ui/dev_hub_texts.json
+res://data/texts/ui/dev_hub/loot_editor_texts.json
+res://scenes/dev_hub/panels/loot_editor_panel.gd
+res://scenes/dev_hub/panels/loot_editor/browse.gd
+res://scenes/dev_hub/panels/loot_editor/items_edit.gd
+res://scenes/dev_hub/panels/loot_editor/credits_edit.gd
+res://scenes/dev_hub/widgets/dev_form_fields.gd
+res://scenes/dev_hub/panels/loot_editor_panel.tscn
+res://scenes/dev_hub/panels/world_editor/toolbar.gd

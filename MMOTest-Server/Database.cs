@@ -62,7 +62,8 @@ public class Database
         MigratePlayerXpToTenths.Apply(conn);
         NpcTypeInstanceSplitV1.Apply(conn);
         ItemCapabilitiesV1.Apply(conn);
-        ItemIconPathV1.Apply(conn);
+		ItemIconPathV1.Apply(conn);
+		ItemTypeSlugCleanupV2.Apply(conn);
 
         Exec(conn, "DROP TABLE IF EXISTS player_bank;");
         Exec(conn, "PRAGMA foreign_keys = ON;");

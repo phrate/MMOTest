@@ -47,5 +47,11 @@
 	"hover_item_qty": "{name} x{qty}",
 	"levels_save_button": "Save",
 	"levels_saving": "Saving...",
-	"levels_saved": "Saved ✓"
+	"levels_saved": "Saved ✓",
+	"browse_delete_button": "Delete Selected Player(s) ({count})",
+	"delete_dialog_title": "Delete Players",
+	"delete_dialog_body": "Are you sure you want to permanently delete {count} player(s)? This is irreversible and will erase their inventory, bank, skills, and XP.",
+	"delete_dialog_ok": "Delete",
+	"error_delete_failed": "Could not delete. Try again.",
+	"dialog_error_title": "Error"
 }

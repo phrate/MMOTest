@@ -222,6 +222,76 @@ public sealed class PlayerRepository
         cmd.ExecuteNonQuery();
     });
 
+	/// <summary>
+	/// Delete the given players and every row that references them.
+	/// Mirrors WipeAllExceptSync but takes explicit ids and doesn't preserve anyone.
+	/// FKs are ON, so we delete players first (its FKs are SET NULL to the
+	/// per-player tables) then remove the orphaned inventory / combat / skill /
+	/// xp rows by id.
+	/// </summary>
+	public Task<int> DeletePlayersAsync(List<long> playerIds) => Task.Run(() =>
+	{
+		if (playerIds == null || playerIds.Count == 0) return 0;
+
+		using var conn = _open();
+		using var tx = conn.BeginTransaction();
+		try
+		{
+			string inClause = string.Join(",", playerIds);
+
+			var invIds = new List<long>();
+			var combatIds = new List<long>();
+			var skillIds = new List<long>();
+			var xpIds = new List<long>();
+
+			using (var select = conn.CreateCommand())
+			{
+				select.Transaction = tx;
+				select.CommandText = $@"
+					SELECT inventory_id, levels_combat_id, levels_skill_id, xp_id
+					FROM players WHERE id IN ({inClause});";
+				using var r = select.ExecuteReader();
+				while (r.Read())
+				{
+					if (!r.IsDBNull(0)) invIds.Add(r.GetInt64(0));
+					if (!r.IsDBNull(1)) combatIds.Add(r.GetInt64(1));
+					if (!r.IsDBNull(2)) skillIds.Add(r.GetInt64(2));
+					if (!r.IsDBNull(3)) xpIds.Add(r.GetInt64(3));
+				}
+			}
+
+			int deleted;
+			using (var cmd = conn.CreateCommand())
+			{
+				cmd.Transaction = tx;
+				cmd.CommandText = $"DELETE FROM players WHERE id IN ({inClause});";
+				deleted = cmd.ExecuteNonQuery();
+			}
+
+			void DeleteIn(string table, List<long> ids)
+			{
+				if (ids.Count == 0) return;
+				using var cmd = conn.CreateCommand();
+				cmd.Transaction = tx;
+				cmd.CommandText = $"DELETE FROM {table} WHERE id IN ({string.Join(",", ids)});";
+				cmd.ExecuteNonQuery();
+			}
+
+			DeleteIn("player_inventory", invIds);
+			DeleteIn("levels_combat", combatIds);
+			DeleteIn("levels_skill", skillIds);
+			DeleteIn("player_xp", xpIds);
+
+			tx.Commit();
+			return deleted;
+		}
+		catch
+		{
+			try { tx.Rollback(); } catch { }
+			throw;
+		}
+	});
+
     public bool SetCreditsSync(long playerId, int credits)
     {
         using var conn = _open();
